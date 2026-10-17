@@ -24,6 +24,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
+import type { CustomEndpointDraft } from "../new-agent/AgentBasicsDialog";
 
 const providers = [
   {
@@ -52,8 +53,8 @@ const providers = [
   },
   {
     id: "gateway",
-    name: "Custom gateway",
-    description: "Emissary or another compatible endpoint",
+    name: "Custom endpoint",
+    description: "Azure, LiteLLM, or another compatible endpoint",
     advanced: true,
   },
   {
@@ -71,6 +72,7 @@ export function AiProviderSetup({
   environmentId,
   initialProvider,
   initialProtocol,
+  customEndpointDraft,
   providerLabel,
   advancedOnly = false,
   reconnect,
@@ -82,6 +84,7 @@ export function AiProviderSetup({
   environmentId?: string;
   initialProvider?: ProviderChoice;
   initialProtocol?: AiProviderRouting["protocol"];
+  customEndpointDraft?: CustomEndpointDraft;
   providerLabel?: string;
   advancedOnly?: boolean;
   reconnect?: AiManagedConnectionSummary;
@@ -106,19 +109,22 @@ export function AiProviderSetup({
   const [allAgentsChoice, setAllAgents] = useState<boolean>();
   const [agentIds, setAgentIds] = useState(new Set(agentId ? [agentId] : []));
   const [protocol, setProtocol] = useState<AiProviderRouting["protocol"]>(
-    reconnect?.routing?.protocol ?? initialProtocol ?? "responses",
+    customEndpointDraft?.protocol ?? reconnect?.routing?.protocol ?? initialProtocol ?? "responses",
   );
   const [auth, setAuth] = useState<AiProviderRouting["auth"]>(
-    reconnect?.routing?.auth ?? "bearer",
+    customEndpointDraft?.auth ?? reconnect?.routing?.auth ?? "bearer",
   );
-  const [baseUrl, setBaseUrl] = useState(reconnect?.routing?.baseUrl ?? "");
+  const [baseUrl, setBaseUrl] = useState(customEndpointDraft?.baseUrl ?? reconnect?.routing?.baseUrl ?? "");
   const [region, setRegion] = useState(
     reconnect?.routing?.region ?? "us-east-1",
   );
   const [models, setModels] = useState(
-    reconnect?.routing?.models.map((m) => m.id).join(", ") ?? "",
+    customEndpointDraft?.models.join(", ") ?? reconnect?.routing?.models.map((m) => m.id).join(", ") ?? "",
   );
-  const [apiKey, setApiKey] = useState("");
+  const [discoveredModels, setDiscoveredModels] = useState<Array<{ id: string; label?: string }>>([]);
+  const [discoveryProtocols, setDiscoveryProtocols] = useState<{ responses: boolean; chat: boolean }>();
+  const [apiKey, setApiKey] = useState(customEndpointDraft?.apiKey ?? "");
+  const isDraftedGateway = provider === "gateway" && Boolean(customEndpointDraft);
   const client = useQueryClient();
   const accounts = useQuery({
     queryKey: ["ai-connections", companyId, agentId],
@@ -168,6 +174,20 @@ export function AiProviderSetup({
       ...result,
     });
   };
+  const discover = useMutation({
+    mutationFn: () => aiConnectionsApi.discoverCustom(companyId, {
+      baseUrl,
+      auth,
+      ...(auth !== "none" ? { apiKey } : {}),
+    }),
+    onSuccess: (result) => {
+      setDiscoveredModels(result.models);
+      setModels(result.models[0]?.id ?? "");
+      setDiscoveryProtocols(result.protocols);
+      if (result.protocols.responses && !result.protocols.chat) setProtocol("responses");
+      if (result.protocols.chat && !result.protocols.responses) setProtocol("chat");
+    },
+  });
   const save = useMutation({
     mutationFn: () => {
       const routing =
@@ -203,9 +223,6 @@ export function AiProviderSetup({
       );
     },
     onSuccess: complete,
-    onSettled: () => {
-      setApiKey("");
-    },
   });
   const choices = (advancedOnly: boolean) => (
     <ConnectionChoiceList
@@ -325,47 +342,49 @@ export function AiProviderSetup({
         >
           {(provider === "gateway" || provider === "local") && (
             <>
-              <label className="block space-y-2 text-xs text-muted-foreground">
-                Provider URL
-                <Input
-                  aria-label="Provider URL"
-                  placeholder={
-                    provider === "local"
-                      ? "http://localhost:11434/v1"
-                      : "https://gateway.example.com/v1"
-                  }
-                  value={baseUrl}
-                  onChange={(e) => setBaseUrl(e.target.value)}
-                  disabled={Boolean(reconnect)}
-                />
-              </label>
-              <label className="block space-y-2 text-xs text-muted-foreground">
-                API format
-                <Select
-                  value={protocol}
-                  onValueChange={(v) => {
-                    setProtocol(v as typeof protocol);
-                    if (v !== "messages" && auth === "api_key")
-                      setAuth("bearer");
-                  }}
-                  disabled={Boolean(reconnect) || Boolean(initialProtocol)}
-                >
-                  <SelectTrigger aria-label="API format" className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="responses">
-                      OpenAI Responses · Codex
-                    </SelectItem>
-                    <SelectItem value="messages">
-                      Anthropic Messages · Claude
-                    </SelectItem>
-                    <SelectItem value="chat">
-                      Chat Completions · OpenCode, Hermes
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-              </label>
+              {isDraftedGateway ? (
+                <div className="space-y-2 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+                  <p>Custom endpoint configuration carried from the previous step.</p>
+                  <p className="break-all"><span className="font-medium text-foreground">Base URL:</span> {baseUrl}</p>
+                  <p><span className="font-medium text-foreground">API format:</span> {protocol === "responses" ? "OpenAI Responses · Codex" : "Chat Completions · OpenCode"}</p>
+                </div>
+              ) : (
+                <>
+                  <label className="block space-y-2 text-xs text-muted-foreground">
+                    Base URL
+                    <Input
+                      aria-label="Base URL"
+                      placeholder={provider === "local" ? "http://localhost:11434/v1" : "https://gateway.example.com/v1"}
+                      value={baseUrl}
+                      onChange={(e) => setBaseUrl(e.target.value)}
+                      disabled={Boolean(reconnect)}
+                    />
+                    {provider === "gateway" && (
+                      <Button type="button" variant="outline" onClick={() => discover.mutate()} disabled={discover.isPending || !baseUrl.trim() || (auth !== "none" && !apiKey.trim())}>
+                        {discover.isPending ? "Fetching models…" : "Fetch models"}
+                      </Button>
+                    )}
+                  </label>
+                  <label className="block space-y-2 text-xs text-muted-foreground">
+                    API format
+                    <Select
+                      value={protocol}
+                      onValueChange={(v) => {
+                        setProtocol(v as typeof protocol);
+                        if (v !== "messages" && provider !== "gateway" && auth === "api_key") setAuth("bearer");
+                      }}
+                      disabled={Boolean(reconnect) || Boolean(initialProtocol)}
+                    >
+                      <SelectTrigger aria-label="API format" className="w-full"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="responses">OpenAI Responses · Codex</SelectItem>
+                        <SelectItem value="messages">Anthropic Messages · Claude</SelectItem>
+                        <SelectItem value="chat">Chat Completions · OpenCode, Hermes</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </label>
+                </>
+              )}
             </>
           )}
           {provider === "bedrock" && (
@@ -379,7 +398,7 @@ export function AiProviderSetup({
               />
             </label>
           )}
-          {provider !== "openrouter" && (
+          {provider !== "openrouter" && !isDraftedGateway && (
             <label className="block space-y-2 text-xs text-muted-foreground">
               Authentication
               <Select
@@ -398,9 +417,11 @@ export function AiProviderSetup({
                   </SelectItem>
                   {provider !== "bedrock" && (
                     <>
-                      {protocol === "messages" && (
+                      {(protocol === "messages" || provider === "gateway") && (
                         <SelectItem value="api_key">
-                          API key · x-api-key
+                          {provider === "gateway" && protocol !== "messages"
+                            ? "API key · api-key"
+                            : "API key · x-api-key"}
                         </SelectItem>
                       )}
                       <SelectItem value="none">No authentication</SelectItem>
@@ -411,7 +432,7 @@ export function AiProviderSetup({
             </label>
           )}
           {
-            auth !== "none" && (
+            auth !== "none" && !isDraftedGateway && (
               <label className="block space-y-2 text-xs text-muted-foreground">
                 API key
                 <Input
@@ -424,10 +445,35 @@ export function AiProviderSetup({
               </label>
             )
           }
+          {provider === "gateway" && (isDraftedGateway || discoveredModels.length > 0) && (
+            <label className="block space-y-2 text-xs text-muted-foreground">
+              Model / deployment
+              {isDraftedGateway ? (
+                <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-foreground">{models}</p>
+              ) : <>
+                <select aria-label="Model / deployment" className="block w-full rounded-md border bg-background px-3 py-2 text-sm" value={models} onChange={(event) => setModels(event.target.value)}>
+                  {discoveredModels.map((model) => <option key={model.id} value={model.id}>{model.label ?? model.id}</option>)}
+                </select>
+                <Input aria-label="Model / deployment fallback" value={models} onChange={(event) => setModels(event.target.value)} placeholder="Enter a deployment or model ID" />
+              </>}
+            </label>
+          )}
+          {provider === "gateway" && discoveryProtocols && !isDraftedGateway && (
+            <div className="space-y-1 text-xs text-muted-foreground" role="status">
+              {discoveryProtocols.responses && discoveryProtocols.chat
+                ? "Both API formats are supported. Using OpenAI Responses by default."
+                : discoveryProtocols.responses
+                  ? "Detected: OpenAI Responses · Runtime: Codex"
+                  : discoveryProtocols.chat
+                    ? "Detected: Chat Completions · Runtime: OpenCode"
+                    : "This endpoint does not advertise Responses or Chat Completions support."}
+              {discoveryProtocols.responses && discoveryProtocols.chat && <span className="block">Change format above to override the default.</span>}
+            </div>
+          )}
           {reconnect && <details><summary className="cursor-pointer text-sm text-muted-foreground">Model settings</summary>{modelSettings}</details>}
           <p className="text-xs text-muted-foreground">
-            Test the connection with your chosen model in the agent’s execution
-            environment after connecting.
+            Paperclip tests this endpoint with <code>/models</code> before saving.
+            Agent execution compatibility is checked separately when the connection is used.
           </p>
           {save.error && (
             <p role="alert" className="text-sm text-destructive">
@@ -451,7 +497,9 @@ export function AiProviderSetup({
               disabled={
                 save.isPending || accounts.isPending || accounts.isError ||
                 (!reconnect && ownership === "shared" && !allAgents && agentIds.size === 0) ||
-                (auth !== "none" && !apiKey.trim())
+                (auth !== "none" && !apiKey.trim()) ||
+                (provider === "gateway" && !models.trim()) ||
+                (provider === "gateway" && discoveryProtocols && !discoveryProtocols.responses && !discoveryProtocols.chat)
               }
             >
               {save.isPending

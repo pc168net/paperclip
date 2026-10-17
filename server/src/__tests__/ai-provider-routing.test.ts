@@ -127,6 +127,33 @@ describe("provider routing", () => {
       "openrouter/anthropic/claude-sonnet-4.6",
     );
   });
+  it.each([
+    ["bearer", 'env_key = "PAPERCLIP_AI_PROVIDER_KEY"', "env_http_headers"],
+    ["api_key", 'env_http_headers = { "api-key" = "PAPERCLIP_AI_PROVIDER_KEY" }', "env_key ="],
+  ] as const)("projects Codex %s gateway authentication with the matching header", (auth, expected, absent) => {
+    const route = aiProviderRoutingSchema.parse({
+      kind: "gateway",
+      protocol: "responses",
+      auth,
+      baseUrl: "https://gateway.example/v1",
+    });
+    const projected = managedProviderRouting(route, "codex_local", "fixture-secret", "fixture-model");
+    expect(projected.codexConfig).toContain(expected);
+    expect(projected.codexConfig).not.toContain(absent);
+    expect(projected.codexConfig).not.toContain("fixture-secret");
+  });
+  it("uses the selected connection model when the agent config has none", () => {
+    const route = aiProviderRoutingSchema.parse({
+      kind: "gateway",
+      protocol: "chat",
+      auth: "bearer",
+      baseUrl: "https://gateway.example/v1",
+      models: [{ id: "deployment-a" }],
+    });
+    const projected = managedProviderRouting(route, "opencode_local", "fixture-secret", "");
+    expect(projected.config.model).toBe("paperclip/deployment-a");
+    expect(projected.env.PAPERCLIP_AI_PROVIDER_URL).toBe("https://gateway.example/v1");
+  });
   it("projects only a Bedrock API key and rejects general AWS access keys", () => {
     const routing = aiProviderRoutingSchema.parse({
       kind: "bedrock",

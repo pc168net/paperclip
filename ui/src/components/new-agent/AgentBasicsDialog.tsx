@@ -1,10 +1,12 @@
 import { useCompany } from "@/context/CompanyContext";
+import { aiConnectionsApi } from "@/api/ai-connections";
 import { useAgentAppearanceDraft } from "@/hooks/useAgentAppearanceDraft";
 import { AdapterMark } from "../AdapterMark";
 import { AgentCharacter } from "../AgentCharacter";
 import { useId, useState } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, ArrowRight, Check, ChevronRight } from "lucide-react";
+import { ArrowLeft, ArrowRight, Cable, Check, ChevronRight } from "lucide-react";
 import { adaptersApi } from "@/api/adapters";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
@@ -26,6 +28,15 @@ export type AgentBasics = {
   name: string;
   adapterType: string;
   runnerProvider: string;
+  customEndpoint?: string;
+  customEndpointDraft?: CustomEndpointDraft;
+};
+export type CustomEndpointDraft = {
+  baseUrl: string;
+  auth: "bearer" | "api_key";
+  apiKey: string;
+  protocol: "responses" | "chat";
+  models: string[];
 };
 export { AdapterMark } from "../AdapterMark";
 
@@ -49,6 +60,7 @@ export function AgentBasicsDialog({
   onInvite?: () => void;
 }) {
   const id = useId();
+  const { selectedCompanyId } = useCompany();
   const cloud = Boolean(useCloudInstance());
   const experimental = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
@@ -59,6 +71,28 @@ export function AgentBasicsDialog({
   const [name, setName] = useState("");
   const [adapterType, setAdapterType] = useState(initialAdapter);
   const [runnerProvider, setRunnerProvider] = useState("codex");
+  const [customEndpoint, setCustomEndpoint] = useState(false);
+  const [customBaseUrl, setCustomBaseUrl] = useState("");
+  const [customAuth, setCustomAuth] = useState<"bearer" | "api_key">("bearer");
+  const [customApiKey, setCustomApiKey] = useState("");
+  const [customModels, setCustomModels] = useState<string[]>([]);
+  const [customSelectedModel, setCustomSelectedModel] = useState("");
+  const [customProtocol, setCustomProtocol] = useState<"responses" | "chat">("responses");
+  const [customProtocols, setCustomProtocols] = useState<{ responses: boolean; chat: boolean }>();
+  const discover = useMutation({
+    mutationFn: () => aiConnectionsApi.discoverCustom(selectedCompanyId!, { baseUrl: customBaseUrl, auth: customAuth, apiKey: customApiKey }),
+    onSuccess: (result) => {
+      setCustomModels(result.models.map((model) => model.id));
+      setCustomSelectedModel(result.models[0]?.id ?? "");
+      setCustomProtocols(result.protocols);
+      if (result.protocols.responses && !result.protocols.chat) setCustomProtocol("responses");
+      if (result.protocols.responses && !result.protocols.chat) setRunnerProvider("codex");
+      if (result.protocols.chat && !result.protocols.responses) {
+        setCustomProtocol("chat");
+        setRunnerProvider("opencode");
+      }
+    },
+  });
   const [step, setStep] = useState<"name" | "adapter">("name");
   const {
     data: adapters,
@@ -97,6 +131,8 @@ export function AgentBasicsDialog({
           "flex max-h-(--sz-calc-18) flex-col gap-0 overflow-hidden p-0 sm:max-w-(--sz-640px)",
           step === "name" && "sm:max-w-(--sz-560px)",
         )}
+        onPointerDownOutside={(event) => event.preventDefault()}
+        onInteractOutside={(event) => event.preventDefault()}
       >
         <div
           className="flex items-center gap-2 px-6 py-5 text-xs text-muted-foreground"
@@ -120,6 +156,8 @@ export function AgentBasicsDialog({
             event.preventDefault();
             if (!name.trim()) return;
             if (step === "name") setStep("adapter");
+            else if (customEndpoint && (runnerProvider === "codex" || runnerProvider === "opencode"))
+              onContinue({ name: name.trim(), adapterType: "paperclip_runner", runnerProvider, customEndpoint: "true", customEndpointDraft: { baseUrl: customBaseUrl.trim(), auth: customAuth, apiKey: customApiKey, protocol: customProtocol, models: customSelectedModel ? [customSelectedModel] : customModels } });
             else if (validAdapter)
               onContinue({ name: name.trim(),
                 adapterType: adapterType === "openai_dot" ? "paperclip_runner" : adapterType,
@@ -133,12 +171,14 @@ export function AgentBasicsDialog({
                 <DialogTitle className="text-3xl font-semibold tracking-tight">
                   {step === "name"
                     ? "Meet your next agent"
-                    : "Choose an adapter"}
+                     : customEndpoint ? "Choose an execution adapter" : "Choose an adapter"}
                 </DialogTitle>
                 <DialogDescription className="text-base">
                   {step === "name"
                     ? "Start with a name. Make them your own."
-                    : `How should ${name.trim()} work?`}
+                    : customEndpoint
+                      ? `How should this custom endpoint run ${name.trim()}?`
+                      : `How should ${name.trim()} work?`}
                 </DialogDescription>
               </div>
             </div>
@@ -180,6 +220,7 @@ export function AgentBasicsDialog({
                     {error.message}
                   </p>
                 )}
+                {!customEndpoint ? <>
                 <div className={cn("grid grid-cols-2 gap-3", choices.length !== 4 && "sm:grid-cols-3")}>
                   {choices.map((adapter) => {
                     const display = getAdapterDisplay(adapter.type);
@@ -216,7 +257,71 @@ export function AgentBasicsDialog({
                     );
                   })}
                 </div>
-                {experimentalRunnerAvailable && <details className="space-y-3">
+                <button
+                  type="button"
+                  onClick={() => { setCustomEndpoint(true); setRunnerProvider("codex"); }}
+                  className="relative flex w-full flex-col items-center gap-2 rounded-lg border border-border bg-card px-3 py-4 text-center hover:bg-accent/40"
+                >
+                  <Cable className="size-7 text-muted-foreground" />
+                  <span className="text-sm font-medium">Custom endpoint</span>
+                  <span className="text-xs text-muted-foreground">Azure, LiteLLM, or compatible API</span>
+                </button>
+                </> : <div className="space-y-3">
+                  <button type="button" className="text-sm text-muted-foreground hover:text-foreground" onClick={() => setCustomEndpoint(false)}>
+                    ← Back to adapters
+                  </button>
+                  <div className="space-y-3 rounded-lg border border-border bg-card p-4">
+                    <label className="block space-y-2 text-sm">
+                      Custom Base URL
+                      <Input value={customBaseUrl} placeholder="https://your-gateway.example.com/v1" onChange={(event) => setCustomBaseUrl(event.target.value)} />
+                    </label>
+                    <label className="block space-y-2 text-sm">
+                      Authentication
+                      <select className="block w-full rounded-md border bg-background px-3 py-2" value={customAuth} onChange={(event) => setCustomAuth(event.target.value as typeof customAuth)}>
+                        <option value="bearer">Bearer token</option>
+                        <option value="api_key">Azure API key</option>
+                      </select>
+                    </label>
+                    <label className="block space-y-2 text-sm">
+                      API key
+                      <Input type="password" autoComplete="new-password" value={customApiKey} onChange={(event) => setCustomApiKey(event.target.value)} />
+                    </label>
+                    <Button type="button" variant="outline" onClick={() => discover.mutate()} disabled={discover.isPending || !customBaseUrl.trim() || !customApiKey.trim()}>
+                      {discover.isPending ? "Fetching models…" : "Fetch models"}
+                    </Button>
+                    {discover.error && <p role="alert" className="text-sm text-destructive">{discover.error.message}</p>}
+                    {customModels.length > 0 && <label className="block space-y-2 text-sm">
+                      Model / deployment
+                      <select className="block w-full rounded-md border bg-background px-3 py-2" value={customSelectedModel} onChange={(event) => setCustomSelectedModel(event.target.value)}>
+                        {customModels.map((model) => <option key={model} value={model}>{model}</option>)}
+                      </select>
+                      <Input aria-label="Model / deployment fallback" value={customSelectedModel} onChange={(event) => setCustomSelectedModel(event.target.value)} placeholder="Enter a model or deployment ID" />
+                    </label>}
+                    {customProtocols && (customProtocols.responses || customProtocols.chat) && <label className="block space-y-2 text-sm">
+                      API format
+                      <select className="block w-full rounded-md border bg-background px-3 py-2" value={customProtocol} onChange={(event) => {
+                        const next = event.target.value as typeof customProtocol;
+                        setCustomProtocol(next);
+                        setRunnerProvider(next === "chat" ? "opencode" : "codex");
+                      }}>
+                        {customProtocols.responses && <option value="responses">OpenAI Responses · Codex</option>}
+                        {customProtocols.chat && <option value="chat">Chat Completions · OpenCode</option>}
+                      </select>
+                    </label>}
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    {customModels.length > 0 && customProtocols && (customProtocols.responses || customProtocols.chat)
+                      ? customProtocols.responses && customProtocols.chat
+                        ? "Both API formats are supported. Using OpenAI Responses by default."
+                        : runnerProvider === "opencode"
+                          ? "Detected Chat Completions support. Paperclip will use the OpenCode runtime."
+                          : "Detected OpenAI Responses support. Paperclip will use the Codex runtime."
+                      : customModels.length > 0
+                        ? "This endpoint does not advertise Responses or Chat Completions support."
+                      : "Fetch models to detect the supported API format."}
+                  </p>
+                </div>}
+                {!customEndpoint && experimentalRunnerAvailable && <details className="space-y-3">
                   <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
                   <div className="space-y-2">
                     <label className="text-sm text-muted-foreground">Experimental harness</label>
@@ -252,7 +357,7 @@ export function AgentBasicsDialog({
             </Button>
             <Button
               type="submit"
-              disabled={!name.trim() || (step === "adapter" && !validAdapter)}
+              disabled={!name.trim() || (step === "adapter" && ((!customEndpoint && !validAdapter) || (customEndpoint && (!customModels.length || !customBaseUrl.trim() || !customProtocols || (!customProtocols.responses && !customProtocols.chat) || !["codex", "opencode"].includes(runnerProvider)))))}
             >
               {step === "name" ? "Choose adapter" : "Configure agent"}
               <ArrowRight className="size-4" />

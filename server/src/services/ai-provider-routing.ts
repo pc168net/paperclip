@@ -16,6 +16,9 @@ export function managedProviderRouting(
   let codexConfig = "";
   let hermesConfig = "";
   const baseUrl = aiRoutingBaseUrl(route, harness);
+  // A custom connection stores the selected deployment on its routing. Keep
+  // runtime setup deterministic even when the agent config has no model yet.
+  const selectedModel = model || route.models[0]?.id || "";
   if (route.kind === "bedrock") {
     env.CLAUDE_CODE_USE_BEDROCK = "1";
     env.AWS_REGION = route.region!;
@@ -24,19 +27,24 @@ export function managedProviderRouting(
     env.AWS_BEARER_TOKEN_BEDROCK = credential;
   } else if (harness === "codex_local") {
     env.PAPERCLIP_AI_PROVIDER_KEY = credential;
-    codexConfig = `model_provider = "paperclip"\n[model_providers.paperclip]\nname = "Paperclip connection"\nbase_url = ${JSON.stringify(baseUrl)}\nwire_api = "responses"\nrequires_openai_auth = false\n${route.auth === "none" ? "" : 'env_key = "PAPERCLIP_AI_PROVIDER_KEY"\n'}`;
+    const codexAuth = route.auth === "none"
+      ? ""
+      : route.auth === "api_key"
+        ? 'env_http_headers = { "api-key" = "PAPERCLIP_AI_PROVIDER_KEY" }\n'
+        : 'env_key = "PAPERCLIP_AI_PROVIDER_KEY"\n';
+    codexConfig = `model_provider = "paperclip"\n[model_providers.paperclip]\nname = "Paperclip connection"\nbase_url = ${JSON.stringify(baseUrl)}\nwire_api = "responses"\nrequires_openai_auth = false\n${codexAuth}`;
   } else if (harness === "claude_local") {
     env.ANTHROPIC_BASE_URL = baseUrl;
     env[
       route.auth === "api_key" ? "ANTHROPIC_API_KEY" : "ANTHROPIC_AUTH_TOKEN"
     ] = credential;
     env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
-    if (model) {
-      env.ANTHROPIC_MODEL = model;
-      env.ANTHROPIC_DEFAULT_OPUS_MODEL = model;
-      env.ANTHROPIC_DEFAULT_SONNET_MODEL = model;
-      env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model;
-      env.CLAUDE_CODE_SUBAGENT_MODEL = model;
+    if (selectedModel) {
+      env.ANTHROPIC_MODEL = selectedModel;
+      env.ANTHROPIC_DEFAULT_OPUS_MODEL = selectedModel;
+      env.ANTHROPIC_DEFAULT_SONNET_MODEL = selectedModel;
+      env.ANTHROPIC_DEFAULT_HAIKU_MODEL = selectedModel;
+      env.CLAUDE_CODE_SUBAGENT_MODEL = selectedModel;
     }
   } else if (harness === "opencode_local") {
     const provider = route.kind === "openrouter" ? "openrouter" : "paperclip";
@@ -45,9 +53,9 @@ export function managedProviderRouting(
       env.PAPERCLIP_AI_PROVIDER_KEY = credential;
       env.PAPERCLIP_AI_PROVIDER_URL = baseUrl;
     }
-    const id = model.startsWith(`${provider}/`)
-      ? model.slice(provider.length + 1)
-      : model;
+    const id = selectedModel.startsWith(`${provider}/`)
+      ? selectedModel.slice(provider.length + 1)
+      : selectedModel;
     env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
       provider: {
         [provider]: {
@@ -61,7 +69,7 @@ export function managedProviderRouting(
       enabled_providers: [provider],
     });
     env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
-    config.model = aiRoutingModel(route, harness, model);
+    config.model = aiRoutingModel(route, harness, selectedModel);
   } else if (harness === "hermes_local") {
     env.OPENAI_BASE_URL = baseUrl;
     env.OPENAI_API_KEY = credential;

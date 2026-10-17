@@ -1,4 +1,4 @@
-import { validateAiApiKey } from "../services/ai-api-key-test.js";
+import { discoverAiGateway, validateAiApiKey } from "../services/ai-api-key-test.js";
 export { validateAiApiKey } from "../services/ai-api-key-test.js";
 import { supportsLocalAiLogin } from "../services/local-ai-login-policy.js";
 import { localAiLoginService } from "../services/local-ai-login.js";
@@ -25,6 +25,7 @@ import {
   type AiConnectionBinding,
   type AiConnectionList,
   aiConnectionPoolConfigSchema,
+  aiProviderRoutingSchema,
 } from "@paperclipai/shared";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { forbidden, notFound, unprocessable } from "../errors.js";
@@ -284,6 +285,33 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
             ),
           ),
       );
+    },
+  );
+  router.post(
+    "/companies/:companyId/ai-connections/custom/discover",
+    validate(z.object({
+      baseUrl: z.string().trim().min(1).max(2048),
+      auth: z.enum(["bearer", "api_key", "none"]).default("bearer"),
+      apiKey: z.string().max(32768).optional(),
+    }).strict()),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertBoard(req);
+      assertCompanyAccess(req, companyId);
+      const input = req.body as { baseUrl: string; auth: "bearer" | "api_key" | "none"; apiKey?: string };
+      const routingResult = aiProviderRoutingSchema.safeParse({
+        kind: "gateway",
+        protocol: "responses",
+        auth: input.auth,
+        baseUrl: input.baseUrl,
+        models: [],
+      });
+      if (!routingResult.success)
+        throw unprocessable("Base URL is invalid.", { code: "ai_connection_base_url_invalid" });
+      const routing = routingResult.data;
+      if (routing.auth !== "none" && !input.apiKey?.trim()) throw unprocessable("Enter an API key before discovering models.", { code: "ai_connection_api_key_rejected" });
+      res.setHeader("Cache-Control", "no-store");
+      res.json(await discoverAiGateway(input.apiKey?.trim() ?? "", routing, fetch));
     },
   );
   router.post(

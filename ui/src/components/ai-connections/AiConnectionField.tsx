@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   aiConnectionBindingSchema,
@@ -12,6 +12,7 @@ import {
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { AiConnectionSelect } from "./AiConnectionSelect";
 import { AiProviderSetup } from "./AiProviderSetup";
+import type { CustomEndpointDraft } from "../new-agent/AgentBasicsDialog";
 import { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
 import { AiConnectionLegacyNotice } from "./AiConnectionManagement";
 import { Button } from "@/components/ui/button";
@@ -52,6 +53,7 @@ export function AiConnectionField({
   readOnly = false,
   preferAdvanced = false,
   routerAdapterType,
+  customEndpointDraft,
 }: {
   companyId: string;
   agentId?: string;
@@ -65,6 +67,7 @@ export function AiConnectionField({
   readOnly?: boolean;
   preferAdvanced?: boolean;
   routerAdapterType?: string;
+  customEndpointDraft?: CustomEndpointDraft;
 }) {
   const provider = aiProviderForAdapter(adapterType);
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -76,6 +79,7 @@ export function AiConnectionField({
   const [reconnecting, setReconnecting] = useState<AiManagedConnectionSummary>();
   const [allAgents, setAllAgents] = useState(true);
   const [savedAccount, setSavedAccount] = useState<{ connectionId: string; grantId: string; method: AiAuthMethod }>();
+  const autoOpenedCustom = useRef(false);
   const changeBinding = (next: AiRuntimeConnectionBinding) => {
     if (legacy && !value) { if (!connecting) returnFocus.current = document.activeElement as HTMLElement; setPendingAdoption(next); }
     else onChange(next);
@@ -109,6 +113,12 @@ export function AiConnectionField({
     selectDefault.reset();
     setConnecting(true);
   };
+  useEffect(() => {
+    if (customEndpointDraft && !autoOpenedCustom.current) {
+      autoOpenedCustom.current = true;
+      openConnection();
+    }
+  }, [customEndpointDraft, connecting]);
   const method: AiAuthMethod = (value && value.mode !== "router" && value.mode !== "responsible_user" ? value.method : undefined)
     ?? accounts.data?.connections.find((account) => account.provider === provider && account.isDefault)?.method
     ?? (provider === "openrouter" || provider === "google" ? "api_key" : "subscription");
@@ -213,7 +223,9 @@ export function AiConnectionField({
             companyId={companyId} agentId={agentId} environmentId={environmentId}
             advancedOnly={preferAdvanced}
             initialProtocol={adapterType === "claude_local" ? "messages" : adapterType === "codex_local" ? "responses" : "chat"}
-            onCancel={() => preferAdvanced ? setConnecting(false) : setAdvancedSetup(false)}
+             onCancel={() => preferAdvanced ? setConnecting(false) : setAdvancedSetup(false)}
+             customEndpointDraft={customEndpointDraft}
+             initialProvider={customEndpointDraft ? "gateway" : undefined}
             onComplete={binding => {
               void client.invalidateQueries({ queryKey: ["ai-connections", companyId] });
               setConnecting(false);

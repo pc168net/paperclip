@@ -65,6 +65,7 @@ import {
 import { stepMotion } from "../onboarding/onboarding-motion";
 import { RuntimeTestCard, type TestState } from "../RuntimeTestCard";
 import { AgentBasicsDialog, AdapterMark } from "./AgentBasicsDialog";
+import type { CustomEndpointDraft } from "./AgentBasicsDialog";
 import {
   AgentProviderConnection,
   type ProviderConnection,
@@ -76,9 +77,35 @@ const blocking = (result: AdapterEnvironmentTestResult) =>
   result.status === "fail" ||
   result.checks.some((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE);
 
+function customEndpointFailure(cause: unknown): string {
+  const message = cause instanceof Error ? cause.message.toLowerCase() : "";
+  if (message.includes("timeout") || message.includes("timed out")) return "Endpoint timeout";
+  if (message.includes("401") || message.includes("403") || message.includes("auth")) return "API key rejected by runtime";
+  if (message.includes("unsupported") || message.includes("compatib")) return "Runtime does not support this protocol";
+  if (message.includes("model") || message.includes("deployment")) return "Model/deployment rejected";
+  if (message.includes("config")) return "Codex/OpenCode configuration error";
+  return "Custom endpoint model request failed";
+}
+
+function customEndpointCheckFailure(result: AdapterEnvironmentTestResult): string | undefined {
+  const check = result.checks.find((item) => item.level === "error");
+  if (!check) return undefined;
+  const code = check.code.toLowerCase();
+  if (code.includes("timed_out") || code.includes("timeout")) return "Endpoint timeout";
+  if (code.includes("auth") || code.includes("api_key")) return "API key rejected by runtime";
+  if (code.includes("unsupported") || code.includes("compatib")) return "Runtime does not support this protocol";
+  if (code.includes("model") || code.includes("deployment")) return "Model/deployment rejected";
+  if (code.includes("config")) return "Codex/OpenCode configuration error";
+  return "Custom endpoint model request failed";
+}
+
 export function NewAgentSetup() {
   const { selectedCompanyId } = useCompany();
   const [params] = useSearchParams();
+  const routerState = typeof window !== "undefined"
+    ? (window.history.state as { usr?: { customEndpointDraft?: CustomEndpointDraft } } | null)?.usr
+    : undefined;
+  const customEndpointDraft = routerState?.customEndpointDraft;
   if (!selectedCompanyId)
     return (
       <p className="text-sm text-muted-foreground">
@@ -87,13 +114,15 @@ export function NewAgentSetup() {
     );
   return (
     <Setup
-      key={`${selectedCompanyId}:${params.get("name")}:${params.get("adapterType")}:${params.get("runnerProvider")}:${params.get("runner")}`}
+      key={`${selectedCompanyId}:${params.get("name")}:${params.get("adapterType")}:${params.get("runnerProvider")}:${params.get("runner")}:${params.get("customEndpoint")}`}
       companyId={selectedCompanyId}
       name={params.get("name") ?? ""}
       adapterType={params.get("adapterType") === "paperclip_runner" && (params.get("runnerProvider") ?? "codex") === "codex" ? "codex_local" : params.get("adapterType") ?? ""}
       initialRunner={params.get("runner") ?? (params.get("adapterType") === "paperclip_runner" && (params.get("runnerProvider") ?? "codex") === "codex" ? "paperclip" : "auto")}
       preserveNativeCodex={params.get("adapterType") === "paperclip_runner" && (params.get("runnerProvider") ?? "codex") === "codex"}
       runnerProvider={params.get("runnerProvider") ?? "codex"}
+      customEndpoint={params.get("customEndpoint") === "true"}
+      customEndpointDraft={customEndpointDraft}
       createdAgentId={params.get("createdAgentId")}
     />
   );
@@ -104,6 +133,8 @@ function Setup({
   name,
   adapterType,
   runnerProvider,
+  customEndpoint,
+  customEndpointDraft,
   initialRunner,
   preserveNativeCodex,
   createdAgentId,
@@ -112,6 +143,8 @@ function Setup({
   name: string;
   adapterType: string;
   runnerProvider: string;
+  customEndpoint: boolean;
+  customEndpointDraft?: CustomEndpointDraft;
   initialRunner: string;
   preserveNativeCodex: boolean;
   createdAgentId: string | null;
@@ -491,9 +524,7 @@ function Setup({
       );
     } catch (cause) {
       if (run === generation.current) {
-        setError(
-          cause instanceof Error ? cause.message : "Could not test the agent.",
-        );
+        setError(customEndpoint ? customEndpointFailure(cause) : cause instanceof Error ? cause.message : "Could not test the agent.");
         setTestState("fail");
       }
       return false;
@@ -622,11 +653,13 @@ function Setup({
         open
         initialAdapter={adapterType}
         onClose={() => navigate("/agents/all")}
-        onContinue={(basics) =>
-          navigate(`/agents/new?${new URLSearchParams(basics)}`, {
-            replace: true,
-          })
-        }
+          onContinue={(basics) => {
+            const { customEndpointDraft, ...params } = basics;
+            navigate(`/agents/new?${new URLSearchParams(params)}`, {
+              replace: true,
+              state: { customEndpointDraft },
+            });
+          }}
       />
     );
   const steps = [
@@ -761,8 +794,8 @@ function Setup({
                         center
                       />
                     </div>
-                    {ready ? <AgentProviderConnection
-                      key={environmentId ?? "local"}
+                     {ready ? <AgentProviderConnection
+                       key={environmentId ?? "local"}
                       companyId={companyId}
                       adapterType={connectionAdapter}
                       environmentId={environmentId}
@@ -779,6 +812,7 @@ function Setup({
                             environmentId={environmentId ?? undefined}
                             value={aiBinding}
                             preferAdvanced
+                            customEndpointDraft={customEndpointDraft}
                             onChange={binding => {
                               if (binding.mode === "router") return;
                               setConnection(null);
@@ -794,20 +828,23 @@ function Setup({
                         setRuntimeAiBinding(undefined);
                         resetTest();
                       }}
-                      testConnection={runTest}
-                      testError={
-                        error ??
-                        (
-                          result?.checks.find(
-                            (check) => check.level === "error",
-                          ) ??
-                          result?.checks.find(
-                            (check) =>
-                              check.code.includes("hello_probe") &&
-                              check.level === "warn",
-                          )
-                        )?.message
-                      }
+                       testConnection={runTest}
+                       initialAdvanced={customEndpoint}
+                       testError={
+                         error ??
+                         (customEndpoint
+                           ? (result ? customEndpointCheckFailure(result) : undefined)
+                           : (
+                             result?.checks.find(
+                               (check) => check.level === "error",
+                             ) ??
+                             result?.checks.find(
+                               (check) =>
+                                 check.code.includes("hello_probe") &&
+                                 check.level === "warn",
+                             )
+                           )?.message)
+                       }
                       onConnected={(next) => {
                         setConnection(next);
                         setRuntimeAiBinding(undefined);
@@ -891,9 +928,11 @@ function Setup({
                           <ToggleField label="Allow externally billed provider" hint="Dot does not report token usage or cost. Paperclip cannot enforce a provider spend ceiling; known company and agent budget limits still apply."
                             checked={allowUnmeteredProvider} onChange={value => { setAllowUnmeteredProvider(value); resetTest(); }} />
                         </>}
-                        {!connectionAdapter && aiProviderForAdapter(brandType) && (
-                          <AiConnectionField companyId={companyId} agentName={name} adapterType={brandType} model={model} environmentId={environmentId ?? undefined} value={aiBinding}
-                            onChange={binding => { binding.mode !== "router" && setRuntimeAiBinding(binding); resetTest(); }} />
+                         {!connectionAdapter && aiProviderForAdapter(brandType) && (
+                           <AiConnectionField companyId={companyId} agentName={name} adapterType={brandType} model={model} environmentId={environmentId ?? undefined} value={aiBinding}
+                             preferAdvanced={Boolean(customEndpointDraft)}
+                             customEndpointDraft={customEndpointDraft}
+                             onChange={binding => { binding.mode !== "router" && setRuntimeAiBinding(binding); resetTest(); }} />
                         )}
                         {(connectionModels ? connectionModels.error : models.error) && <p role="alert" className="text-sm text-destructive">Could not load models. Retry or enter a model ID manually.</p>}
                         {((showModel && !usingKimiApi) ||
