@@ -49,6 +49,8 @@ export interface HeartbeatEnvironmentSelectionInput {
     boundSourceWorkspace: ExecutionWorkspace | null;
     hasSelectedWorkspaceSource: boolean;
     taskWorkspaceIntent: Issue["workspaceSelection"];
+    workspacePendingSelection?: Issue["workspacePendingSelection"];
+    predecessorExecutionWorkspaceId?: string | null;
     responsibleUserId: string | null;
   };
   policy: {
@@ -86,6 +88,12 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   } = input.policy;
   const { config, sourceWorkspaceConfig, issueAssigneeOverrides } = input.config;
   const { executionWorkspacesSvc, environmentsSvc, instanceSettings, findSharedWorkspaceHolder, findExecutionWorkspaceHolder } = input.services;
+  if (issueId && input.task.workspacePendingSelection) {
+    throw new ConfigurationIncompleteFailure(
+      `Task ${issueId} cannot start because Workspace selection is still pending. Apply the pending Workspace selection from the Board, or cancel and correct it before starting this task.`,
+      { configurationIncomplete: { reason: "workspace_selection_pending", issueId, pendingRequestKey: input.task.workspacePendingSelection.requestKey } },
+    );
+  }
   // A native run's execution input is immutable once persisted. Recovery must therefore
   // restore the workspace bound to that input rather than consulting the issue's current
   // workspace pointer: a newer run may already have moved or cleared the issue binding while
@@ -128,6 +136,26 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     workspaceReuseRequest.existingExecutionWorkspaceAvailable
       ? existingExecutionWorkspace
       : null;
+  // Native projectless recovery envelopes use the run id as an immutable
+  // binding sentinel; it is not a user-selected execution workspace.
+  if (!isDotRun && requestedExecutionWorkspaceId && !existingExecutionWorkspace && !persistedNativeExecutionInput) {
+    throw new ConfigurationIncompleteFailure(
+      `Task ${issueId ?? "unknown"} cannot start: Workspace ${requestedExecutionWorkspaceId} does not exist or is not available in this company. Apply a valid Workspace selection on the Board and retry.`,
+      { configurationIncomplete: { reason: "execution_workspace_missing", issueId, executionWorkspaceId: requestedExecutionWorkspaceId } },
+    );
+  }
+  if (!isDotRun && existingExecutionWorkspace && !existingExecutionWorkspace.cwd && !existingExecutionWorkspace.repoUrl && !existingExecutionWorkspace.providerRef) {
+    throw new ConfigurationIncompleteFailure(
+      `Task ${issueId ?? "unknown"} cannot start in Workspace ${existingExecutionWorkspace.id}: the Workspace has no readable source or provider location. Apply a non-empty Workspace selection (or configure its repository/path) on the Board, then retry.`,
+      { configurationIncomplete: { reason: "execution_workspace_empty", issueId, executionWorkspaceId: existingExecutionWorkspace.id } },
+    );
+  }
+  if (!isDotRun && existingExecutionWorkspace && input.task.predecessorExecutionWorkspaceId && existingExecutionWorkspace.id !== input.task.predecessorExecutionWorkspaceId) {
+    throw new ConfigurationIncompleteFailure(
+      `Task ${issueId ?? "unknown"} cannot start: its predecessor uses Workspace ${input.task.predecessorExecutionWorkspaceId}, but this task selected Workspace ${existingExecutionWorkspace.id}. Apply the predecessor's Workspace to this task, or explicitly reassign both tasks to the same Workspace.`,
+      { configurationIncomplete: { reason: "predecessor_workspace_mismatch", issueId, executionWorkspaceId: existingExecutionWorkspace.id, predecessorExecutionWorkspaceId: input.task.predecessorExecutionWorkspaceId } },
+    );
+  }
   const workspaceAuthorizationActor = { type: "agent" as const, agentId: agent.id, companyId: agent.companyId,
     source: "agent_jwt" as const, runId: run.id, onBehalfOfUserId: responsibleUserId === "local-board" ? null : responsibleUserId };
   if (!isDotRun && !persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {

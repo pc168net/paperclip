@@ -239,7 +239,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   const { identityRedactor, appendIdentityRedactedLog, onLog, onAdapterEvent, onAdapterMeta } = input.output;
   const { executionWorkspacesSvc, instanceSettings, envOrchestrator, upsertTaskSession, getRun, cancelRunInternal, enqueueWakeup, persistRunProcessMetadata, recordCurrentHeartbeatRunRuntimeProgress, dispatchPendingNativeStatusWakeups } = input.services;
   const localAgentJwtScope =
-    issueRef?.workMode === "skill_test"
+    issueRef && issueContext?.harnessKind === "skill_test"
       ? { kind: "skill_test" as const, issueId: issueRef.id }
       : { kind: "standard" as const };
   const authToken =

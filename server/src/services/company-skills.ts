@@ -6789,7 +6789,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         description: string;
         assigneeAgentId: string;
         harnessKind: "skill_test";
-        workMode: "skill_test";
+        workMode: "standard";
         status: "todo";
         originKind: "skill_test";
         originId: string;
@@ -6850,7 +6850,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       description: harnessIssueDescription,
       assigneeAgentId: agent.id,
       harnessKind: "skill_test",
-      workMode: "skill_test",
+      workMode: "standard",
       status: "todo",
       originKind: "skill_test",
       originId: runId,

@@ -541,11 +541,29 @@ const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
+export const PROVIDER_RATE_LIMIT_BACKOFF_MS = [5 * 60 * 1000, 15 * 60 * 1000] as const;
 
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
   /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
+
+export type ProviderErrorCategory = "rate_limit" | "authentication" | "model_not_found" | "permission_denied" | "malformed_request" | "other";
+
+/** Classify provider failures without allowing retryable text to swallow auth/config errors. */
+export function classifyProviderError(input: unknown): ProviderErrorCategory {
+  const record = input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
+  const status = Number(record.status ?? record.statusCode ?? record.httpStatus ?? 0);
+  const code = String(record.code ?? record.errorCode ?? record.type ?? "");
+  const message = String(record.message ?? record.error ?? record.body ?? input ?? "");
+  const text = `${code}\n${message}`;
+  if (status === 401 || /invalid[_ -]?api[_ -]?key|unauthorized|authentication failed|invalid credential/i.test(text)) return "authentication";
+  if (status === 403 || /permission denied|forbidden|access denied/i.test(text)) return "permission_denied";
+  if (/deploymentnotfound|deployment not found|model[_ -]?not[_ -]?found|does not exist/i.test(text)) return "model_not_found";
+  if (status === 400 || /malformed request|invalid request|bad request/i.test(text)) return "malformed_request";
+  if (status === 429 || /ratelimitexceeded|rate[_ -]?limit|too many requests|\b(?:tpm|rpm)\b.{0,30}(?:exceed|limit)|(?:exceed|limit).{0,30}\b(?:tpm|rpm)\b/i.test(text)) return "rate_limit";
+  return "other";
+}
 
 export type AdapterFailureRecoveryClassification =
   | { kind: "provider_quota"; retryAt: Date; parsedResetTime: boolean }
@@ -654,6 +672,16 @@ export function classifyAdapterFailureForRecovery(
     latestRun.error ?? "",
     JSON.stringify(resultJson),
   ].join("\n");
+  const providerCategory = classifyProviderError({
+    code: latestRun.errorCode,
+    message: error,
+    status: resultJson.httpStatus ?? resultJson.status,
+  });
+  if (providerCategory === "rate_limit") {
+    const retryCount = Math.max(0, Math.floor(Number(resultJson.rateLimitRetryCount ?? 0)));
+    const delay = PROVIDER_RATE_LIMIT_BACKOFF_MS[Math.min(retryCount, PROVIDER_RATE_LIMIT_BACKOFF_MS.length - 1)];
+    return { kind: "provider_quota", retryAt: new Date(now.getTime() + delay), parsedResetTime: false };
+  }
   if (
     latestRun.errorCode === "configuration_incomplete" ||
     CONFIGURATION_INCOMPLETE_ERROR_RE.test(error)

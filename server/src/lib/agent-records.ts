@@ -93,6 +93,7 @@ export interface CreateAgentOptions {
   aiConnectionInstall?: { connectionId: string; memberConnectionIds?: string[]; createdByUserId: string | null };
   allowBuiltInAgentMetadata?: boolean;
   claudeLogin?: ClaudeLoginContext;
+  allowDuplicate?: boolean;
 }
 
 interface AgentShortnameRow {

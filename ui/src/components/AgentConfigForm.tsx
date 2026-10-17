@@ -1283,6 +1283,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     ? val!.model ?? ""
     : eff("adapterConfig", "model", String(config.model ?? ""));
   const currentModelId = typeof currentModelValue === "string" ? currentModelValue : "";
+  const configuredFallback = effectiveConfig.fallbackModel && typeof effectiveConfig.fallbackModel === "object"
+    ? effectiveConfig.fallbackModel as Record<string, unknown> : {};
+  const fallbackProvider = typeof configuredFallback.provider === "string" ? configuredFallback.provider : "";
+  const fallbackModel = typeof configuredFallback.model === "string" ? configuredFallback.model : "";
 
   async function handleRefreshModels() {
     if (!selectedCompanyId) return;
@@ -1821,6 +1825,29 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       ? modelError.message
                       : "Failed to load adapter models.")}
                 </p>
+              )}
+              {adapterType === "paperclip_runner" && !isCreate && (
+                <Field
+                  label="Rate-limit fallback model (optional)"
+                  hint="Used only for classified provider rate limits; Paperclip never guesses a fallback."
+                >
+                  <div className="grid grid-cols-2 gap-2">
+                    <DraftInput
+                      value={fallbackProvider}
+                      onCommit={(value) => mark("adapterConfig", "fallbackModel", value.trim() || fallbackModel ? { provider: value.trim(), model: fallbackModel } : undefined)}
+                      placeholder="Provider"
+                      aria-label="Fallback provider"
+                      className="rounded-md border border-border bg-transparent px-2 py-1.5 text-sm outline-none"
+                    />
+                    <DraftInput
+                      value={fallbackModel}
+                      onCommit={(value) => mark("adapterConfig", "fallbackModel", fallbackProvider || value.trim() ? { provider: fallbackProvider, model: value.trim() } : undefined)}
+                      placeholder="Exact model ID"
+                      aria-label="Fallback model"
+                      className="rounded-md border border-border bg-transparent px-2 py-1.5 text-sm outline-none"
+                    />
+                  </div>
+                </Field>
               )}
               {adapterType === "opencode_local"
                 && !connectionModels

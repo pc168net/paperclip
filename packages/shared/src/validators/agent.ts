@@ -116,6 +116,9 @@ export const createAgentSchema = z.object({
   // instruction file instead of the generic default, and honors it only for
   // board-authored requests. Mirrors onboardingFirstTask on issue create.
   onboardingFirstAgent: z.boolean().optional(),
+  // Duplicate names/roles are rejected by the company-scoped hire guard unless
+  // the operator explicitly confirms that a distinct agent is intended.
+  allowDuplicate: z.boolean().optional(),
 });
 
 export type CreateAgent = z.infer<typeof createAgentSchema>;

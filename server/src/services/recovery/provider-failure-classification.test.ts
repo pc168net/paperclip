@@ -3,6 +3,8 @@ import { isAiAuthenticationBlocked } from "../ai-auth-failure.js";
 import { describe, expect, it } from "vitest";
 import {
   PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS,
+  PROVIDER_RATE_LIMIT_BACKOFF_MS,
+  classifyProviderError,
   classifyAdapterFailureForRecovery,
   classifyContinuationFailure,
 } from "./service.js";
@@ -10,6 +12,30 @@ import { legacyExecutionNeedsReconciliation } from "../legacy-execution-recovery
 import { isConfigurationIncompleteFailedRun } from "../../modules/wake-queue/domain/values.js";
 
 describe("classifyAdapterFailureForRecovery", () => {
+  it.each([
+    [{ status: 429, message: "Too many requests" }, "rate_limit"],
+    [{ code: "rateLimitExceeded", message: "TPM exceeded" }, "rate_limit"],
+    [{ message: "RPM limit exceeded" }, "rate_limit"],
+  ] as const)("classifies provider rate limits (%j)", (error, category) => {
+    expect(classifyProviderError(error)).toBe(category);
+  });
+
+  it.each([
+    [{ status: 401, message: "invalid api key" }, "authentication"],
+    [{ code: "DeploymentNotFound", message: "deployment not found" }, "model_not_found"],
+    [{ status: 403, message: "permission denied" }, "permission_denied"],
+    [{ status: 400, message: "malformed request" }, "malformed_request"],
+  ] as const)("does not classify non-rate-limit provider failures as retryable (%j)", (error, category) => {
+    expect(classifyProviderError(error)).toBe(category);
+  });
+
+  it("uses bounded five/fifteen minute rate-limit backoff", () => {
+    const now = new Date("2026-07-15T20:00:00.000Z");
+    expect(classifyAdapterFailureForRecovery({ errorCode: "adapter_failed", error: "HTTP 429 rateLimitExceeded", resultJson: { httpStatus: 429, rateLimitRetryCount: 0 } }, now))
+      .toEqual({ kind: "provider_quota", retryAt: new Date(now.getTime() + PROVIDER_RATE_LIMIT_BACKOFF_MS[0]), parsedResetTime: false });
+    expect(classifyAdapterFailureForRecovery({ errorCode: "adapter_failed", error: "TPM exceeded", resultJson: { rateLimitRetryCount: 1 } }, now))
+      .toEqual({ kind: "provider_quota", retryAt: new Date(now.getTime() + PROVIDER_RATE_LIMIT_BACKOFF_MS[1]), parsedResetTime: false });
+  });
   it("waits for model configuration changes instead of retrying a typed native model rejection", () => {
     const run = { errorCode: "native_provider_model_rejected", error: "Fixed model configuration message", resultJson: null };
     expect(classifyAdapterFailureForRecovery(run)).toEqual({ kind: "configuration_incomplete" });

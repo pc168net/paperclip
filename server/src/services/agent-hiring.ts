@@ -1,7 +1,7 @@
 import { agentAppearanceSchema, randomAgentAppearance } from "@paperclipai/shared";
 import { normalizePaperclipRunnerAdapterConfig } from "@paperclipai/adapter-utils/server-utils";
 import { agents, toolConnectionInstalls, principalPermissionGrants, type Db } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { unprocessable } from "../errors.js";
 import { agentRecordQueries, isPlainRecord, configPatchFromApprovalPayload, normalizeRuntimeConfigForNewAgent,
   deduplicateAgentName, type CreateAgentData, type CreateAgentOptions, type AgentConfigurationPatch, type AgentHireRecord } from "../lib/agent-records.js";
@@ -15,7 +15,7 @@ import { initializePrimaryAgent } from "./primary-agent.js";
 import { resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
 
 export async function prepareAgentHire(db: Db, companyId: string, input: CreateAgentData, options?: CreateAgentOptions): Promise<CreateAgentData> {
-  const { runner, ...data } = input;
+  const { runner, allowDuplicate, ...data } = input as CreateAgentData & { allowDuplicate?: boolean };
   const selection = options?.runnerResolved
     ? { adapterType: data.adapterType ?? "process", adapterConfig: isPlainRecord(data.adapterConfig) ? data.adapterConfig : {} }
     : await resolveNewAgentRunnerForCompany(db, companyId, {
@@ -24,6 +24,11 @@ export async function prepareAgentHire(db: Db, companyId: string, input: CreateA
   data.adapterType = selection.adapterType;
   data.adapterConfig = selection.adapterConfig;
   const { ensureManager, assertBuiltInAgentMetadataMutationAllowed } = agentRecordQueries(db);
+  // Agent name/role validation and the following insert run in the same
+  // lifecycle transaction. Serialize hires for one company so two concurrent
+  // requests cannot both pass the duplicate guard (explicit allowDuplicate
+  // remains the only escape hatch).
+  await db.execute(sql`select pg_advisory_xact_lock(hashtext(${companyId}))`);
   if (data.appearance?.customAvatarAssetId) throw unprocessable("Create the agent before uploading its avatar");
   assertBuiltInAgentMetadataMutationAllowed(null, data.metadata, options);
   if (data.reportsTo) {
@@ -34,9 +39,24 @@ export async function prepareAgentHire(db: Db, companyId: string, input: CreateA
     .select({ id: agents.id, name: agents.name, status: agents.status })
     .from(agents)
     .where(eq(agents.companyId, companyId));
-  const uniqueName = deduplicateAgentName(data.name, existingAgents);
-
+  const normalizedName = data.name.trim().toLocaleLowerCase();
+  const duplicateName = existingAgents.find((agent) => agent.name.trim().toLocaleLowerCase() === normalizedName);
+  const existingRoles = await db
+    .select({ id: agents.id, role: agents.role, name: agents.name })
+    .from(agents)
+    .where(eq(agents.companyId, companyId));
   const role = data.role ?? "general";
+  const duplicateRole = existingRoles.find((agent) => agent.role?.trim().toLocaleLowerCase() === role.trim().toLocaleLowerCase());
+  const duplicateAllowed = options?.allowDuplicate === true || allowDuplicate === true || options?.allowBuiltInAgentMetadata === true;
+  if (!duplicateAllowed && (duplicateName || duplicateRole)) {
+    const reason = duplicateName
+      ? `name "${data.name}" already exists`
+      : `role "${role}" is already assigned to ${duplicateRole?.name ?? "another agent"}`;
+    throw unprocessable(`Cannot create agent in this company: ${reason}. Use a distinct name/role, or explicitly confirm allowDuplicate=true for a separate agent.`);
+  }
+  // Keep the legacy suffixing behavior only for explicit duplicate creates.
+  const uniqueName = duplicateAllowed ? deduplicateAgentName(data.name, existingAgents) : data.name;
+
   const normalizedPermissions = normalizeAgentPermissions(data.permissions, { context: "create" });
   const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
   const adapterType = data.adapterType ?? "process";

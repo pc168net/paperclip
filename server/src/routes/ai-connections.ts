@@ -303,9 +303,8 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
           "Use the existing provider sign-in flow to connect a subscription",
         );
       const attemptStartedAt = new Date();
-      // Custom destinations are exercised in the selected execution environment,
-      // never fetched by the control plane (including localhost/private URLs).
-      if (!input.routing || input.routing.kind === "openrouter") await validateAiApiKey(input.provider, input.apiKey!);
+      // Validate official providers and OpenAI-compatible gateway destinations.
+      if (!input.routing || input.routing.kind === "openrouter" || input.routing.kind === "gateway") await validateAiApiKey(input.provider, input.apiKey!, fetch, input.routing);
       const result = await service.save(
         companyId,
         userId,

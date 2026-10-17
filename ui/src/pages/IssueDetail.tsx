@@ -45,6 +45,7 @@ import {
 import {
   useInfiniteQuery,
   useQuery,
+  useQueries,
   useMutation,
   useQueryClient,
   type InfiniteData,
@@ -55,7 +56,7 @@ import {
   useSharedPollingQuery,
 } from "@/hooks/useSharedPolling";
 import { ApiError } from "../api/client";
-import { issuesApi } from "../api/issues";
+import { issuesApi, type DependencyReplacementCandidate } from "../api/issues";
 import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
@@ -3540,6 +3541,26 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const canManageTreeControl = Boolean(
     selectedCompanyId && boardAccess?.companyIds?.includes(selectedCompanyId),
   );
+  const cancelledBlockers = useMemo(
+    () => (issue?.blockedBy ?? []).filter((blocker) => blocker.status === "cancelled"),
+    [issue?.blockedBy],
+  );
+  const replacementCandidateQueries = useQueries({
+    queries: cancelledBlockers.map((blocker) => ({
+      queryKey: ["issues", "dependency-replacement-candidates", issue?.id ?? "pending", blocker.id],
+      queryFn: () => issuesApi.dependencyReplacementCandidates(issue!.id, blocker.id),
+      enabled: Boolean(issue?.id && canManageTreeControl),
+      staleTime: 15_000,
+      retry: false,
+    })),
+  });
+  const replacementCandidatesByBlocker = useMemo(() => {
+    const result = new Map<string, DependencyReplacementCandidate[]>();
+    cancelledBlockers.forEach((blocker, index) => {
+      result.set(blocker.id, replacementCandidateQueries[index]?.data?.candidates ?? []);
+    });
+    return result;
+  }, [cancelledBlockers, replacementCandidateQueries]);
   const canResolveBoardRecoveryAction = canBoardResolveRecoveryAction(
     selectedCompanyId,
     boardAccess,
@@ -4310,6 +4331,21 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         });
       }
     },
+  });
+  const replaceDependency = useMutation({
+    mutationFn: (data: { cancelledBlockerId: string; replacementIssueId: string }) =>
+      issuesApi.replaceDependency(issueId!, data),
+    onSuccess: ({ issue: nextIssue }) => {
+      mergeIssueResponseIntoCaches(new Set([issueId!, nextIssue.id, nextIssue.identifier ?? ""]), nextIssue);
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+      invalidateIssueCollections();
+    },
+    onError: (error) => pushToast({
+      title: "Replacement failed",
+      body: error instanceof Error ? error.message : "Unable to replace the cancelled blocker",
+      tone: "error",
+    }),
   });
   const resolveRecoveryAction = useMutation({
     mutationFn: (data: {
@@ -7690,11 +7726,65 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     </>
   );
 
+  const cancelledDependencyBlock = cancelledBlockers.length > 0 ? (
+    <section
+      data-testid="cancelled-dependency-replacements"
+      className={cn("space-y-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3", shellSectionClass)}
+    >
+      <div>
+        <h3 className="text-sm font-medium">Cancelled blockers</h3>
+        <p className="text-xs text-muted-foreground">
+          Cancelled dependencies remain blocking until the Board selects a compatible replacement.
+        </p>
+      </div>
+      {cancelledBlockers.map((blocker) => {
+        const candidates = replacementCandidatesByBlocker.get(blocker.id) ?? [];
+        return (
+          <div key={blocker.id} className="space-y-2 rounded-md border border-border bg-background p-2">
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="font-mono">{blocker.identifier ?? blocker.id.slice(0, 8)}</span>
+              <span className="truncate">{blocker.title}</span>
+              <span className="text-muted-foreground">cancelled</span>
+            </div>
+            {canManageTreeControl ? (
+              candidates.length > 0 ? (
+                <select
+                  aria-label={`Replacement for ${blocker.identifier ?? blocker.title}`}
+                  className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+                  defaultValue=""
+                  disabled={replaceDependency.isPending}
+                  onChange={(event) => {
+                    const replacementIssueId = event.target.value;
+                    if (replacementIssueId) replaceDependency.mutate({ cancelledBlockerId: blocker.id, replacementIssueId });
+                  }}
+                >
+                  <option value="">Select a compatible replacement…</option>
+                  {candidates.map((candidate) => (
+                    <option key={candidate.id} value={candidate.id}>
+                      {candidate.identifier ?? candidate.id.slice(0, 8)} — {candidate.title} · {candidate.status} · {candidate.assigneeAgentId ?? candidate.assigneeUserId ?? "Unassigned"} · {candidate.workspace?.name ?? candidate.executionWorkspaceId ?? "No Workspace"}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  No compatible replacement is available. Create or move an active task into the same company, parent/project, and Workspace, then retry here.
+                </p>
+              )
+            ) : (
+              <p className="text-xs text-muted-foreground">A Board member must select the replacement.</p>
+            )}
+          </div>
+        );
+      })}
+    </section>
+  ) : null;
+
   const taskChatThreadHeader = taskChatShellEnabled ? (
     <>
       {ancestorsNav}
       {createdFromNote}
       {issueHeaderBlock}
+      {cancelledDependencyBlock}
       {pluginOutletsBlock}
     </>
   ) : undefined;
@@ -7780,6 +7870,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             )}
 
           {taskChatShellEnabled ? null : issueHeaderBlock}
+
+          {taskChatShellEnabled ? null : cancelledDependencyBlock}
 
           {taskChatShellEnabled ? null : pluginOutletsBlock}
 

@@ -423,6 +423,10 @@ const externalObjectSummariesSchema = z.object({
   issueIds: z.array(z.string().uuid()).max(1000),
 }).strict();
 const revokeIssueAccessGrantSchema = z.object({}).strict().default({});
+const dependencyReplacementSchema = z.object({
+  cancelledBlockerId: z.string().uuid(),
+  replacementIssueId: z.string().uuid(),
+}).strict();
 const createIssueAccessGrantSchema = z.object({
   subjectType: z.enum(["user", "agent"]),
   subjectId: z.string().trim().min(1),
@@ -15841,6 +15845,118 @@ export function issueRoutes(
         return;
       }
       res.json({ ...issueResponse, changes, comment });
+    },
+  );
+
+  // Replace only a cancelled dependency. This is intentionally explicit: a
+  // cancelled blocker is not treated as satisfied, and no incomplete work is
+  // silently removed from the dependency graph.
+  router.post(
+    "/issues/:id/dependency-replacements",
+    validate(dependencyReplacementSchema),
+    async (req, res) => {
+      const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+      if (!issue) return;
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
+      assertBoard(req);
+
+      const replacement = await svc.getById(req.body.replacementIssueId as string);
+      const cancelledBlocker = await svc.getById(req.body.cancelledBlockerId as string);
+      if (!replacement || replacement.companyId !== issue.companyId || !cancelledBlocker || cancelledBlocker.companyId !== issue.companyId) {
+        throw notFound("Dependency replacement issue not found");
+      }
+      if (cancelledBlocker.status !== "cancelled") {
+        throw unprocessable("Only a cancelled blocker can be replaced");
+      }
+      if (replacement.id === issue.id || replacement.status === "done" || replacement.status === "cancelled") {
+        throw unprocessable("Replacement must be an active, different issue");
+      }
+      if (replacement.parentId !== issue.parentId || replacement.projectId !== issue.projectId || replacement.executionWorkspaceId !== issue.executionWorkspaceId) {
+        throw unprocessable("Replacement must use the same parent, project, and Workspace as the blocked issue");
+      }
+
+      const relations = await svc.getRelationSummaries(issue.id);
+      const blockerIds = relations.blockedBy?.map((entry) => entry.id) ?? [];
+      if (!blockerIds.includes(cancelledBlocker.id)) {
+        throw unprocessable("The cancelled issue is not a blocker of this task");
+      }
+      const nextBlockerIds = [...new Set(blockerIds.map((id) => id === cancelledBlocker.id ? replacement.id : id))];
+      const actor = getActorInfo(req);
+      const updated = await db.transaction(async (tx) => {
+        const result = await svc.update(issue.id, {
+          status: "blocked",
+          blockedByIssueIds: nextBlockerIds,
+          actorAgentId: actor.agentId,
+          actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        }, tx);
+        if (!result) throw notFound("Issue not found");
+        await logActivity(tx as unknown as Db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "issue.dependency_replaced",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            cancelledBlockerId: cancelledBlocker.id,
+            replacementIssueId: replacement.id,
+            previousBlockerIds: blockerIds,
+            nextBlockerIds,
+          },
+        });
+        return result;
+      });
+      res.json({ issue: updated, cancelledBlockerId: cancelledBlocker.id, replacementIssueId: replacement.id });
+    },
+  );
+
+  router.get(
+    "/issues/:id/dependency-replacements/candidates",
+    async (req, res) => {
+      const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+      if (!issue) return;
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
+      // Candidate discovery is a board affordance. Agents must continue to use
+      // the normal dependency mutation contract, never this replacement UI API.
+      assertBoard(req);
+      const cancelledBlockerId = typeof req.query.cancelledBlockerId === "string"
+        ? req.query.cancelledBlockerId
+        : null;
+      const cancelledBlocker = cancelledBlockerId ? await svc.getById(cancelledBlockerId) : null;
+      if (!cancelledBlocker || cancelledBlocker.companyId !== issue.companyId || cancelledBlocker.status !== "cancelled") {
+        throw unprocessable("A cancelled blocker is required");
+      }
+      const candidates = await svc.list(issue.companyId, {
+        parentId: issue.parentId ?? undefined,
+        projectId: issue.projectId ?? undefined,
+        executionWorkspaceId: issue.executionWorkspaceId ?? undefined,
+        status: ["backlog", "todo", "in_progress", "in_review", "blocked"],
+        limit: 100,
+        sortField: "updated",
+        sortDir: "desc",
+      });
+      const workspaceIds = [...new Set(candidates.map((candidate) => candidate.executionWorkspaceId).filter((id): id is string => Boolean(id)))];
+      const workspaceRows = workspaceIds.length > 0
+        ? await db.select({ id: executionWorkspaces.id, name: executionWorkspaces.name })
+          .from(executionWorkspaces)
+          .where(and(eq(executionWorkspaces.companyId, issue.companyId), inArray(executionWorkspaces.id, workspaceIds)))
+        : [];
+      const workspaceById = new Map(workspaceRows.map((workspace) => [workspace.id, workspace]));
+      res.json({ candidates: candidates
+        .filter((candidate) => candidate.id !== issue.id && candidate.id !== cancelledBlocker.id)
+        .map((candidate) => ({
+          id: candidate.id,
+          identifier: candidate.identifier,
+          title: candidate.title,
+          status: candidate.status,
+          assigneeAgentId: candidate.assigneeAgentId,
+          assigneeUserId: candidate.assigneeUserId,
+          executionWorkspaceId: candidate.executionWorkspaceId,
+          workspace: candidate.executionWorkspaceId ? workspaceById.get(candidate.executionWorkspaceId) ?? null : null,
+        })) });
     },
   );
 

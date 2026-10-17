@@ -49,7 +49,7 @@ export const aiProviderRoutingSchema = z
       (route.baseUrl || route.auth !== "bearer")
     )
       invalid("OpenRouter uses its official endpoint and an API key.");
-    if (route.auth === "api_key" && route.protocol !== "messages")
+    if (route.auth === "api_key" && route.protocol !== "messages" && route.kind !== "gateway")
       invalid("API-key header authentication requires Anthropic Messages.");
     if (route.kind === "gateway" || route.kind === "local") {
       try {

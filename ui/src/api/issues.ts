@@ -83,6 +83,10 @@ export type ResolveRecoveryActionResponse = {
   recoveryAction: IssueRecoveryAction;
 };
 
+export type DependencyReplacementCandidate = Pick<Issue, "id" | "identifier" | "title" | "status" | "assigneeAgentId" | "assigneeUserId" | "executionWorkspaceId"> & {
+  workspace: Issue["currentExecutionWorkspace"];
+};
+
 export type IssueListFilters = {
   attention?: "blocked";
   status?: string;
@@ -278,6 +282,14 @@ export const issuesApi = {
         )
       : response;
   },
+  dependencyReplacementCandidates: (id: string, cancelledBlockerId: string) =>
+    api.get<{ candidates: DependencyReplacementCandidate[] }>(
+      `/issues/${id}/dependency-replacements/candidates?cancelledBlockerId=${encodeURIComponent(cancelledBlockerId)}`,
+    ),
+  replaceDependency: (id: string, data: { cancelledBlockerId: string; replacementIssueId: string }) =>
+    api.post<{ issue: Issue; cancelledBlockerId: string; replacementIssueId: string }>(
+      `/issues/${id}/dependency-replacements`, data,
+    ),
   decideStalledReview: (id: string, data: StalledReviewDecision) =>
     api.post<StalledReviewDecisionResponse>(
       `/issues/${id}/stalled-review-decision`,

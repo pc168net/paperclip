@@ -3135,11 +3135,16 @@ function RunDetailView({
 
         {/* snapshot property block */}
         <div className="rounded-md border border-border text-xs">
+          <PropRow label="Harness" value="skill_test" />
+          <PropRow label="Execution work mode" value="standard" />
           <PropRow label="Input" value={detail.inputId ? "saved input" : "ad-hoc paste"} />
           <PropRow label="Template" value={detail.templateName ?? "No template"} />
           <PropRow label="Skill version" value={`v${detail.skillVersion.revisionNumber}`} />
           <PropRow label="Created" value={relativeTime(detail.createdAt)} />
         </div>
+        <p className="text-xs text-muted-foreground">
+          Skill tests use the skill_test harness with standard execution. Work mode is fixed for this template and cannot be changed to skill_test.
+        </p>
 
         {showRunErrorCard(detail.status) && (
           <Card className="border-destructive/50">

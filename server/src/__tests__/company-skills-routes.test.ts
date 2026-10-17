@@ -1977,7 +1977,7 @@ describe("company skill mutation permissions", () => {
         description: "Try the skill",
         assigneeAgentId: "55555555-5555-4555-8555-555555555555",
         harnessKind: "skill_test",
-        workMode: "skill_test",
+        workMode: "standard",
         status: "todo",
         originKind: "skill_test",
         originId: "22222222-2222-4222-8222-222222222222",
@@ -2016,7 +2016,7 @@ describe("company skill mutation permissions", () => {
     expect(created.status, JSON.stringify(created.body)).toBe(201);
     expect(mockIssueService.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
       harnessKind: "skill_test",
-      workMode: "skill_test",
+      workMode: "standard",
       assigneeAgentId: "55555555-5555-4555-8555-555555555555",
       description: "Try the skill",
     }));

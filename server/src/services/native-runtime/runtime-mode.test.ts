@@ -393,6 +393,13 @@ describe("resolveNativeRuntimeMode", () => {
       .toThrow(NativeRuntimeEligibilityError);
   });
 
+  it("admits Skill Studio harness issues through standard Runner mode", () => {
+    expect(resolveNativeRuntimeMode({
+      ...eligible,
+      issue: { id: "skill-test-issue", workMode: "standard" },
+    })).toMatchObject({ kind: "native" });
+  });
+
   it("admits remote targets only through paperclip_runner", () => {
     expect(resolveNativeRuntimeMode({
       ...eligible,

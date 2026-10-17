@@ -29,6 +29,7 @@ import {
   type NativeStatusEffect,
 } from "./status-arbiter.js";
 import { nativeSha256 } from "./canonical.js";
+import { NATIVE_PROVIDER_OVERLOADED_MESSAGE } from "./native-provider-failure.js";
 import { getNativeReviewAssignment, type NativeReviewAssignmentContext } from "./native-review-participant.js";
 import {
   readNativeBoardResponseWaitSource,
@@ -774,6 +775,47 @@ async function materializeDecisionEffect(input: {
       )
       .returning({ id: issues.id });
     if (!bound) throw new Error("native_blocker_binding_not_persisted");
+    // Exhaustion is a board-visible incident, not another retry opportunity.
+    // Keep the action source-scoped and keyed by the committed decision so a
+    // replay of the same terminal decision cannot create duplicate notices.
+    if (effect.owner === "board" && /automatic retries exhausted/i.test(effect.action)) {
+      const [run] = await input.tx.select({
+        agentId: heartbeatRuns.agentId,
+        scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+        error: heartbeatRuns.error,
+        errorCode: heartbeatRuns.errorCode,
+        runnerProfileJson: heartbeatRuns.runnerProfileJson,
+      }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
+      )).limit(1);
+      const profile = record(run?.runnerProfileJson);
+      const nativeInput = record(profile.nativeExecutionInput);
+      const provider = record(nativeInput.provider);
+      await issueRecoveryActionService(input.tx).upsertSourceScoped({
+        companyId: input.companyId,
+        sourceIssueId: input.issue.id,
+        kind: "active_run_watchdog",
+        ownerType: "board",
+        ownerAgentId: null,
+        returnOwnerAgentId: run?.agentId ?? null,
+        cause: "native_provider_overloaded_exhausted",
+        fingerprint: nativeSha256({ runId: input.runId, decisionId: input.decisionId, cause: "native_provider_overloaded_exhausted" }),
+        evidence: {
+          runId: input.runId,
+          decisionId: input.decisionId,
+          agentId: run?.agentId ?? null,
+          issueId: input.issue.id,
+          provider: typeof provider.kind === "string" ? provider.kind : null,
+          model: typeof provider.model === "string" ? provider.model : null,
+          retryAttempts: run?.scheduledRetryAttempt ?? 0,
+          originalError: run?.error ?? run?.errorCode ?? NATIVE_PROVIDER_OVERLOADED_MESSAGE,
+        },
+        nextAction: "Choose a configured fallback provider/model or retry manually after confirming provider capacity. No further automatic retries will be scheduled.",
+        wakePolicy: null,
+        maxAttempts: 1,
+        supersedeOnIdentityChange: false,
+      });
+    }
     let wakeId: string | null = null;
     if (effect.owner !== "board") {
       wakeId = await enqueueWake({

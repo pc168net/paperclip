@@ -897,6 +897,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     run: typeof heartbeatRuns.$inferSelect;
     issueId: string | null;
     issueWorkMode?: string | null;
+    issueHarnessKind?: string | null;
     outcome: RunSessionOutcome;
     error: string | null;
   }) {
@@ -906,11 +907,10 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     );
     if (!completion || !input.issueId) return null;
 
-    let isSkillTestIssue = input.issueWorkMode === "skill_test";
-    if (!isSkillTestIssue && input.issueWorkMode === undefined) {
+    let isSkillTestIssue = input.issueWorkMode === "skill_test" || input.issueHarnessKind === "skill_test";
+    if (!isSkillTestIssue && input.issueWorkMode === undefined && input.issueHarnessKind === undefined) {
       const issueRow = await db
         .select({
-          workMode: issues.workMode,
           harnessKind: issues.harnessKind,
         })
         .from(issues)
@@ -921,9 +921,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
           ),
         )
         .then((rows) => rows[0] ?? null);
-      isSkillTestIssue =
-        issueRow?.workMode === "skill_test" ||
-        issueRow?.harnessKind === "skill_test";
+      isSkillTestIssue = issueRow?.harnessKind === "skill_test";
     }
     if (!isSkillTestIssue) return null;
 
@@ -2767,6 +2765,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             title: issues.title,
             description: issues.description,
             workMode: issues.workMode,
+            harnessKind: issues.harnessKind,
           })
           .from(issues)
           .where(

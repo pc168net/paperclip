@@ -1,7 +1,7 @@
 import { healthApi } from "@/api/health";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { useLocalAiLogin } from "../ai-connections/useLocalAiLogin";
-import type { AiConnectionBinding, AiConnectionLoginIntent } from "@paperclipai/shared";
+import type { AiConnectionBinding, AiConnectionLoginIntent, AiProviderRouting } from "@paperclipai/shared";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Cable } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -93,6 +93,11 @@ export function AgentProviderConnection({
   const [loginPhase, setLoginPhase] = useState<"preparing" | "ready" | "waiting" | "connecting">("preparing");
   const phaseBeforeSubmit = useRef<"ready" | "waiting">("ready");
   const [apiKey, setApiKey] = useState("");
+  const [customEnabled, setCustomEnabled] = useState(false);
+  const [customBaseUrl, setCustomBaseUrl] = useState("");
+  const [customProtocol, setCustomProtocol] = useState<"responses" | "chat">("responses");
+  const [customAuth, setCustomAuth] = useState<"bearer" | "api_key">("bearer");
+  const [customModels, setCustomModels] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [storedConnection, setStoredConnection] =
@@ -169,7 +174,15 @@ export function AgentProviderConnection({
       if (managedAccount && managedIntent) {
         if (method === "subscription" && !canUseLocalLogin) return;
         const result = savedManagedAccount.current ?? await (method === "api"
-          ? aiConnectionsApi.create(companyId, { ...managedIntent, method: "api_key", apiKey: apiKey.trim() })
+          ? aiConnectionsApi.create(companyId, { ...managedIntent, method: "api_key", apiKey: apiKey.trim(), ...(customEnabled ? {
+              routing: {
+                kind: "gateway",
+                protocol: customProtocol,
+                auth: customAuth,
+                baseUrl: customBaseUrl.trim(),
+                models: customModels.split(",").map(id => id.trim()).filter(Boolean).map(id => ({ id })),
+              } satisfies AiProviderRouting,
+            } : {}) })
           : localLogin.connect(managedIntent));
         savedManagedAccount.current = result;
         setApiKey("");
@@ -356,6 +369,20 @@ export function AgentProviderConnection({
                     onSubmit={() => void connect()}
                     disabled={busy}
                   />
+                )}
+                {aiProvider === "openai" && managedAccount && (
+                  <div className="mt-4 space-y-3">
+                    <label className="flex items-center gap-2 text-sm">
+                      <input type="checkbox" checked={customEnabled} onChange={(event) => setCustomEnabled(event.target.checked)} disabled={busy} />
+                      Use a custom Base URL (Azure OpenAI or LiteLLM)
+                    </label>
+                    {customEnabled && <>
+                      <OnboardingCardField label="Custom Base URL" value={customBaseUrl} onChange={setCustomBaseUrl} onSubmit={() => void connect()} disabled={busy} />
+                      <label className="block text-sm">API format<select className="mt-1 w-full rounded-md border bg-background p-2" value={customProtocol} onChange={(event) => setCustomProtocol(event.target.value as typeof customProtocol)} disabled={busy}><option value="responses">OpenAI Responses</option><option value="chat">Chat Completions</option></select></label>
+                      <label className="block text-sm">Authentication<select className="mt-1 w-full rounded-md border bg-background p-2" value={customAuth} onChange={(event) => setCustomAuth(event.target.value as typeof customAuth)} disabled={busy}><option value="bearer">Bearer token (LiteLLM/OpenAI-compatible)</option><option value="api_key">Azure API key</option></select></label>
+                      <OnboardingCardField label="Model / deployment IDs (comma separated)" value={customModels} onChange={setCustomModels} onSubmit={() => void connect()} disabled={busy} />
+                    </>}
+                  </div>
                 )}
               </OnboardingLoginCard>
             ) : needsLogin ? (

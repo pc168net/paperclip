@@ -179,11 +179,19 @@ describeEmbeddedPostgres("companySkillService skill test runs", () => {
     expect(run.harnessIssueDescription).toBe(`test this skill\n\n---\n\n${run.renderedTemplateBody}`);
 
     const issue = await db
-      .select({ description: issues.description })
+      .select({
+        description: issues.description,
+        workMode: issues.workMode,
+        harnessKind: issues.harnessKind,
+        originKind: issues.originKind,
+      })
       .from(issues)
       .where(eq(issues.id, run.issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.description).toBe(run.harnessIssueDescription);
+    expect(issue?.workMode).toBe("standard");
+    expect(issue?.harnessKind).toBe("skill_test");
+    expect(issue?.originKind).toBe("skill_test");
   });
 
   it("honors No template without weakening the clean run snapshot", async () => {

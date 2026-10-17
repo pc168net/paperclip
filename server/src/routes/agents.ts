@@ -4230,6 +4230,7 @@ export function agentRoutes(
       // The onboarding marker is not an agent column. The server consumes it to
       // seed the chief-of-staff persona; it never reaches the insert values.
       onboardingFirstAgent: hireOnboardingFirstAgent,
+      allowDuplicate: hireAllowDuplicate,
       // This intent flag is consumed below and must never reach agent create.
       inheritRuntimeFrom,
       runner: hireRunner,
@@ -4398,6 +4399,7 @@ export function agentRoutes(
         {
           createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
           runnerResolved: true,
+          allowDuplicate: hireAllowDuplicate === true,
           responsibleUserId: responsibleUserForAiRequest(req),
           aiConnectionInstall: managedHireConnection ? { ...managedHireConnection, createdByUserId: responsibleUserForAiRequest(req) } : undefined,
           claudeLogin: {
@@ -4580,7 +4582,8 @@ export function agentRoutes(
       // The onboarding marker is not an agent column. The server consumes it to
       // seed the chief-of-staff persona; it never reaches the insert values.
       onboardingFirstAgent: createOnboardingFirstAgent,
-      runner: createRunner,
+       allowDuplicate: createAllowDuplicate,
+       runner: createRunner,
       ...createInput
     } = req.body;
     const agentId = randomUUID();
@@ -4674,6 +4677,7 @@ export function agentRoutes(
           applyExistingWithoutClaim:
             req.actor.type !== "agent" && createApplyStoredClaudeLogin === true,
         },
+        allowDuplicate: createAllowDuplicate === true,
       },
     );
     const onboardingFirstAgentBundle = await resolveOnboardingFirstAgentBundle({

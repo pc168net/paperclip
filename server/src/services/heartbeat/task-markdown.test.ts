@@ -48,6 +48,16 @@ describe("heartbeat task markdown rendering", () => {
     expect(markdown).toContain(`Issue description:\n\`\`\`\`\`text\n${description}\n\`\`\`\`\``);
   });
 
+  it("renders the skill-test harness directive for a standard-mode issue", () => {
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: { ...issue, workMode: "standard", harnessKind: "skill_test" },
+    });
+
+    expect(markdown).toContain('- Work mode: "standard"');
+    expect(markdown).toContain('- Harness: "skill_test"');
+    expect(markdown).toContain("You are testing a pinned skill revision.");
+  });
+
   it("keeps the nearest six ancestors and reports omitted ancestor context", () => {
     const markdown = buildPaperclipTaskMarkdown({
       issue,

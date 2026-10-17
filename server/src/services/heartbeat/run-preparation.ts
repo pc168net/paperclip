@@ -2278,6 +2278,7 @@ export async function buildPaperclipWakePayload(input: {
             status: issues.status,
             priority: issues.priority,
             workMode: issues.workMode,
+            harnessKind: issues.harnessKind,
           })
           .from(issues)
           .where(
@@ -2893,6 +2894,7 @@ export function createHeartbeatRunPreparation(db: Db) {
         description: issues.description,
         status: issues.status,
         workMode: issues.workMode,
+        harnessKind: issues.harnessKind,
         reviewPolicy: issues.reviewPolicy,
         priority: issues.priority,
         projectId: issues.projectId,

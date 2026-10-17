@@ -26,6 +26,7 @@ export interface HeartbeatTaskContextInput {
   task: {
     issueRef: Pick<IssueContext,
       "id" | "identifier" | "title" | "status" | "priority" | "workMode" |
+      "harnessKind" |
       "conversationAgentId" | "description" | "projectId"> | null;
     issueContext: IssueContext | null;
     wakeCommentContext: Pick<typeof issueComments.$inferSelect,
@@ -84,14 +85,14 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
   if (!input.policy.recovering || (admittedScope.kind !== "standard" && admittedScope.kind !== "skill_test")) {
     const savedIssue = parseObject(context.paperclipIssue);
     const skillTest = input.policy.recovering
-      ? savedIssue.workMode === "skill_test" || Boolean(context.paperclipSkillTest)
-      : issueRef?.workMode === "skill_test";
+      ? savedIssue.harnessKind === "skill_test" || Boolean(context.paperclipSkillTest)
+      : issueRef?.harnessKind === "skill_test";
     context.paperclipAgentJwtScope = skillTest && issueRef
       ? { kind: "skill_test", issueId: issueRef.id }
       : { kind: "standard" };
   }
   const pinnedSkillTestContext =
-    issueRef?.workMode === "skill_test"
+    issueRef?.harnessKind === "skill_test"
       ? await getPinnedSkillTestContext(agent.companyId, issueRef.id)
       : null;
   if (pinnedSkillTestContext) {

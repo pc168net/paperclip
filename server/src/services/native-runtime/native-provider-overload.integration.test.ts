@@ -16,6 +16,7 @@ import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { readPersistedNativeProviderFailure } from "./native-provider-failure-evidence.js";
 import { NATIVE_PROVIDER_OVERLOADED_MESSAGE } from "./native-provider-failure.js";
+import { readConfiguredFallbackModel } from "./native-provider-capacity-retry.js";
 import { heartbeatService } from "../heartbeat.js";
 import { createPostgresWakeQueueAdapter } from "../../modules/wake-queue/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
@@ -33,6 +34,12 @@ describe("durable native provider capacity retry", () => {
       { id: agentId, companyId, name: "Capacity worker", status: "active", adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "test-model" } },
       { id: otherAgentId, companyId, name: "New owner", status: "active", adapterType: "paperclip_runner" },
     ]);
+  });
+  it("uses only an explicitly configured fallback model", () => {
+    expect(readConfiguredFallbackModel({ provider: "codex", model: "primary", fallbackModel: { provider: "codex", model: "backup" } }))
+      .toEqual({ provider: "codex", model: "backup" });
+    expect(readConfiguredFallbackModel({ provider: "codex", model: "primary" })).toBeNull();
+    expect(readConfiguredFallbackModel({ fallbackModel: { provider: "codex", model: "" } })).toBeNull();
   });
   afterAll(async () => { await temporary?.cleanup(); });
 
@@ -83,7 +90,7 @@ describe("durable native provider capacity retry", () => {
     expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId))).toHaveLength(1);
   }
 
-  it("retries after one and two minutes across restart/replay, then stops", async () => {
+  it("retries after five and fifteen minutes across restart/replay, then stops", async () => {
     const issueId = randomUUID(), originalRunId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Capacity task", status: "in_progress", assigneeAgentId: agentId, responsibleUserId: "capacity-owner" });
     await db.insert(heartbeatRuns).values({ id: originalRunId, companyId, agentId, responsibleUserId: "capacity-owner", contextSnapshot: { issueId, wakeCommentId: "original-message" } });
@@ -100,6 +107,12 @@ describe("durable native provider capacity retry", () => {
       if (failure === 2) {
         expect(successors).toHaveLength(0);
         expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "blocked", unblockDescriptor: { action: expect.stringContaining("Automatic retries exhausted") } });
+        const notices = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+        expect(notices).toHaveLength(1);
+        expect(notices[0]).toMatchObject({ ownerType: "board", cause: "native_provider_overloaded_exhausted", evidence: { agentId, issueId, retryAttempts: 2, originalError: NATIVE_PROVIDER_OVERLOADED_MESSAGE } });
+        // The helper finalizes each failed turn twice above; both replays are
+        // already covered by this single-row assertion.
+        expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(1);
         break;
       }
       expect(successors).toHaveLength(1);
@@ -107,14 +120,15 @@ describe("durable native provider capacity retry", () => {
       expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: failure + 1, scheduledRetryReason: "native_provider_overloaded", error: NATIVE_PROVIDER_OVERLOADED_MESSAGE,
         contextSnapshot: { issueId, forceFreshSession: true, executionRetryAccounting: { version: 1, failureRetries: failure + 1, maxTurnContinuations: 0 } } });
       expect(retry.contextSnapshot).not.toHaveProperty("wakeCommentId");
-      expect(retry.scheduledRetryAt!.getTime() - before).toBeGreaterThanOrEqual(60_000 * 2 ** failure);
-      expect(retry.scheduledRetryAt!.getTime() - Date.now()).toBeLessThanOrEqual(60_000 * 2 ** failure);
+      const delay = failure === 0 ? 5 * 60_000 : 15 * 60_000;
+      expect(retry.scheduledRetryAt!.getTime() - before).toBeGreaterThanOrEqual(delay);
+      expect(retry.scheduledRetryAt!.getTime() - Date.now()).toBeLessThanOrEqual(delay);
       const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.runId, retry.id));
       expect(wakes).toHaveLength(1);
       const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId));
       expect(await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.decisionId, decision.id))).toMatchObject([{ effectKind: "schedule_retry", targetType: "heartbeat_run", targetId: retry.id }]);
       expect((await release({ companyId, runId, now: new Date() })).outcome.kind).toBe("released");
-      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+       expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
       const schedulerAfterRestart = heartbeatService(db, { runtimeEnv: {} });
       expect(await schedulerAfterRestart.promoteDueScheduledRetries(new Date())).toMatchObject({ promoted: 0 });
       expect(await schedulerAfterRestart.promoteDueScheduledRetries(retry.scheduledRetryAt!)).toMatchObject({ promoted: 1, runIds: [retry.id] });

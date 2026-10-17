@@ -97,7 +97,7 @@ interface RunCompletionInput {
   run: Run;
   agent: Agent;
   issueId: string | null;
-  issueRef: Pick<NonNullable<IssueContext>, "workMode" | "identifier" | "title"> | null;
+  issueRef: Pick<NonNullable<IssueContext>, "workMode" | "harnessKind" | "identifier" | "title"> | null;
   signal: AbortSignal;
   output: RunCompletionOutput;
   session: RunCompletionSession;
@@ -699,6 +699,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           run: finalizedRun,
           issueId,
           issueWorkMode: issueRef?.workMode ?? null,
+          issueHarnessKind: issueRef?.harnessKind ?? null,
           outcome,
           error: runErrorMessage,
         });
@@ -1182,6 +1183,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           run: livenessRun,
           issueId,
           issueWorkMode: issueRef?.workMode ?? null,
+          issueHarnessKind: issueRef?.harnessKind ?? null,
           outcome: "failed",
           error: message,
         });

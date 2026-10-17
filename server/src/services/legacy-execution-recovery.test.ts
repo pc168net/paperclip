@@ -1,6 +1,6 @@
 import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
 import { expect, it } from "vitest";
-import { legacyExecutionNeedsReconciliation } from "./legacy-execution-recovery.js";
+import { legacyExecutionNeedsReconciliation, maySettleLegacyIssue } from "./legacy-execution-recovery.js";
 
 const stopped = {
   runtimeMode: "legacy", status: "cancelled", errorCode: "cancelled",
@@ -9,6 +9,16 @@ const stopped = {
     executionRecovery: { kind: "interrupted", providerStopped: true, sessionPreserved: true, actionOutcomes: "settled" },
   },
 };
+
+it("settles only a successful done disposition", () => {
+  expect(maySettleLegacyIssue({ runStatus: "succeeded", reportedWorkDisposition: "done", issueStatus: "in_progress" })).toBe(true);
+  for (const runStatus of ["failed", "cancelled", "timed_out"]) {
+    expect(maySettleLegacyIssue({ runStatus, reportedWorkDisposition: "done", issueStatus: "in_progress" })).toBe(false);
+  }
+  for (const disposition of ["failed", "cancelled", "timed_out", "needs_review", "yielded", undefined]) {
+    expect(maySettleLegacyIssue({ runStatus: "succeeded", reportedWorkDisposition: disposition, issueStatus: "in_progress" })).toBe(false);
+  }
+});
 
 it.each(["workspace_git_scan_timeout", "workspace_git_scan_saturated"])("does not invent unknown provider actions after exhausted %s bootstrap retries", (errorCode) => {
   const run = { runtimeMode: "legacy", status: "failed", errorCode, scheduledRetryAttempt: 2,

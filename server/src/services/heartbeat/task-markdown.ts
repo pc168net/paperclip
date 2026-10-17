@@ -11,6 +11,7 @@ export function buildPaperclipTaskMarkdown(input: {
     title: string;
     titleNeedsGeneration?: boolean;
     workMode?: string | null;
+    harnessKind?: string | null;
     conversationAgentId?: string | null;
     description?: string | null;
   } | null;
@@ -239,9 +240,10 @@ export function buildPaperclipTaskMarkdown(input: {
         "Planning mode directive:",
         directive,
       );
-    } else if (issue.workMode === "skill_test") {
+    } else if (issue.harnessKind === "skill_test" || issue.workMode === "skill_test") {
       lines.push(
-        `- Work mode: ${quoteTaskScalar("skill_test")}`,
+        `- Work mode: ${quoteTaskScalar(issue.workMode ?? "standard")}`,
+        ...(issue.harnessKind === "skill_test" ? [`- Harness: ${quoteTaskScalar("skill_test")}`] : []),
         "",
         "Skill test mode directive:",
         "You are testing a pinned skill revision. Make no durable changes outside this issue. Do not push, publish, send external messages, or mutate other issues. Write your final output as issue document `output`, then finish by marking this issue done.",

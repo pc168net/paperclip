@@ -2264,8 +2264,13 @@ export function heartbeatService(
       const defaultIsolatedWorkspacesEnabled =
         isolatedWorkspacesEnabled &&
         experimentalInstanceSettings.enableIsolatedWorkspacesByDefault;
-      const [taskWorkspaceIntentRow] = issueId ? await db.select({ intent: issues.workspaceSelection }).from(issues)
+      const [taskWorkspaceIntentRow] = issueId ? await db.select({ intent: issues.workspaceSelection, pendingSelection: issues.workspacePendingSelection, parentId: issues.parentId }).from(issues)
         .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId))) : [];
+      const predecessorWorkspace = taskWorkspaceIntentRow?.parentId
+        ? await db.select({ executionWorkspaceId: issues.executionWorkspaceId }).from(issues)
+          .where(and(eq(issues.id, taskWorkspaceIntentRow.parentId), eq(issues.companyId, agent.companyId)))
+          .then((rows) => rows[0]?.executionWorkspaceId ?? null)
+        : null;
       const runtimeWorkspaceSelectionEnabled = taskWorkspaceRuntimeSelectionEnabled({ legacyUiEnabled: isolatedWorkspacesEnabled, hasTypedSelection: Boolean(taskWorkspaceIntentRow?.intent), hasBinding: Boolean(issueContext?.executionWorkspaceId) });
       const parsedIssueExecutionWorkspaceSettings =
         parseIssueExecutionWorkspaceSettings(
@@ -2592,6 +2597,7 @@ export function heartbeatService(
             status: issueContext.status,
             priority: issueContext.priority,
             workMode: issueContext.workMode,
+            harnessKind: issueContext.harnessKind,
             conversationAgentId: issueContext.conversationAgentId,
             reviewPolicy: issueContext.reviewPolicy,
             description: issueContext.description,
@@ -2654,7 +2660,9 @@ export function heartbeatService(
       } = await timePreparation("environment_selection", () => selectHeartbeatEnvironment(db, {
         run, agent,
         task: { issueRef, issueContext, issueId, context, executionProjectId, workspaceProjectContext, boundSourceWorkspace,
-          hasSelectedWorkspaceSource: Boolean(selectedWorkspaceSource), taskWorkspaceIntent: taskWorkspaceIntentRow?.intent ?? null, responsibleUserId },
+          hasSelectedWorkspaceSource: Boolean(selectedWorkspaceSource), taskWorkspaceIntent: taskWorkspaceIntentRow?.intent ?? null,
+          workspacePendingSelection: taskWorkspaceIntentRow?.pendingSelection ?? null,
+          predecessorExecutionWorkspaceId: predecessorWorkspace, responsibleUserId },
         policy: {
           trustPreset, requestedExecutionWorkspaceMode, isolatedWorkspacesEnabled: runtimeWorkspaceSelectionEnabled,
           projectExecutionWorkspacePolicy, issueExecutionWorkspaceSettings,

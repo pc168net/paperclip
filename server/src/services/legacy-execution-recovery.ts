@@ -17,6 +17,16 @@ import { issueService } from "./issues.js";
 type Run = typeof heartbeatRuns.$inferSelect;
 export const LEGACY_RECOVERY_CAUSE = "legacy_execution_requires_reconciliation";
 
+/** The only legacy terminal outcome that is allowed to settle its Issue. */
+export function maySettleLegacyIssue(input: {
+  runStatus: string;
+  reportedWorkDisposition: unknown;
+  issueStatus: string;
+}): boolean {
+  return input.runStatus === "succeeded" && input.reportedWorkDisposition === "done"
+    && ["todo", "in_progress"].includes(input.issueStatus);
+}
+
 /** Error families describe availability, not whether earlier actions happened. */
 export function legacyExecutionNeedsReconciliation(
   run: Pick<Run, "runtimeMode" | "status" | "errorCode" | "resultJson"> & Partial<Pick<Run, "scheduledRetryAttempt" | "scheduledRetryReason" | "contextSnapshot">>,
@@ -123,6 +133,27 @@ export async function terminalizeLegacyExecution(input: {
       )
       .returning();
     if (!updated) return null;
+    // Legacy and native completion must share the same durable settlement
+    // boundary. Only an explicit successful `done` disposition may complete
+    // the issue; provider failures, cancellation, timeout, and infrastructure
+    // interruptions intentionally leave the issue open for recovery.
+    if (task && maySettleLegacyIssue({
+      runStatus: status,
+      reportedWorkDisposition: updated.resultJson?.reportedWorkDisposition,
+      issueStatus: task.status,
+    })) {
+      const settledIssue = await issueService(tx as unknown as Db).update(
+        task.id,
+        {
+          status: "done",
+          actorAgentId: updated.agentId,
+          actorRunId: updated.id,
+          companyGuard: run.companyId,
+        },
+        tx,
+      );
+      if (!settledIssue) throw new Error("legacy_run_issue_settlement_missing");
+    }
     const retainedLeaseIds = await preserveLegacyWorkspaceRestoreSources(tx as unknown as Db,
       input.recordRestoreFailureOnly ? { ...updated, status: "failed" } : updated, input.workspaceRestoreSource);
     if (retainedLeaseIds.length) {

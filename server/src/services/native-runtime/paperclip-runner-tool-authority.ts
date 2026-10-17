@@ -729,19 +729,19 @@ export class PaperclipRunnerToolAuthority {
   }
 
   #apiScope(context: {
-    issue: { workMode: string };
+    issue: { workMode: string; harnessKind: string | null };
     run: { contextSnapshot: unknown };
   }) {
     const snapshot = record(context.run.contextSnapshot);
     const admittedKind = record(snapshot.paperclipAgentJwtScope).kind;
-    const skillTest = admittedKind === "skill_test" || (admittedKind !== "standard"
-      && (Boolean(snapshot.paperclipSkillTest) || context.issue.workMode === "skill_test"));
+    const skillTest = admittedKind === "skill_test" || Boolean(snapshot.paperclipSkillTest)
+      || context.issue.harnessKind === "skill_test";
     return skillTest ? { kind: "skill_test" as const, issueId: this.binding.issueId } : { kind: "standard" as const };
   }
 
   #apiToken(context: {
     actor: { adapterType: string };
-    issue: { workMode: string };
+    issue: { workMode: string; harnessKind: string | null };
     run: { responsibleUserId: string | null; contextSnapshot: unknown };
   }) {
     return createLocalAgentJwt(this.binding.agentId, this.binding.companyId, context.actor.adapterType,
