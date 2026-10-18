@@ -40,13 +40,15 @@ export async function prepareAgentHire(db: Db, companyId: string, input: CreateA
     .from(agents)
     .where(eq(agents.companyId, companyId));
   const normalizedName = data.name.trim().toLocaleLowerCase();
-  const duplicateName = existingAgents.find((agent) => agent.name.trim().toLocaleLowerCase() === normalizedName);
+  const activeAgents = existingAgents.filter((agent) => agent.status !== "terminated");
+  const duplicateName = activeAgents.find((agent) => agent.name.trim().toLocaleLowerCase() === normalizedName);
   const existingRoles = await db
     .select({ id: agents.id, role: agents.role, name: agents.name })
     .from(agents)
     .where(eq(agents.companyId, companyId));
   const role = data.role ?? "general";
-  const duplicateRole = existingRoles.find((agent) => agent.role?.trim().toLocaleLowerCase() === role.trim().toLocaleLowerCase());
+  const activeRoles = existingRoles.filter((agent) => activeAgents.some((agentRow) => agentRow.id === agent.id));
+  const duplicateRole = activeRoles.find((agent) => agent.role?.trim().toLocaleLowerCase() === role.trim().toLocaleLowerCase());
   const duplicateAllowed = options?.allowDuplicate === true || allowDuplicate === true || options?.allowBuiltInAgentMetadata === true;
   if (!duplicateAllowed && (duplicateName || duplicateRole)) {
     const reason = duplicateName
@@ -55,7 +57,7 @@ export async function prepareAgentHire(db: Db, companyId: string, input: CreateA
     throw unprocessable(`Cannot create agent in this company: ${reason}. Use a distinct name/role, or explicitly confirm allowDuplicate=true for a separate agent.`);
   }
   // Keep the legacy suffixing behavior only for explicit duplicate creates.
-  const uniqueName = duplicateAllowed ? deduplicateAgentName(data.name, existingAgents) : data.name;
+  const uniqueName = duplicateAllowed ? deduplicateAgentName(data.name, activeAgents) : data.name;
 
   const normalizedPermissions = normalizeAgentPermissions(data.permissions, { context: "create" });
   const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);

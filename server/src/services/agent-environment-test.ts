@@ -483,7 +483,10 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
 
   async function probeManagedEnvironment(adapterType: string, context: Parameters<ReturnType<typeof requireServerAdapter>["testEnvironment"]>[0], binding: AiConnectionBinding) {
     await assertManagedAiProjectAuth(context.config, binding.provider, context.executionTarget);
-    const result = await requireServerAdapter(adapterType).testEnvironment(context);
+    let result = await requireServerAdapter(adapterType).testEnvironment(context);
+    // Custom runner tests the gateway itself. It has no provider CLI login
+    // contract, so do not append the legacy adapter hello probe.
+    if (adapterType === "custom_local") return result;
     if (result.status === "fail") return result;
     // The resolved method, not binding.method — on a responsible_user binding
     // that field is wire-compat only and the default connection decides.

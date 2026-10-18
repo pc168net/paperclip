@@ -540,15 +540,69 @@ export function aiConnectionService(db: Db) {
     attemptStartedAt = new Date(),
   ) {
     const routing = "routing" in input ? input.routing : undefined;
+    const sameRoutingEndpoint = (left: AiConnectionMetadata["routing"], right: AiConnectionMetadata["routing"]) =>
+      isDeepStrictEqual(
+        left ? { ...left, models: undefined } : left,
+        right ? { ...right, models: undefined } : right,
+      );
+    const connectionName = (() => {
+      if (!routing?.baseUrl || !(/^(My .+ API|Company .+)$/.test(input.name))) return input.name;
+      try {
+        const host = new URL(routing.baseUrl).hostname;
+        const authLabel = routing.auth === "api_key" ? "API key" : routing.auth === "bearer" ? "Bearer" : "No auth";
+        const prefix = input.ownership === "shared" ? "Company" : AI_CONNECTION_CAPABILITIES[input.provider].name;
+        return host ? `${prefix} · ${host} · ${authLabel}` : input.name;
+      } catch {
+        return input.name;
+      }
+    })();
     if (!(await membership(companyId, userId)))
       throw forbidden("An active company member must own this connection");
-    const reconnect = input.connectionId
+    // A create is also an implicit reconnect when the same credential already
+    // exists.  This is deliberately done in the service rather than the UI:
+    // agent creation, retries, and all connection entry points must share the
+    // same idempotency rule.  API keys are compared by value, never by name.
+    const requestedConnection = input.connectionId
       ? (await rows(companyId)).find(
           (r) => r.connection.id === input.connectionId,
         )
       : undefined;
-    if (input.connectionId && !reconnect)
+    if (input.connectionId && !requestedConnection)
       throw notFound("AI connection not found");
+    let reconnect = requestedConnection;
+    if (!reconnect) {
+      const candidates = (await rows(companyId)).filter((row) => {
+        const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
+        if (!metadata.success || metadata.data.provider !== input.provider || metadata.data.method !== input.method)
+          return false;
+        if (!sameRoutingEndpoint(metadata.data.routing, routing)) return false;
+        if (input.ownership === "personal") {
+          return row.grant.kind === "user" && row.grant.subjectUserId === userId;
+        }
+        return row.grant.kind === "organization" && row.grant.createdByUserId === userId;
+      });
+      // A missing/invalid secret must not make two credentials look alike.
+      // `none` gateway connections have no secret and can be matched by config.
+      for (const candidate of candidates) {
+        const metadata = aiConnectionMetadataSchema.parse(candidate.connection.config.ai);
+        if (metadata.routing?.auth === "none") {
+          reconnect = candidate;
+          break;
+        }
+        if (input.method !== "api_key") continue;
+        const ref = candidate.grant.credentialSecretRefs.find((r) => r.configPath === "ai.credential");
+        if (!ref || !verifiedCredential) continue;
+        try {
+          if (await credential(candidate) === verifiedCredential) {
+            reconnect = candidate;
+            break;
+          }
+        } catch {
+          // An unusable old credential is not a dedupe match; saving this
+          // attempt should be allowed to repair it as a new connection.
+        }
+      }
+    }
     if (
       reconnect &&
       (reconnect.grant.createdByUserId !== userId ||
@@ -562,7 +616,7 @@ export function aiConnectionService(db: Db) {
         input.provider
     )
       throw unprocessable("Reconnect cannot change providers");
-    if (reconnect && !isDeepStrictEqual((reconnect.connection.config.ai as AiConnectionMetadata).routing, routing))
+    if (reconnect && !sameRoutingEndpoint((reconnect.connection.config.ai as AiConnectionMetadata).routing, routing))
       throw unprocessable("Reconnect must retain this connection’s routing. Create another connection to change its destination.");
     if (
       reconnect &&
@@ -660,7 +714,7 @@ export function aiConnectionService(db: Db) {
           companyId,
           {
             key: `ai_${grantId.replaceAll("-", "_")}`,
-            name: input.name,
+            name: connectionName,
             provider: "local_encrypted",
           },
           { userId },
@@ -735,7 +789,11 @@ export function aiConnectionService(db: Db) {
             status: "active",
             healthStatus: "ok",
             healthMessage: null,
-            config: { ...reconnect.connection.config, aiIsolatedSubscription: input.method === "subscription" && input.provider !== "anthropic" },
+            config: {
+              ...reconnect.connection.config,
+              ai: { provider: input.provider, method: input.method, ...(routing ? { routing } : {}) },
+              aiIsolatedSubscription: input.method === "subscription" && input.provider !== "anthropic",
+            },
             updatedAt: new Date(),
           })
           .where(eq(toolConnections.id, id));
@@ -746,7 +804,7 @@ export function aiConnectionService(db: Db) {
             id,
             companyId,
             applicationId: app.id,
-            name: input.name,
+               name: connectionName,
             uid: `ai-${id}`,
             connectionPurpose: "ai",
             transport: "runtime_auth",

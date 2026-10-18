@@ -41,7 +41,8 @@ export function AiConnectionSelect({
   onReconnect,
   onChange,
   adapterType,
-}: AiConnectionPickerProps & { adapterType: string }) {
+  onManageConnection,
+}: AiConnectionPickerProps & { adapterType: string; onManageConnection?: (connection: AiConnectionSummary) => void }) {
   const selectId = useId();
   const personal = personalAiDefault(connections, requirement, currentUserId);
   const selected =
@@ -54,6 +55,7 @@ export function AiConnectionSelect({
     .filter(
       (c) =>
         c.companyId === requirement.companyId &&
+        c.status !== "revoked" &&
         isAiConnectionCompatible(
           c,
           adapterType,
@@ -94,6 +96,10 @@ export function AiConnectionSelect({
       });
     const connection = compatible.find((c) => c.id === id);
     if (!connection) return;
+    if (aiConnectionProblem(connection)) {
+      onManageConnection?.(connection);
+      return;
+    }
     onChange({
       provider: connection.provider,
       method: connection.method,
@@ -139,7 +145,6 @@ export function AiConnectionSelect({
             <SelectItem
               key={c.id}
               value={c.id}
-              disabled={Boolean(aiConnectionProblem(c))}
             >
               <ConnectionLabel connection={c} label={`${c.name}${c.status !== "connected" ? " · Reconnect" : ""}`} />
             </SelectItem>
@@ -156,6 +161,11 @@ export function AiConnectionSelect({
           </SelectItem>
         </SelectContent>
       </Select>
+      {!readOnly && onManageConnection && connections.filter(c => c.status !== "revoked" && aiConnectionProblem(c)).map(connection => (
+        <Button key={connection.id} type="button" variant="outline" onClick={() => onManageConnection(connection)}>
+          Manage {connection.name}
+        </Button>
+      ))}
       {!readOnly && onReconnect && !loading && !error && (
         <Button type="button" variant="outline" onClick={onReconnect}>Reconnect account</Button>
       )}

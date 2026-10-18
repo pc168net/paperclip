@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Network, Monitor } from "lucide-react";
 import {
@@ -105,6 +105,7 @@ export function AiProviderSetup({
   const [step, setStep] = useState(
     reconnect || initialProvider ? "connect" : "provider",
   );
+  const [editingExisting, setEditingExisting] = useState(false);
   const [ownershipChoice, setOwnership] = useState<"personal" | "shared">();
   const [allAgentsChoice, setAllAgents] = useState<boolean>();
   const [agentIds, setAgentIds] = useState(new Set(agentId ? [agentId] : []));
@@ -124,7 +125,11 @@ export function AiProviderSetup({
   const [discoveredModels, setDiscoveredModels] = useState<Array<{ id: string; label?: string }>>([]);
   const [discoveryProtocols, setDiscoveryProtocols] = useState<{ responses: boolean; chat: boolean }>();
   const [apiKey, setApiKey] = useState(customEndpointDraft?.apiKey ?? "");
-  const isDraftedGateway = provider === "gateway" && Boolean(customEndpointDraft);
+  // A draft only seeds the shared form. It must remain editable: hiding the
+  // fields made a stale model/protocol from the previous adapter step look
+  // authoritative and could disable Connect when discovery did not advertise
+  // OPTIONS support.
+  const isDraftedGateway = false;
   const client = useQueryClient();
   const accounts = useQuery({
     queryKey: ["ai-connections", companyId, agentId],
@@ -182,17 +187,27 @@ export function AiProviderSetup({
     }),
     onSuccess: (result) => {
       setDiscoveredModels(result.models);
-      setModels(result.models[0]?.id ?? "");
+      // A connection owns the endpoint and credential; keep the complete
+      // provider model catalog so each agent can choose its own model later.
+      setModels(result.models.map((model) => model.id).join(", "));
       setDiscoveryProtocols(result.protocols);
-      if (result.protocols.responses && !result.protocols.chat) setProtocol("responses");
-      if (result.protocols.chat && !result.protocols.responses) setProtocol("chat");
+       if (result.protocols.responses && !result.protocols.chat) setProtocol("responses");
+       if (result.protocols.chat && !result.protocols.responses) setProtocol("chat");
+       if (!result.protocols.responses && !result.protocols.chat) setProtocol("responses");
     },
   });
+  useEffect(() => {
+    if (!customEndpointDraft || provider !== "gateway" || !baseUrl.trim() || (auth !== "none" && !apiKey.trim())) return;
+    discover.mutate();
+    // This is a one-time handoff from the New Agent adapter step. The shared
+    // form owns discovery from here onward.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customEndpointDraft]);
   const save = useMutation({
     mutationFn: () => {
-      const routing =
-        reconnect?.routing ??
-        aiProviderRoutingSchema.parse({
+      const routing = reconnect && !editingExisting
+        ? reconnect.routing
+        : aiProviderRoutingSchema.parse({
           kind: provider,
           protocol: provider === "bedrock" ? "bedrock" : protocol,
           auth: provider === "openrouter" ? "bearer" : auth,
@@ -223,6 +238,13 @@ export function AiProviderSetup({
       );
     },
     onSuccess: complete,
+  });
+  const revoke = useMutation({
+    mutationFn: () => aiConnectionsApi.revoke(companyId, reconnect!.id, reconnect!.grantId),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ["ai-connections", companyId] });
+      onCancel();
+    },
   });
   const choices = (advancedOnly: boolean) => (
     <ConnectionChoiceList
@@ -340,6 +362,14 @@ export function AiProviderSetup({
             save.mutate();
           }}
         >
+          {reconnect && !editingExisting && (
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="outline" onClick={() => setEditingExisting(true)}>Edit connection</Button>
+              <Button type="button" variant="ghost" className="text-destructive" onClick={() => revoke.mutate()} disabled={revoke.isPending}>
+                {revoke.isPending ? "Revoking…" : "Revoke connection"}
+              </Button>
+            </div>
+          )}
           {(provider === "gateway" || provider === "local") && (
             <>
               {isDraftedGateway ? (
@@ -357,7 +387,7 @@ export function AiProviderSetup({
                       placeholder={provider === "local" ? "http://localhost:11434/v1" : "https://gateway.example.com/v1"}
                       value={baseUrl}
                       onChange={(e) => setBaseUrl(e.target.value)}
-                      disabled={Boolean(reconnect)}
+                       disabled={Boolean(reconnect && !editingExisting)}
                     />
                     {provider === "gateway" && (
                       <Button type="button" variant="outline" onClick={() => discover.mutate()} disabled={discover.isPending || !baseUrl.trim() || (auth !== "none" && !apiKey.trim())}>
@@ -373,13 +403,13 @@ export function AiProviderSetup({
                         setProtocol(v as typeof protocol);
                         if (v !== "messages" && provider !== "gateway" && auth === "api_key") setAuth("bearer");
                       }}
-                      disabled={Boolean(reconnect) || Boolean(initialProtocol)}
+                       disabled={Boolean(reconnect && !editingExisting) || Boolean(initialProtocol)}
                     >
                       <SelectTrigger aria-label="API format" className="w-full"><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="responses">OpenAI Responses · Codex</SelectItem>
+                        <SelectItem value="responses">OpenAI Responses · Custom</SelectItem>
                         <SelectItem value="messages">Anthropic Messages · Claude</SelectItem>
-                        <SelectItem value="chat">Chat Completions · OpenCode, Hermes</SelectItem>
+                        <SelectItem value="chat">Chat Completions · Custom</SelectItem>
                       </SelectContent>
                     </Select>
                   </label>
@@ -394,7 +424,7 @@ export function AiProviderSetup({
                 aria-label="AWS region"
                 value={region}
                 onChange={(e) => setRegion(e.target.value)}
-                disabled={Boolean(reconnect)}
+                 disabled={Boolean(reconnect && !editingExisting)}
               />
             </label>
           )}
@@ -404,7 +434,7 @@ export function AiProviderSetup({
               <Select
                 value={auth}
                 onValueChange={(v) => setAuth(v as typeof auth)}
-                disabled={Boolean(reconnect)}
+                 disabled={Boolean(reconnect && !editingExisting)}
               >
                 <SelectTrigger aria-label="Authentication" className="w-full">
                   <SelectValue />
@@ -451,7 +481,7 @@ export function AiProviderSetup({
               {isDraftedGateway ? (
                 <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-foreground">{models}</p>
               ) : <>
-                <select aria-label="Model / deployment" className="block w-full rounded-md border bg-background px-3 py-2 text-sm" value={models} onChange={(event) => setModels(event.target.value)}>
+                 <select aria-label="Model / deployment" className="block w-full rounded-md border bg-background px-3 py-2 text-sm" value={models.split(",")[0]?.trim() ?? ""} onChange={(event) => setModels([event.target.value, ...models.split(",").map((id) => id.trim()).filter((id) => id && id !== event.target.value)].join(", "))}>
                   {discoveredModels.map((model) => <option key={model.id} value={model.id}>{model.label ?? model.id}</option>)}
                 </select>
                 <Input aria-label="Model / deployment fallback" value={models} onChange={(event) => setModels(event.target.value)} placeholder="Enter a deployment or model ID" />
@@ -463,9 +493,9 @@ export function AiProviderSetup({
               {discoveryProtocols.responses && discoveryProtocols.chat
                 ? "Both API formats are supported. Using OpenAI Responses by default."
                 : discoveryProtocols.responses
-                  ? "Detected: OpenAI Responses · Runtime: Codex"
+                   ? "Detected: OpenAI Responses · Custom runner"
                   : discoveryProtocols.chat
-                    ? "Detected: Chat Completions · Runtime: OpenCode"
+                     ? "Detected: Chat Completions · Custom runner"
                     : "This endpoint does not advertise Responses or Chat Completions support."}
               {discoveryProtocols.responses && discoveryProtocols.chat && <span className="block">Change format above to override the default.</span>}
             </div>
@@ -498,14 +528,13 @@ export function AiProviderSetup({
                 save.isPending || accounts.isPending || accounts.isError ||
                 (!reconnect && ownership === "shared" && !allAgents && agentIds.size === 0) ||
                 (auth !== "none" && !apiKey.trim()) ||
-                (provider === "gateway" && !models.trim()) ||
-                (provider === "gateway" && discoveryProtocols && !discoveryProtocols.responses && !discoveryProtocols.chat)
+                 (provider === "gateway" && !models.trim())
               }
             >
               {save.isPending
                 ? "Connecting…"
                 : reconnect
-                  ? "Reconnect"
+                  ? (editingExisting ? "Save changes" : "Reconnect")
                   : "Connect"}
             </Button>
           </div>

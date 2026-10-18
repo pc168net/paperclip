@@ -46,12 +46,13 @@ export function managedProviderRouting(
       env.ANTHROPIC_DEFAULT_HAIKU_MODEL = selectedModel;
       env.CLAUDE_CODE_SUBAGENT_MODEL = selectedModel;
     }
-  } else if (harness === "opencode_local") {
+  } else if (harness === "opencode_local" || harness === "custom_local") {
     const provider = route.kind === "openrouter" ? "openrouter" : "paperclip";
     if (route.kind === "openrouter") env.OPENROUTER_API_KEY = credential;
     else {
       env.PAPERCLIP_AI_PROVIDER_KEY = credential;
       env.PAPERCLIP_AI_PROVIDER_URL = baseUrl;
+      env.PAPERCLIP_AI_PROVIDER_AUTH = route.auth;
     }
     const id = selectedModel.startsWith(`${provider}/`)
       ? selectedModel.slice(provider.length + 1)
@@ -70,6 +71,7 @@ export function managedProviderRouting(
     });
     env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
     config.model = aiRoutingModel(route, harness, selectedModel);
+    config.provider = "custom";
   } else if (harness === "hermes_local") {
     env.OPENAI_BASE_URL = baseUrl;
     env.OPENAI_API_KEY = credential;

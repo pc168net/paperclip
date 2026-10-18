@@ -34,6 +34,7 @@ export function aiProviderForAdapter(
       claude_local: "anthropic",
       codex_local: "openai",
       opencode_local: "openrouter",
+      custom_local: "openai",
       grok_local: "xai",
       gemini_local: "google",
       hermes_local: "openrouter",
@@ -107,7 +108,7 @@ export function AiConnectionField({
   const openConnection = (reconnect?: AiManagedConnectionSummary) => {
     returnFocus.current = document.activeElement as HTMLElement;
     setReconnecting(reconnect);
-    setAdvancedSetup(!reconnect && (preferAdvanced || provider === "openrouter"));
+    setAdvancedSetup(Boolean(reconnect?.routing) || (!reconnect && (preferAdvanced || provider === "openrouter")));
     setAllAgents(accounts.data?.canManageConnections ?? false);
     setSavedAccount(undefined);
     selectDefault.reset();
@@ -167,6 +168,7 @@ export function AiConnectionField({
         }
         onConnect={() => openConnection()}
         onReconnect={(!value || value.mode === "responsible_user") && personalDefault && personalDefault.status !== "connected" ? () => openConnection(personalDefault) : undefined}
+        onManageConnection={connection => openConnection({ ...connection, isDefault: connection.isDefault ?? false })}
         onRetry={() => void accounts.refetch()}
       />}
       <Dialog
@@ -220,9 +222,10 @@ export function AiConnectionField({
             </DialogDescription>
           </DialogHeader>
           {advancedSetup ? <AiProviderSetup
-            companyId={companyId} agentId={agentId} environmentId={environmentId}
-            advancedOnly={preferAdvanced}
-            initialProtocol={adapterType === "claude_local" ? "messages" : adapterType === "codex_local" ? "responses" : "chat"}
+             companyId={companyId} agentId={agentId} environmentId={environmentId}
+             advancedOnly={preferAdvanced}
+             reconnect={reconnecting}
+             initialProtocol={adapterType === "claude_local" ? "messages" : adapterType === "codex_local" ? "responses" : "chat"}
              onCancel={() => preferAdvanced ? setConnecting(false) : setAdvancedSetup(false)}
              customEndpointDraft={customEndpointDraft}
              initialProvider={customEndpointDraft ? "gateway" : undefined}

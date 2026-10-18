@@ -28,12 +28,13 @@ import {
   aiProviderRoutingSchema,
 } from "@paperclipai/shared";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
-import { forbidden, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { accessService } from "../services/access.js";
 import { logActivity } from "../services/activity-log.js";
 import { aiConnectionRouterService } from "../services/ai-connection-router.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { validate } from "../middleware/validate.js";
+import { toolAccessService } from "../services/tool-access.js";
 
 /** Agent API calls inherit authenticated run identity, never the agent's own ID. */
 export function responsibleUserForAiRequest(req: Request): string | null {
@@ -143,6 +144,7 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
   }
   const router = Router();
   const service = aiConnectionService(db);
+  const toolAccess = toolAccessService(db);
   const localLogin = localAiLoginService(db);
   const pools = aiConnectionRouterService(db);
   router.get("/companies/:companyId/ai-connection-pools", async (req, res) => {
@@ -287,6 +289,25 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
       );
     },
   );
+  router.delete("/companies/:companyId/ai-connections/:connectionId/grants/:grantId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    const connectionId = z.string().uuid().parse(req.params.connectionId);
+    const grantId = z.string().uuid().parse(req.params.grantId);
+    const [inUse] = await db.select({ id: agents.id, name: agents.name }).from(agents).where(and(
+      eq(agents.companyId, companyId),
+      sql`${agents.runtimeConfig}->'aiConnection'->>'connectionId' = ${connectionId}`,
+      sql`${agents.status} <> 'terminated'`,
+    )).limit(1);
+    if (inUse) throw conflict(`This connection is used by agent ${inUse.name}. Remove that binding before revoking it.`, { code: "ai_connection_in_use", agentId: inUse.id });
+    const account = (await service.list(companyId, getActorInfo(req).actorId)).find(item => item.id === connectionId && item.grantId === grantId);
+    if (!account) throw notFound("AI connection not found");
+    const revoked = await toolAccess.revokeConnectionGrant(connectionId, grantId, getActorInfo(req));
+    await logActivity(db, { companyId, actorType: "user", actorId: req.actor.userId ?? "board", action: "ai_connection.grant_revoked", entityType: "connection_grant", entityId: grantId, details: { connectionId } });
+    res.json(revoked);
+  });
+
   router.post(
     "/companies/:companyId/ai-connections/custom/discover",
     validate(z.object({

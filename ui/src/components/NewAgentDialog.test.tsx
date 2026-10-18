@@ -16,6 +16,10 @@ vi.mock("../lib/clipboard", () => ({ copyTextToClipboard: invites.copy }));
 vi.mock("../context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company-1" }) }));
 const dotApi = vi.hoisted(() => ({ create: vi.fn(), connection: vi.fn(), pair: vi.fn(), retry: vi.fn() }));
 vi.mock("@/api/dotInvitations", () => ({ dotInvitationsApi: dotApi }));
+const aiConnections = vi.hoisted(() => ({
+  discoverCustom: vi.fn(),
+}));
+vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: aiConnections }));
 const state = vi.hoisted(() => ({
   adapters: [] as object[],
   navigate: vi.fn(),
@@ -43,6 +47,7 @@ async function click(label: string) {
 beforeEach(async () => {
   vi.clearAllMocks();
   Object.values(dotApi).forEach(mock => mock.mockReset());
+  aiConnections.discoverCustom.mockReset();
   invites.createCompanyInvite.mockResolvedValue({ token: "one-time-token", onboardingTextPath: "/api/invites/one-time-token/onboarding.txt" });
   invites.getInviteOnboarding.mockResolvedValue({ onboarding: { connectivity: {} } });
   invites.copy.mockResolvedValue(undefined);
@@ -100,6 +105,19 @@ it("requires a name and an enabled adapter before navigating", async () => {
     .searchParams;
   expect(query.get("name")).toBe("Ada & Co");
   expect(query.get("adapterType")).toBe("codex_local");
+});
+
+it("allows continuing when model discovery cannot detect the API format", async () => {
+  await name();
+  await act(async () => {
+    const custom = [...document.querySelectorAll("button")].find((button) => button.textContent?.startsWith("Custom endpoint"));
+    expect(custom).toBeTruthy();
+    custom!.click();
+  });
+  await click("Configure agent");
+  const query = new URL(state.navigate.mock.calls[0][0], "http://local").searchParams;
+  expect(query.get("runnerProvider")).toBe("custom");
+  expect(query.get("customEndpoint")).toBe("true");
 });
 it("offers one Codex harness without a runner/provider tile", async () => {
   await name();

@@ -2160,15 +2160,26 @@ async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: s
         response.writeHead(400).end();
         return;
       }
+      // OpenAI's newer reasoning deployments reject the legacy parameter name.
+      // Custom gateways still expose the OpenCode-compatible chat transport,
+      // so normalize the request at this isolated proxy boundary.
+      if (typeof payload.max_tokens === "number" && payload.max_completion_tokens === undefined) {
+        payload.max_completion_tokens = payload.max_tokens;
+        delete payload.max_tokens;
+      }
+      const forwardedBody = Buffer.from(JSON.stringify(payload));
+      const authHeader = environment.PAPERCLIP_AI_PROVIDER_AUTH === "api_key"
+        ? { "api-key": key }
+        : key ? { Authorization: `Bearer ${key}` } : {};
       const upstream = await new Promise<IncomingMessage>((resolve, reject) => {
         const outgoing = (upstreamUrl.protocol === "https:" ? requestHttps : requestHttp)(upstreamUrl, {
           method: "POST",
           agent,
-          headers: { "Content-Type": "application/json", "Content-Length": body.length, ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+          headers: { "Content-Type": "application/json", "Content-Length": forwardedBody.length, ...authHeader },
           signal: AbortSignal.any([controller.signal, AbortSignal.timeout(600_000)]),
         }, resolve);
         outgoing.once("error", reject);
-        outgoing.end(body);
+        outgoing.end(forwardedBody);
       });
       // Never forward authentication to a redirect destination.
       const status = upstream.statusCode ?? 502;
@@ -2286,7 +2297,10 @@ async function startRuntime(input: {
     externalDirectories[`${root}/**`] = "allow";
   }
   if (instructionRoot) externalDirectories[`${instructionRoot}/**`] = "allow";
-  const [modelProvider, ...modelIdParts] = input.options.model.split("/");
+  const qualifiedModel = input.options.model.includes("/")
+    ? input.options.model
+    : `paperclip/${input.options.model}`;
+  const [modelProvider, ...modelIdParts] = qualifiedModel.split("/");
   const providerModelId = modelIdParts.join("/");
   const providerProxy = modelProvider === "paperclip" && input.options.environment?.PAPERCLIP_AI_PROVIDER_URL
     ? await startOpenCodeProviderProxy(input.options.environment.PAPERCLIP_AI_PROVIDER_URL, input.options.environment.PAPERCLIP_AI_PROVIDER_KEY ?? "", providerModelId, input.options.environment).catch(async error => {

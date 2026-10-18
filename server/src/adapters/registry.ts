@@ -131,6 +131,7 @@ import {
 } from "@paperclipai/adapter-pi-local/server";
 import { agentConfigurationDoc as piAgentConfigurationDoc } from "@paperclipai/adapter-pi-local";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
+import { customLocalAdapter } from "./custom-local.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
@@ -903,6 +904,7 @@ function registerBuiltInAdapters() {
     codexLocalAdapter,
     paperclipRunnerAdapter,
     openCodeLocalAdapter,
+    customLocalAdapter,
     piLocalAdapter,
     cursorCloudAdapter,
     cursorLocalAdapter,

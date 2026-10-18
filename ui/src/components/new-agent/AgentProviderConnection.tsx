@@ -50,7 +50,7 @@ export function AgentProviderConnection({
   initialAdvanced = false,
 }: {
   companyId: string;
-  adapterType: "claude_local" | "codex_local" | "grok_local";
+  adapterType: "claude_local" | "codex_local" | "custom_local" | "grok_local";
   environmentId: string | null;
   canLogin: boolean;
   localEnvironment?: boolean;
@@ -446,6 +446,7 @@ export function AgentProviderConnection({
                 : "Connect"
         }
         primaryDisabled={
+          busy ||
           managedAccount?.disabled ||
           (Boolean(managedAccount) && method === "subscription" && !canLogin && !canUseLocalLogin) ||
           (localEnvironment && health.isPending) || localLogin.preparing || Boolean(localLogin.error) ||

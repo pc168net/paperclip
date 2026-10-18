@@ -90,6 +90,7 @@ export function aiRoutingHarness(
       {
         claude: "claude_local",
         codex: "codex_local",
+        custom: "custom_local",
         opencode: "opencode_local",
         grok: "grok_local",
       } as Record<string, string>
@@ -108,9 +109,9 @@ export function isAiRoutingCompatible(
       "opencode_local",
       "hermes_local",
     ].includes(harness);
-  if (route.protocol === "responses") return harness === "codex_local";
+  if (route.protocol === "responses") return ["codex_local", "custom_local"].includes(harness);
   if (route.protocol === "messages") return harness === "claude_local";
-  return ["opencode_local", "hermes_local"].includes(harness);
+  return ["opencode_local", "hermes_local", "custom_local"].includes(harness);
 }
 export function aiRoutingBaseUrl(
   route: AiProviderRouting,

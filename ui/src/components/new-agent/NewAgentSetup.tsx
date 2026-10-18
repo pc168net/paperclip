@@ -52,6 +52,7 @@ import {
   storeOrganizationApiKey,
 } from "@/lib/provider-credential";
 import { defaultCreateValues } from "../agent-config-defaults";
+import { aiConnectionsApi } from "@/api/ai-connections";
 import { ModelDropdown } from "../AgentConfigForm";
 import { Field, ToggleField } from "../agent-config-primitives";
 import { SecretPicker } from "../environment-variables-editor/SecretPicker";
@@ -83,7 +84,7 @@ function customEndpointFailure(cause: unknown): string {
   if (message.includes("401") || message.includes("403") || message.includes("auth")) return "API key rejected by runtime";
   if (message.includes("unsupported") || message.includes("compatib")) return "Runtime does not support this protocol";
   if (message.includes("model") || message.includes("deployment")) return "Model/deployment rejected";
-  if (message.includes("config")) return "Codex/OpenCode configuration error";
+  if (message.includes("config")) return "Custom runner configuration error";
   return "Custom endpoint model request failed";
 }
 
@@ -95,17 +96,41 @@ function customEndpointCheckFailure(result: AdapterEnvironmentTestResult): strin
   if (code.includes("auth") || code.includes("api_key")) return "API key rejected by runtime";
   if (code.includes("unsupported") || code.includes("compatib")) return "Runtime does not support this protocol";
   if (code.includes("model") || code.includes("deployment")) return "Model/deployment rejected";
-  if (code.includes("config")) return "Codex/OpenCode configuration error";
+  if (code.includes("config")) return "Custom runner configuration error";
   return "Custom endpoint model request failed";
+}
+
+function canDeferMissingCustomCli(result: AdapterEnvironmentTestResult, customEndpoint: boolean) {
+  return customEndpoint &&
+    result.checks.some((check) => check.code === "ai_connection_api_key_reverified") &&
+    result.checks.some((check) => /command not found|not found in PATH/i.test(check.message));
 }
 
 export function NewAgentSetup() {
   const { selectedCompanyId } = useCompany();
   const [params] = useSearchParams();
-  const routerState = typeof window !== "undefined"
-    ? (window.history.state as { usr?: { customEndpointDraft?: CustomEndpointDraft } } | null)?.usr
-    : undefined;
-  const customEndpointDraft = routerState?.customEndpointDraft;
+  const customEndpoint = params.get("customEndpoint") === "true";
+  const [customEndpointDraft] = useState<CustomEndpointDraft | undefined>(() => {
+    if (typeof window === "undefined") return undefined;
+    const draft = (window.history.state as { usr?: { customEndpointDraft?: CustomEndpointDraft } } | null)?.usr?.customEndpointDraft;
+    if (!customEndpoint) return draft;
+    // The adapter step no longer owns endpoint settings. Discard any legacy
+    // protocol/model values left in browser history and let the shared
+    // connection form rediscover them.
+    return draft
+      ? { ...draft, protocol: "responses", models: [] }
+      : { baseUrl: "", auth: "bearer", apiKey: "", protocol: "responses", models: [] };
+  });
+  // The custom endpoint draft is a one-time handoff from the basics dialog.
+  // Do not leave it in browser history: refreshing the new-agent page would
+  // otherwise reopen Connect account and resurrect the old model/deployment.
+  useEffect(() => {
+    if (!customEndpointDraft || typeof window === "undefined") return;
+    const current = window.history.state as { usr?: Record<string, unknown> } | null;
+    if (!current?.usr || !("customEndpointDraft" in current.usr)) return;
+    const { customEndpointDraft: _discarded, ...rest } = current.usr;
+    window.history.replaceState({ ...current, usr: rest }, "", window.location.href);
+  }, [customEndpointDraft]);
   if (!selectedCompanyId)
     return (
       <p className="text-sm text-muted-foreground">
@@ -154,11 +179,23 @@ function Setup({
   const { openNewIssue } = useDialogActions();
   const appearanceDraft = useAgentAppearanceDraft(`${companyId}:new-agent`);
   const [runner, setRunner] = useState<AgentRunnerChoice>(initialRunner === "legacy" || initialRunner === "paperclip" ? initialRunner : "auto");
-  const requestAdapterType = preserveNativeCodex && runner === "paperclip" ? "paperclip_runner" : adapterType;
-  const isRunner = adapterType === "paperclip_runner";
+   // Custom model endpoints use the same native Paperclip/Codex execution
+   // profile as the built-in CEO flow for newly created agents. Existing
+   // agents retain their persisted adapter and are not migrated here.
+   const nativeCustomRunner = customEndpoint;
+   const requestAdapterType = preserveNativeCodex && runner === "paperclip"
+     ? "paperclip_runner"
+      : nativeCustomRunner
+        ? "paperclip_runner"
+        : adapterType;
+   const isRunner = adapterType === "paperclip_runner" || nativeCustomRunner;
   const isDot = isRunner && runnerProvider === "openai_dot";
-  const brandType = isDot ? "openai_dot" : isRunner
-    ? runnerProvider === "grok"
+   const brandType = isDot ? "openai_dot" : nativeCustomRunner
+        ? "custom_local"
+        : isRunner
+       ? runnerProvider === "custom"
+       ? "custom_local"
+       : runnerProvider === "grok"
       ? "grok_local"
       : runnerProvider === "claude"
       ? "claude_local"
@@ -167,7 +204,7 @@ function Setup({
         : runnerProvider === "codex" ? "codex_local" : runnerProvider
     : adapterType;
   const connectionAdapter =
-    brandType === "claude_local" || brandType === "codex_local" || brandType === "grok_local"
+    brandType === "claude_local" || brandType === "codex_local" || brandType === "custom_local" || brandType === "grok_local"
       ? brandType
       : null;
   const multiProvider =
@@ -185,7 +222,7 @@ function Setup({
   const [screen, setScreen] = useState<"connect" | "runtime" | "saved">(
     createdAgentId ? "saved" : connectionAdapter ? "connect" : "runtime",
   );
-  const [model, setModel] = useState("");
+  const [model, setModel] = useState(() => customEndpointDraft?.models[0] ?? "");
   const efforts = isRunner ? [] : setupEfforts(adapterType, model);
   const [effort, setEffort] = useState("");
   const [modelOpen, setModelOpen] = useState(false);
@@ -249,6 +286,20 @@ function Setup({
     queryKey: queryKeys.agents.list(companyId),
     queryFn: () => agentsApi.list(companyId),
   });
+  const aiConnections = useQuery({
+    queryKey: ["ai-connections", companyId],
+    queryFn: () => aiConnectionsApi.list(companyId),
+    enabled: Boolean(aiBinding),
+  });
+  const effectiveAiBinding = aiBinding ?? connection?.aiConnection;
+  const selectedAiConnection = effectiveAiBinding && effectiveAiBinding.mode !== "responsible_user"
+    ? aiConnections.data?.connections.find(connection => connection.id === effectiveAiBinding.connectionId)
+    : undefined;
+  const nameConflict = Boolean(
+    name.trim() && agents.data?.some((agent) =>
+      agent.status !== "terminated" && agent.name.trim().toLocaleLowerCase() === name.trim().toLocaleLowerCase(),
+    ),
+  );
   const envs = useQuery({
     queryKey: queryKeys.environments.list(companyId),
     queryFn: () => environmentsApi.list(companyId),
@@ -397,12 +448,15 @@ function Setup({
     nextConnection = connection,
     binding = selectedBinding,
   ): Record<string, unknown> {
+   const runnerModel = brandType === "custom_local" && model.trim() && !model.includes("/")
+       ? `paperclip/${model.trim()}`
+       : model;
     const values = {
       ...defaultCreateValues,
       adapterType,
       runner,
-      model:
-        model || (brandType === "codex_local" ? DEFAULT_CODEX_LOCAL_MODEL : ""),
+        model:
+        runnerModel || (brandType === "codex_local" ? DEFAULT_CODEX_LOCAL_MODEL : ""),
       thinkingEffort: effort,
       dangerouslyBypassSandbox: adapterType === "codex_local" && runner === "legacy",
       envBindings: nextConnection?.env ?? {},
@@ -417,14 +471,22 @@ function Setup({
         : {}),
     };
     const config = getUIAdapter(adapterType).buildAdapterConfig(values);
+    if (nativeCustomRunner) {
+      Object.assign(config, {
+        provider: "codex",
+        codexPermissionMode: "never",
+        lifecycleMode: "per_turn",
+        ...(model.trim() ? { model: model.trim() } : {}),
+      });
+    }
     if (preserveNativeCodex && runner === "paperclip") {
       Object.assign(config, { provider: "codex", codexPermissionMode: "never", lifecycleMode: "per_turn" });
     }
     if (isRunner)
       Object.assign(config, {
-        provider: (runnerProvider === "claude" || runnerProvider === "grok") ? "acpx" : runnerProvider,
+        provider: nativeCustomRunner ? "codex" : (runnerProvider === "claude" || runnerProvider === "grok") ? "acpx" : runnerProvider,
         ...((runnerProvider === "claude" || runnerProvider === "grok") ? { acpxAgent: runnerProvider } : {}),
-        ...(model ? { model } : {}),
+         ...((nativeCustomRunner ? model.trim() : runnerModel) ? { model: nativeCustomRunner ? model.trim() : runnerModel } : {}),
       });
     if (!aiBinding && !nextConnection?.aiConnection && hasCredentialField && binding) {
       if (adapterType === "hermes_gateway") config.apiKey = binding;
@@ -505,7 +567,7 @@ function Setup({
       const tested = await testAgentSetup({
         companyId,
         adapterType: requestAdapterType,
-        providerAdapter: brandType,
+          providerAdapter: nativeCustomRunner ? "paperclip_runner" : brandType,
         ...(adapterType === "codex_local" && runner !== "auto" ? { runner } : {}),
         adapterConfig: config,
         testCredentials: pendingCredentials(nextConnection),
@@ -514,10 +576,11 @@ function Setup({
       });
       if (run !== generation.current) return false;
       setResult(tested);
-      setTestState(blocking(tested) ? "fail" : tested.status);
+      const deferredCli = canDeferMissingCustomCli(tested, customEndpoint);
+      setTestState(deferredCli ? "warn" : blocking(tested) ? "fail" : tested.status);
       return (
-        !blocking(tested) &&
-        (!connectionAdapter ||
+        (!blocking(tested) || deferredCli) &&
+        (!connectionAdapter || customEndpoint ||
           tested.checks.some((check) =>
             check.code.endsWith("hello_probe_passed"),
           ))
@@ -542,6 +605,10 @@ function Setup({
       (connectionAdapter && !connection)
     )
       return;
+    if (nameConflict) {
+      setError(`An active agent named "${name.trim()}" already exists. Choose a different name.`);
+      return;
+    }
     savingRef.current = true;
     setSaving(true);
     setError(null);
@@ -713,7 +780,7 @@ function Setup({
             <h1 className="text-2xl font-semibold tracking-tight">{name}</h1>
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <AdapterMark type={brandType} />
-              <span>{getAdapterDisplay(brandType).label}</span>
+               <span>{nativeCustomRunner ? "Codex" : getAdapterDisplay(brandType).label}</span>
               {isRunner && !isDot && (
                 <span>
                   ·{" "}
@@ -1217,6 +1284,15 @@ function Setup({
                         adapterType,
                       ) && (
                         <section className="space-y-5">
+                        {effectiveAiBinding && (
+                          <div className="rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm">
+                            <div className="font-medium text-foreground">Provider connection</div>
+                            <div className="mt-1 text-muted-foreground">
+                              {nativeCustomRunner ? "Codex · Paperclip Runner" : getAdapterDisplay(brandType).label}
+                              {selectedAiConnection ? ` · ${selectedAiConnection.name}` : " · Selected connection"}
+                            </div>
+                          </div>
+                        )}
                           <h3 className="text-sm font-semibold">Environment</h3>
                           <select
                             aria-label="Environment"
@@ -1283,7 +1359,8 @@ function Setup({
                         disabled={
                           !ready ||
                           busy ||
-                          testState === "fail" ||
+                           testState === "fail" ||
+                           nameConflict ||
                           Boolean(connectionAdapter && !connection)
                         }
                       >

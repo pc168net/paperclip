@@ -81,6 +81,12 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     icon: Code,
     recommended: true,
   },
+  custom_local: {
+    label: "Custom",
+    description: "OpenAI-compatible custom endpoint runner",
+    icon: Cpu,
+    hideFromVisualSelection: true,
+  },
   paperclip_runner: {
     label: "Paperclip Runner",
     description: "Experimental Rust runner with a Codex provider",

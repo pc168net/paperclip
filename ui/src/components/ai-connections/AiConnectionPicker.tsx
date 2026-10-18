@@ -45,7 +45,7 @@ export function AiConnectionPicker({
   onRetry,
 }: AiConnectionPickerProps) {
   const compatible = connections.filter((connection) =>
-    matchesAiRequirement(connection, requirement),
+    connection.status !== "revoked" && matchesAiRequirement(connection, requirement),
   );
   const personalDefault = personalAiDefault(
     connections,
