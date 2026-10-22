@@ -92,3 +92,44 @@ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @paperclipai/paperclip-runner@0.0.0 build
 
 - I preserved unrelated dirty files already present in the workspace.
 - The package typecheck is blocked by the repo’s runner build step requiring `cargo` in this environment; the direct server compile passed.
+
+## Review fix follow-up
+
+### 5) Focused deployment auth route test after grant-status fix
+Command:
+```sh
+pnpm --filter @paperclipai/server exec vitest run src/__tests__/ai-connections.test.ts -t "authorizes deployment reads and mutations by grant and manager scope"
+```
+
+Output:
+```text
+RUN  v5.0.3 /Users/bruce/Antigravity/paperclip/paperclip/server
+
+Test Files  1 passed (1)
+Tests  1 passed | 116 skipped (117)
+```
+
+### 6) Deployment service regression coverage after fix
+Command:
+```sh
+pnpm --filter @paperclipai/server exec vitest run src/services/ai-deployments.test.ts -t "deployment resolution and stale propagation"
+```
+
+Output:
+```text
+RUN  v5.0.3 /Users/bruce/Antigravity/paperclip/paperclip/server
+
+Test Files  1 passed (1)
+Tests  1 passed | 7 skipped (8)
+```
+
+### 7) Direct server TypeScript compile after fix
+Command:
+```sh
+pnpm --filter @paperclipai/server exec tsc -p tsconfig.json --noEmit
+```
+
+Output:
+```text
+(no output)
+```

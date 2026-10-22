@@ -1737,12 +1737,14 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const deploymentOtherCompanyId = randomUUID();
     const manager = "deployment-manager";
     const reader = "deployment-reader";
+    const revokedReader = "deployment-revoked-reader";
+    const expiredReader = "deployment-expired-reader";
     const outsider = "deployment-outsider";
     await db.insert(companies).values([
       { id: deploymentCompanyId, name: "Deployment authz", issuePrefix: "DPA" },
       { id: deploymentOtherCompanyId, name: "Deployment authz other", issuePrefix: "DPB" },
     ]);
-    const deploymentMemberships = [manager, reader, outsider].flatMap((principalId) => [deploymentCompanyId, deploymentOtherCompanyId].map((companyId) => ({ companyId, principalId, principalType: "user" as const, status: "active" as const, membershipRole: "member" as const })));
+    const deploymentMemberships = [manager, reader, revokedReader, expiredReader, outsider].flatMap((principalId) => [deploymentCompanyId, deploymentOtherCompanyId].map((companyId) => ({ companyId, principalId, principalType: "user" as const, status: "active" as const, membershipRole: "member" as const })));
     await db.insert(companyMemberships).values(deploymentMemberships);
     await db.insert(principalPermissionGrants).values({ companyId: deploymentCompanyId, principalType: "user", principalId: manager, permissionKey: "tools:manage_connections" });
     const account = await service.save(deploymentCompanyId, manager, {
@@ -1755,7 +1757,11 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       agentIds: [],
       allAgents: true,
     }, "stored-secret");
-    await db.insert(connectionGrantMembers).values({ companyId: deploymentCompanyId, grantId: account.grantId, subjectType: "user", subjectId: reader });
+    await db.insert(connectionGrants).values({ companyId: deploymentCompanyId, connectionId: account.connectionId, kind: "user", status: "active", subjectUserId: reader, createdByUserId: manager, providerTenant: {}, credentialSecretRefs: [] });
+    await db.insert(connectionGrants).values([
+      { companyId: deploymentCompanyId, connectionId: account.connectionId, kind: "user", status: "revoked", subjectUserId: revokedReader, createdByUserId: manager, providerTenant: {}, credentialSecretRefs: [] },
+      { companyId: deploymentCompanyId, connectionId: account.connectionId, kind: "user", status: "expired", subjectUserId: expiredReader, createdByUserId: manager, providerTenant: {}, credentialSecretRefs: [] },
+    ]);
     await db.insert(aiDeployments).values([
       { id: randomUUID(), companyId: deploymentCompanyId, connectionId: account.connectionId, modelId: "verified-model", displayName: "Verified", protocol: "responses", status: "verified", verifiedCredentialEpoch: 1, verifiedAt: new Date(), lastError: null, createdByUserId: manager },
       { id: randomUUID(), companyId: deploymentCompanyId, connectionId: account.connectionId, modelId: "stale-model", displayName: "Stale", protocol: "chat", status: "stale", verifiedCredentialEpoch: 1, verifiedAt: null, lastError: null, createdByUserId: manager },
@@ -1823,6 +1829,12 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     expect((await request(app).post(base).set("x-test-user", reader).send({ modelId: "reader-denied", protocol: "responses" })).status).toBe(403);
     expect((await request(app).post(`${base}/${createBody.id}/verify?grantId=${account.grantId}`).set("x-test-user", reader).send()).status).toBe(403);
     expect((await request(app).delete(`${base}/${createBody.id}`).set("x-test-user", reader)).status).toBe(403);
+    expect((await request(app).get(base).set("x-test-user", revokedReader)).status).toBe(404);
+    expect((await request(app).post(`${base}/${createBody.id}/verify?grantId=${account.grantId}`).set("x-test-user", revokedReader).send()).status).toBe(403);
+    expect((await request(app).delete(`${base}/${createBody.id}`).set("x-test-user", revokedReader)).status).toBe(403);
+    expect((await request(app).get(base).set("x-test-user", expiredReader)).status).toBe(404);
+    expect((await request(app).post(`${base}/${createBody.id}/verify?grantId=${account.grantId}`).set("x-test-user", expiredReader).send()).status).toBe(403);
+    expect((await request(app).delete(`${base}/${createBody.id}`).set("x-test-user", expiredReader)).status).toBe(403);
   });
   it.each(["anthropic", "openai"] as const)("reports a missing %s browser process after a server restart", async provider => {
     const [environment] = await db.select().from(environments).where(eq(environments.driver, "local")).limit(1);

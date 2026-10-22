@@ -67,14 +67,13 @@ async function assertAiDeploymentManageAccess(db: Db, req: Request, companyId: s
   const [connection] = await db.select({ id: toolConnections.id, creator: toolConnections.createdByUserId })
     .from(toolConnections).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId), eq(toolConnections.connectionPurpose, "ai"))).limit(1);
   if (!connection) throw notFound("AI connection not found");
-  const owner = connection.creator === userId || Boolean((await db.select({ id: connectionGrants.id })
-    .from(connectionGrants).where(and(eq(connectionGrants.companyId, companyId), eq(connectionGrants.connectionId, connectionId), eq(connectionGrants.subjectUserId, userId))).limit(1))[0]);
+  const owner = connection.creator === userId;
   if (!owner && !(await canManageAiConnections(db, req, companyId)))
     throw forbidden("Only the connection owner or a connection manager can manage deployments");
   return { connection, userId };
 }
 
-async function assertAiDeploymentReadAccess(db: Db, service: ReturnType<typeof aiConnectionService>, req: Request, companyId: string, connectionId: string) {
+async function assertAiDeploymentReadAccess(db: Db, req: Request, companyId: string, connectionId: string) {
   assertBoard(req);
   assertCompanyAccess(req, companyId);
   const userId = getActorInfo(req).actorId;
@@ -82,9 +81,20 @@ async function assertAiDeploymentReadAccess(db: Db, service: ReturnType<typeof a
     .from(toolConnections).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId), eq(toolConnections.connectionPurpose, "ai"))).limit(1);
   if (!connection) throw notFound("AI connection not found");
   const manager = await canManageAiConnections(db, req, companyId);
-  if (!manager && !(await service.list(companyId, userId)).some((account) => account.id === connectionId))
-    throw notFound("AI connection not found");
+  if (!manager) {
+    const [grant] = await db.select({ id: connectionGrants.id })
+      .from(connectionGrants).where(and(eq(connectionGrants.companyId, companyId), eq(connectionGrants.connectionId, connectionId), eq(connectionGrants.subjectUserId, userId), eq(connectionGrants.status, "active"))).limit(1);
+    if (!grant) throw notFound("AI connection not found");
+  }
   return { manager };
+}
+
+async function selectAiDeploymentsForConnection(db: Db, companyId: string, connectionId: string, manager: boolean) {
+  return db.select().from(aiDeployments).where(and(
+    eq(aiDeployments.companyId, companyId),
+    eq(aiDeployments.connectionId, connectionId),
+    ...(manager ? [] : [eq(aiDeployments.status, "verified")]),
+  ));
 }
 
 function deploymentSummary(row: typeof aiDeployments.$inferSelect): AiDeploymentSummary {
@@ -397,9 +407,9 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
   router.get("/companies/:companyId/ai-connections/:connectionId/deployments", async (req, res) => {
     const companyId = req.params.companyId as string;
     const connectionId = z.string().uuid().parse(req.params.connectionId);
-    const { manager } = await assertAiDeploymentReadAccess(db, service, req, companyId, connectionId);
+    const { manager } = await assertAiDeploymentReadAccess(db, req, companyId, connectionId);
     res.setHeader("Cache-Control", "no-store");
-    res.json((await db.select().from(aiDeployments).where(and(eq(aiDeployments.companyId, companyId), eq(aiDeployments.connectionId, connectionId), ...(manager ? [] : [eq(aiDeployments.status, "verified")])))).map(deploymentSummary));
+    res.json((await selectAiDeploymentsForConnection(db, companyId, connectionId, manager)).map(deploymentSummary));
   });
   router.post("/companies/:companyId/ai-connections/:connectionId/deployments", validate(createAiDeploymentSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
