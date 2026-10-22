@@ -717,6 +717,71 @@ describe("New agent setup", () => {
     await click("Finish setup");
     expect(api.hire.mock.calls[0][1].runtimeConfig.aiConnection).toEqual(binding);
   });
+
+  it("uses the selected verified deployment for test and hire payloads without showing a free-form model control", async () => {
+    managedApi.list.mockResolvedValue({
+      currentUserId: "user-1",
+      canManageConnections: true,
+      connections: [{
+        id: "00000000-0000-4000-8000-000000000021",
+        grantId: "00000000-0000-4000-8000-000000000022",
+        companyId: "company-1",
+        provider: "openai",
+        method: "api_key",
+        name: "Company OpenAI",
+        ownership: "shared",
+        isDefault: false,
+        status: "connected",
+        routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://example.com/v1", models: [] },
+        deployments: [
+          {
+            id: "00000000-0000-4000-8000-000000000023",
+            companyId: "company-1",
+            connectionId: "00000000-0000-4000-8000-000000000021",
+            modelId: "azure-deployment",
+            displayName: "Azure deployment",
+            protocol: "responses",
+            status: "verified",
+            verifiedCredentialEpoch: 1,
+            lastError: null,
+            verifiedAt: new Date().toISOString(),
+            createdByUserId: "user-1",
+          },
+        ],
+      }],
+    } as any);
+    await render("codex_local", "codex");
+    const trigger = container.querySelector('[role="combobox"][aria-label="Connection"]') as HTMLElement;
+    expect(trigger).toBeTruthy();
+    await act(async () => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    await settle();
+    const deployment = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((node) => node.textContent?.includes("azure-deployment"));
+    expect(deployment).toBeTruthy();
+    await act(async () => deployment!.click());
+    await settle();
+    await click("Use connection");
+    expect(container.querySelector('[aria-label="Model"]')).toBeNull();
+    await click("Run test");
+    expect(api.testEnvironment.mock.calls[0][2].aiConnection).toEqual({
+      provider: "openai",
+      method: "api_key",
+      mode: "shared",
+      connectionId: "00000000-0000-4000-8000-000000000021",
+      grantId: "00000000-0000-4000-8000-000000000022",
+      deploymentId: "00000000-0000-4000-8000-000000000023",
+    });
+    expect(api.testEnvironment.mock.calls[0][2].adapterConfig.model).toBe("azure-deployment");
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].runtimeConfig.aiConnection).toEqual({
+      provider: "openai",
+      method: "api_key",
+      mode: "shared",
+      connectionId: "00000000-0000-4000-8000-000000000021",
+      grantId: "00000000-0000-4000-8000-000000000022",
+      deploymentId: "00000000-0000-4000-8000-000000000023",
+    });
+    expect(api.hire.mock.calls[0][1].adapterConfig.model).toBe("azure-deployment");
+  });
   it("requires the current connection choice to connect before Configure can save it", async () => {
     await render("codex_local");
     managedApi.list.mockResolvedValue({ currentUserId: "user-1", connections: [{

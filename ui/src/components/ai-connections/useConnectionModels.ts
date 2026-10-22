@@ -20,6 +20,9 @@ export function useConnectionModels(
       : c.id === binding?.connectionId && c.grantId === binding?.grantId,
   );
   const routing = connection?.routing;
+  const deployment = binding && binding.mode !== "responsible_user"
+    ? connection?.deployments?.find((item) => item.id === binding.deploymentId && item.status === "verified")
+    : undefined;
   const openRouter = routing?.kind === "openrouter" || (!routing && binding?.provider === "openrouter");
   const discover = openRouter && !routing?.models.length;
   // Reuse the existing public catalog and its query cache. It returns OpenCode IDs;
@@ -35,7 +38,9 @@ export function useConnectionModels(
   const effectiveRouting: AiProviderRouting | undefined = routing ?? (openRouter
     ? { kind: "openrouter", protocol: "chat", auth: "bearer", models: [] }
     : undefined);
-  const modelOptions = discover
+  const modelOptions = deployment
+    ? [{ id: deployment.modelId, label: deployment.modelId }]
+    : discover
     ? (catalog.data ?? []).map((m) => ({ ...m, id: harness === "opencode_local" ? m.id : m.id.replace(/^openrouter\//, "") }))
     : routing?.models ?? [];
   return effectiveRouting

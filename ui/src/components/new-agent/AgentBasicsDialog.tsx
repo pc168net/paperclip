@@ -157,7 +157,10 @@ export function AgentBasicsDialog({
             if (!name.trim()) return;
             if (step === "name") setStep("adapter");
     else if (customEndpoint && runnerProvider === "custom")
-      onContinue({ name: name.trim(), adapterType: "paperclip_runner", runnerProvider, customEndpoint: "true" });
+      // Endpoint credentials and routing are managed in Connectors. A Custom
+      // agent proceeds to the verified-connection picker, never an inline
+      // gateway setup form.
+      onContinue({ name: name.trim(), adapterType: "custom_local", runnerProvider: "custom" });
             else if (validAdapter)
               onContinue({ name: name.trim(),
                 adapterType: adapterType === "openai_dot" ? "paperclip_runner" : adapterType,
@@ -171,13 +174,13 @@ export function AgentBasicsDialog({
                 <DialogTitle className="text-3xl font-semibold tracking-tight">
                   {step === "name"
                     ? "Meet your next agent"
-                     : customEndpoint ? "Choose an execution adapter" : "Choose an adapter"}
+                     : customEndpoint ? "Use a custom gateway" : "Choose an adapter"}
                 </DialogTitle>
                 <DialogDescription className="text-base">
                   {step === "name"
                     ? "Start with a name. Make them your own."
                     : customEndpoint
-                      ? `How should this custom endpoint run ${name.trim()}?`
+                      ? `Choose a verified model connection for ${name.trim()} next.`
                       : `How should ${name.trim()} work?`}
                 </DialogDescription>
               </div>
@@ -271,7 +274,7 @@ export function AgentBasicsDialog({
                     ← Back to adapters
                   </button>
                   <div className="rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
-                    Custom endpoint settings are configured in the shared provider connection step after you continue. This adapter only selects the Custom runner.
+                    Custom endpoint settings are managed in Connectors. Continue to choose one of the verified model connections for this agent.
                   </div>
                   {false && <div className="space-y-3 rounded-lg border border-border bg-card p-4">
                     <label className="block space-y-2 text-sm">

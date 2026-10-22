@@ -4,6 +4,7 @@ import {
   aiConnectionCatalogSlug,
   isAiConnectionCompatible,
   type AiConnectionBinding,
+  type AiDeploymentSummary,
 } from "@paperclipai/shared";
 import {
   Select,
@@ -42,20 +43,40 @@ export function AiConnectionSelect({
   onChange,
   adapterType,
   onManageConnection,
-}: AiConnectionPickerProps & { adapterType: string; onManageConnection?: (connection: AiConnectionSummary) => void }) {
+  connectedOnly = false,
+}: AiConnectionPickerProps & {
+  adapterType: string;
+  onManageConnection?: (connection: AiConnectionSummary) => void;
+  /** Agent creation chooses a previously verified account; setup lives in Connectors. */
+  connectedOnly?: boolean;
+}) {
   const selectId = useId();
   const personal = personalAiDefault(connections, requirement, currentUserId);
+  /** Routed endpoints are represented by their verified deployment, not their
+   * provider catalog. Plain provider accounts retain their existing choice. */
+  const choices: Array<{ id: string; connection: AiConnectionSummary; deployment?: AiDeploymentSummary }> = connections.flatMap((connection) => {
+    const requiresDeployment = connection.routing && ["gateway", "local"].includes(connection.routing.kind);
+    if (!requiresDeployment) return [{ id: connection.id, connection }];
+    return (connection.deployments ?? [])
+      .filter((deployment) => deployment.status === "verified")
+      .map((deployment) => ({ id: deployment.id, connection, deployment }));
+  });
   const selected =
     value?.mode === "responsible_user"
       ? personal
       : connections.find(
           (c) => c.id === value?.connectionId && c.grantId === value?.grantId,
         );
-  const compatible = connections
+  const selectedChoice = value?.mode !== "responsible_user"
+    ? choices.find((choice) => choice.connection.id === value?.connectionId && choice.connection.grantId === value?.grantId &&
+      (!value.deploymentId || choice.deployment?.id === value.deploymentId))
+    : undefined;
+  const selectedDeploymentId = value && value.mode !== "responsible_user" ? value.deploymentId : undefined;
+  const compatible = choices
     .filter(
-      (c) =>
+      ({ connection: c }) =>
         c.companyId === requirement.companyId &&
-        c.status !== "revoked" &&
+        (connectedOnly ? c.status === "connected" : c.status !== "revoked") &&
         isAiConnectionCompatible(
           c,
           adapterType,
@@ -64,14 +85,14 @@ export function AiConnectionSelect({
     )
     .sort(
       (a, b) =>
-        Number(b.id === selected?.id) - Number(a.id === selected?.id) ||
-        Number(Boolean(a.routing)) - Number(Boolean(b.routing)) ||
-        a.name.localeCompare(b.name),
+        Number(a.id === selectedChoice?.id) - Number(b.id === selectedChoice?.id) ||
+        Number(Boolean(a.connection.routing)) - Number(Boolean(b.connection.routing)) ||
+        a.connection.name.localeCompare(b.connection.name),
     );
   const unavailable = Boolean(
     value &&
       value.mode !== "responsible_user" &&
-      !selected &&
+      !selectedChoice &&
       !loading &&
       !error,
   );
@@ -85,7 +106,7 @@ export function AiConnectionSelect({
     requirement.provider === "openrouter" ? "openrouter/" : undefined,
   );
   const incompatible =
-    selected && !compatible.some((c) => c.id === selected.id);
+    selected && !compatible.some((choice) => choice.id === selectedChoice?.id);
   const change = (id: string) => {
     if (id === "connect") return onConnect();
     if (id === "responsible_user")
@@ -94,8 +115,9 @@ export function AiConnectionSelect({
         method: personal?.method ?? "api_key",
         mode: "responsible_user",
       });
-    const connection = compatible.find((c) => c.id === id);
-    if (!connection) return;
+    const choice = compatible.find((candidate) => candidate.id === id);
+    if (!choice) return;
+    const { connection, deployment } = choice;
     if (aiConnectionProblem(connection)) {
       onManageConnection?.(connection);
       return;
@@ -106,6 +128,7 @@ export function AiConnectionSelect({
       mode: connection.ownership === "shared" ? "shared" : "delegated",
       connectionId: connection.id,
       grantId: connection.grantId,
+      ...(deployment ? { deploymentId: deployment.id } : {}),
     } satisfies AiConnectionBinding);
   };
   return (
@@ -117,7 +140,7 @@ export function AiConnectionSelect({
         value={
           value?.mode === "responsible_user"
             ? "responsible_user"
-            : (value?.connectionId ?? "")
+            : (selectedDeploymentId ?? value?.connectionId ?? "")
         }
         onValueChange={change}
         disabled={readOnly || loading || Boolean(error)}
@@ -129,7 +152,7 @@ export function AiConnectionSelect({
             }
           >
             {selected
-              ? <ConnectionLabel connection={selected} label={value?.mode === "responsible_user" ? "Responsible user’s default" : undefined} />
+              ? <ConnectionLabel connection={selected} label={value?.mode === "responsible_user" ? "Responsible user’s default" : selectedChoice?.deployment ? `${selected.name} · ${selectedChoice.deployment.modelId}` : undefined} />
               : value?.mode === "responsible_user"
                 ? "Responsible user’s default"
                 : value ? "Unavailable connection" : undefined}
@@ -137,16 +160,16 @@ export function AiConnectionSelect({
         </SelectTrigger>
         <SelectContent>
           {incompatible && selected && (
-            <SelectItem value={selected.id} disabled>
+            <SelectItem value={selectedDeploymentId ?? selected.id} disabled>
               <ConnectionLabel connection={selected} label={`${selected.name} · Incompatible`} />
             </SelectItem>
           )}
-          {compatible.map((c) => (
+          {compatible.map(({ id, connection, deployment }) => (
             <SelectItem
-              key={c.id}
-              value={c.id}
+              key={id}
+              value={id}
             >
-              <ConnectionLabel connection={c} label={`${c.name}${c.status !== "connected" ? " · Reconnect" : ""}`} />
+              <ConnectionLabel connection={connection} label={`${connection.name}${deployment ? ` · ${deployment.modelId}` : ""}${connection.status !== "connected" ? " · Reconnect" : ""}`} />
             </SelectItem>
           ))}
           {(canUseDefault || value?.mode === "responsible_user") && (
@@ -155,13 +178,13 @@ export function AiConnectionSelect({
               Responsible user’s default
             </SelectItem>
           )}
-          <SelectItem value="connect">
-            <span className="flex size-5 shrink-0 items-center justify-center"><Plus className="size-4" /></span>
-            Connect an account…
-          </SelectItem>
+          {!connectedOnly && <SelectItem value="connect">
+              <span className="flex size-5 shrink-0 items-center justify-center"><Plus className="size-4" /></span>
+              Connect an account…
+            </SelectItem>}
         </SelectContent>
       </Select>
-      {!readOnly && onManageConnection && connections.filter(c => c.status !== "revoked" && aiConnectionProblem(c)).map(connection => (
+      {!connectedOnly && !readOnly && onManageConnection && connections.filter(c => c.status !== "revoked" && aiConnectionProblem(c)).map(connection => (
         <Button key={connection.id} type="button" variant="outline" onClick={() => onManageConnection(connection)}>
           Manage {connection.name}
         </Button>
@@ -181,7 +204,9 @@ export function AiConnectionSelect({
       )}
       {value?.mode === "responsible_user" && !personal && !loading && !error ? (
         <p role="alert" className="text-sm text-destructive">
-          You have no default account for this provider. Connect an account or choose another connection.
+          {connectedOnly
+            ? "No verified connection is available for this provider. Add or reconnect it in Connectors."
+            : "You have no default account for this provider. Connect an account or choose another connection."}
         </p>
       ) : unavailable ? (
         <p role="alert" className="text-sm text-destructive">
@@ -195,6 +220,10 @@ export function AiConnectionSelect({
       ) : selected && aiConnectionProblem(selected) ? (
         <p role="alert" className="text-sm text-destructive">
           {aiConnectionProblem(selected)}
+        </p>
+      ) : connectedOnly && compatible.length === 0 ? (
+        <p role="alert" className="text-sm text-destructive">
+          No verified deployment is available. Add or verify one in Connectors first.
         </p>
       ) : null}
     </div>

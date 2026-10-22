@@ -55,6 +55,7 @@ export function AiConnectionField({
   preferAdvanced = false,
   routerAdapterType,
   customEndpointDraft,
+  connectedOnly = false,
 }: {
   companyId: string;
   agentId?: string;
@@ -69,6 +70,8 @@ export function AiConnectionField({
   preferAdvanced?: boolean;
   routerAdapterType?: string;
   customEndpointDraft?: CustomEndpointDraft;
+  /** Show only validated connections; management and account setup live in Connectors. */
+  connectedOnly?: boolean;
 }) {
   const provider = aiProviderForAdapter(adapterType);
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -167,9 +170,10 @@ export function AiConnectionField({
           changeBinding(aiConnectionBindingSchema.parse(binding))
         }
         onConnect={() => openConnection()}
-        onReconnect={(!value || value.mode === "responsible_user") && personalDefault && personalDefault.status !== "connected" ? () => openConnection(personalDefault) : undefined}
-        onManageConnection={connection => openConnection({ ...connection, isDefault: connection.isDefault ?? false })}
+        onReconnect={!connectedOnly && (!value || value.mode === "responsible_user") && personalDefault && personalDefault.status !== "connected" ? () => openConnection(personalDefault) : undefined}
+        onManageConnection={connectedOnly ? undefined : connection => openConnection({ ...connection, isDefault: connection.isDefault ?? false })}
         onRetry={() => void accounts.refetch()}
+        connectedOnly={connectedOnly}
       />}
       <Dialog
         open={Boolean(pendingAdoption)}

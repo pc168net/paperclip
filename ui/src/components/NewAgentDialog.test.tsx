@@ -116,8 +116,9 @@ it("allows continuing when model discovery cannot detect the API format", async 
   });
   await click("Configure agent");
   const query = new URL(state.navigate.mock.calls[0][0], "http://local").searchParams;
+  expect(query.get("adapterType")).toBe("custom_local");
   expect(query.get("runnerProvider")).toBe("custom");
-  expect(query.get("customEndpoint")).toBe("true");
+  expect(query.get("customEndpoint")).toBeNull();
 });
 it("offers one Codex harness without a runner/provider tile", async () => {
   await name();

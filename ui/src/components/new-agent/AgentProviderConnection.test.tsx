@@ -188,6 +188,21 @@ describe("AgentProviderConnection reuse", () => {
     expect(test).not.toHaveBeenCalled();
   });
 
+  it("uses a verified connection picker without offering account setup during agent creation", async () => {
+    const binding = { provider: "openai" as const, method: "api_key" as const, mode: "delegated" as const, connectionId: "verified", grantId: "verified-grant" };
+    const { connected, test } = await mount("codex_local", false, true, false, false, false, undefined, false, "local_trusted", true, {
+      content: <div>Verified model connections</div>, value: binding, selectionOnly: true,
+    });
+
+    expect(host.textContent).toContain("Verified model connections");
+    expect(host.querySelectorAll('[role="radio"]')).toHaveLength(0);
+    expect(host.textContent).not.toContain("Subscription");
+    expect(host.textContent).not.toContain("Custom Gateway");
+    click("Use connection");
+    expect(connected).toHaveBeenCalledExactlyOnceWith({ env: {}, aiConnection: binding });
+    expect(test).not.toHaveBeenCalled();
+  });
+
   it("preserves the API key when the selected tile is clicked again", async () => {
     await mount("codex_local", false, true, false, false, false, undefined, false, "local_trusted", true, {
       content: <div>Advanced connection picker</div>,

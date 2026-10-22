@@ -109,28 +109,27 @@ function canDeferMissingCustomCli(result: AdapterEnvironmentTestResult, customEn
 export function NewAgentSetup() {
   const { selectedCompanyId } = useCompany();
   const [params] = useSearchParams();
-  const customEndpoint = params.get("customEndpoint") === "true";
-  const [customEndpointDraft] = useState<CustomEndpointDraft | undefined>(() => {
-    if (typeof window === "undefined") return undefined;
-    const draft = (window.history.state as { usr?: { customEndpointDraft?: CustomEndpointDraft } } | null)?.usr?.customEndpointDraft;
-    if (!customEndpoint) return draft;
-    // The adapter step no longer owns endpoint settings. Discard any legacy
-    // protocol/model values left in browser history and let the shared
-    // connection form rediscover them.
-    return draft
-      ? { ...draft, protocol: "responses", models: [] }
-      : { baseUrl: "", auth: "bearer", apiKey: "", protocol: "responses", models: [] };
-  });
-  // The custom endpoint draft is a one-time handoff from the basics dialog.
-  // Do not leave it in browser history: refreshing the new-agent page would
-  // otherwise reopen Connect account and resurrect the old model/deployment.
+  const navigate = useNavigate();
+  const legacyCustomRoute = params.get("customEndpoint") === "true"
+    || (params.get("adapterType") === "paperclip_runner" && params.get("runnerProvider") === "custom");
+  // Custom Gateway setup moved to Connectors. Never hydrate the retired draft:
+  // browser history may retain it, and it used to reopen the inline endpoint
+  // dialog every time this page was refreshed.
+  const customEndpoint = false;
+  const customEndpointDraft: CustomEndpointDraft | undefined = undefined;
   useEffect(() => {
-    if (!customEndpointDraft || typeof window === "undefined") return;
-    const current = window.history.state as { usr?: Record<string, unknown> } | null;
-    if (!current?.usr || !("customEndpointDraft" in current.usr)) return;
-    const { customEndpointDraft: _discarded, ...rest } = current.usr;
-    window.history.replaceState({ ...current, usr: rest }, "", window.location.href);
-  }, [customEndpointDraft]);
+    const current = typeof window === "undefined"
+      ? null
+      : window.history.state as { usr?: Record<string, unknown> } | null;
+    if (!legacyCustomRoute && !current?.usr?.customEndpointDraft) return;
+    const next = new URLSearchParams(params);
+    if (legacyCustomRoute) {
+      next.set("adapterType", "custom_local");
+      next.set("runnerProvider", "custom");
+      next.delete("customEndpoint");
+    }
+    navigate(`/agents/new?${next}`, { replace: true, state: {} });
+  }, [legacyCustomRoute, navigate, params]);
   if (!selectedCompanyId)
     return (
       <p className="text-sm text-muted-foreground">
@@ -139,14 +138,14 @@ export function NewAgentSetup() {
     );
   return (
     <Setup
-      key={`${selectedCompanyId}:${params.get("name")}:${params.get("adapterType")}:${params.get("runnerProvider")}:${params.get("runner")}:${params.get("customEndpoint")}`}
+      key={`${selectedCompanyId}:${params.get("name")}:${legacyCustomRoute ? "custom_local" : params.get("adapterType")}:${legacyCustomRoute ? "custom" : params.get("runnerProvider")}:${params.get("runner")}`}
       companyId={selectedCompanyId}
       name={params.get("name") ?? ""}
-      adapterType={params.get("adapterType") === "paperclip_runner" && (params.get("runnerProvider") ?? "codex") === "codex" ? "codex_local" : params.get("adapterType") ?? ""}
+      adapterType={legacyCustomRoute ? "custom_local" : params.get("adapterType") === "paperclip_runner" && (params.get("runnerProvider") ?? "codex") === "codex" ? "codex_local" : params.get("adapterType") ?? ""}
       initialRunner={params.get("runner") ?? (params.get("adapterType") === "paperclip_runner" && (params.get("runnerProvider") ?? "codex") === "codex" ? "paperclip" : "auto")}
-      preserveNativeCodex={params.get("adapterType") === "paperclip_runner" && (params.get("runnerProvider") ?? "codex") === "codex"}
-      runnerProvider={params.get("runnerProvider") ?? "codex"}
-      customEndpoint={params.get("customEndpoint") === "true"}
+      preserveNativeCodex={!legacyCustomRoute && params.get("adapterType") === "paperclip_runner" && (params.get("runnerProvider") ?? "codex") === "codex"}
+      runnerProvider={legacyCustomRoute ? "custom" : params.get("runnerProvider") ?? "codex"}
+      customEndpoint={customEndpoint}
       customEndpointDraft={customEndpointDraft}
       createdAgentId={params.get("createdAgentId")}
     />
@@ -272,6 +271,17 @@ function Setup({
     setTestState("idle");
     setError(null);
   };
+  // A managed gateway owns its approved deployment list. Do not carry a
+  // harness default (for example, gpt-5.6-luna) into Azure or another custom
+  // connection: that default is not necessarily a deployment on the selected
+  // endpoint and makes the first hello test fail despite a healthy connection.
+  useEffect(() => {
+    const models = connectionModels?.models ?? [];
+    if (!models.length || models.some((entry) => entry.id === model)) return;
+    setModel(models[0]!.id);
+    setEffort("");
+    resetTest();
+  }, [connectionModels, model]);
   const editConnection = () => {
     setConnection(null);
     setRuntimeAiBinding(undefined);
@@ -295,9 +305,12 @@ function Setup({
   const selectedAiConnection = effectiveAiBinding && effectiveAiBinding.mode !== "responsible_user"
     ? aiConnections.data?.connections.find(connection => connection.id === effectiveAiBinding.connectionId)
     : undefined;
+  const selectedDeployment = effectiveAiBinding && effectiveAiBinding.mode !== "responsible_user"
+    ? selectedAiConnection?.deployments?.find((deployment) => deployment.id === effectiveAiBinding.deploymentId)
+    : undefined;
   const nameConflict = Boolean(
     name.trim() && agents.data?.some((agent) =>
-      agent.status !== "terminated" && agent.name.trim().toLocaleLowerCase() === name.trim().toLocaleLowerCase(),
+      agent.status !== "terminated" && String(agent.name ?? "").trim().toLocaleLowerCase() === name.trim().toLocaleLowerCase(),
     ),
   );
   const envs = useQuery({
@@ -323,7 +336,7 @@ function Setup({
   const models = useQuery({
     queryKey: queryKeys.agents.adapterModels(companyId, brandType, null, aiBinding?.provider),
     queryFn: () => agentsApi.adapterModels(companyId, brandType, { provider: aiBinding?.provider }),
-    enabled: Boolean(brandType) && showModel && !connectionModels,
+    enabled: Boolean(brandType) && showModel && (!aiBinding || aiBinding.mode === "responsible_user") && !connectionModels,
     retry: false,
   });
   const companySecrets = useQuery({
@@ -868,9 +881,10 @@ function Setup({
                       environmentId={environmentId}
                       canLogin={canLogin}
                       localEnvironment={environment?.driver === "local"}
-                      advancedConnection={{
-                        value: aiBinding,
-                        content: (
+                       advancedConnection={{
+                         value: aiBinding,
+                         selectionOnly: true,
+                         content: (
                           <AiConnectionField
                             companyId={companyId}
                             agentName={name}
@@ -878,8 +892,9 @@ function Setup({
                             model={model}
                             environmentId={environmentId ?? undefined}
                             value={aiBinding}
-                            preferAdvanced
-                            customEndpointDraft={customEndpointDraft}
+                             preferAdvanced
+                             connectedOnly
+                             customEndpointDraft={customEndpointDraft}
                             onChange={binding => {
                               if (binding.mode === "router") return;
                               setConnection(null);
@@ -1001,14 +1016,28 @@ function Setup({
                              customEndpointDraft={customEndpointDraft}
                              onChange={binding => { binding.mode !== "router" && setRuntimeAiBinding(binding); resetTest(); }} />
                         )}
-                        {(connectionModels ? connectionModels.error : models.error) && <p role="alert" className="text-sm text-destructive">Could not load models. Retry or enter a model ID manually.</p>}
-                        {((showModel && !usingKimiApi) ||
-                          efforts.length > 0) && (
-                          <div className="grid items-start gap-5 sm:grid-cols-2">
-                            {showModel && !usingKimiApi && (
-                              <ModelDropdown
-                                presentation={brandType === "codex_local" ? "searchable" : "native"}
-                                models={connectionModels?.models ?? models.data ?? []}
+                          {(connectionModels ? connectionModels.error : models.error) && <p role="alert" className="text-sm text-destructive">Could not load models. Retry or enter a model ID manually.</p>}
+                          {aiBinding?.mode !== "responsible_user" && (
+                            <Field label="Verified deployment">
+                              <div className="space-y-1 rounded-lg border border-border bg-card px-3 py-2">
+                                <p className="text-sm font-medium">
+                                  {selectedDeployment?.displayName ?? selectedDeployment?.modelId ?? "Chosen verified deployment"}
+                                </p>
+                                <p className="text-xs text-muted-foreground">
+                                  {selectedDeployment
+                                    ? `${selectedDeployment.protocol === "responses" ? "Responses" : "Chat Completions"} · Model ${selectedDeployment.modelId}`
+                                    : "The selected deployment determines the model and protocol."}
+                                </p>
+                              </div>
+                            </Field>
+                          )}
+                         {((showModel && !usingKimiApi && (!aiBinding || aiBinding.mode === "responsible_user")) ||
+                           efforts.length > 0) && (
+                            <div className="grid items-start gap-5 sm:grid-cols-2">
+                             {showModel && !usingKimiApi && (!aiBinding || aiBinding.mode === "responsible_user") && (
+                                <ModelDropdown
+                                  presentation={brandType === "codex_local" ? "searchable" : "native"}
+                                  models={connectionModels?.models ?? models.data ?? []}
                                 loadingModels={connectionModels?.isLoading ?? models.isLoading}
                                 onRefreshModels={connectionModels?.refreshModels}
                                 refreshingModels={connectionModels?.refreshing}
@@ -1036,9 +1065,9 @@ function Setup({
                                 }}
                                 open={modelOpen}
                                 onOpenChange={setModelOpen}
-                                allowDefault={!multiProvider}
-                                required={multiProvider}
-                                creatable
+                                allowDefault={!multiProvider && !connectionModels}
+                                required={multiProvider || Boolean(connectionModels)}
+                                creatable={!connectionModels || connectionModels.models.length === 0}
                                 groupByProvider={multiProvider && !connectionModels}
                                 preserveOrder={Boolean(connectionModels) || adapterCuratesModelOrder(brandType)}
                               />

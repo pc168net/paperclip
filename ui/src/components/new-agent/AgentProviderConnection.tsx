@@ -59,7 +59,7 @@ export function AgentProviderConnection({
   onBack: () => void;
   testConnection: (connection: ProviderConnection) => Promise<boolean>;
   testError?: string | null;
-  advancedConnection?: { content: ReactNode; value?: AiConnectionBinding };
+  advancedConnection?: { content: ReactNode; value?: AiConnectionBinding; selectionOnly?: boolean };
   initialAdvanced?: boolean;
   /** Connections supplies its access intent; presentation and login controllers stay shared. */
   managedAccount?: {
@@ -252,7 +252,7 @@ export function AgentProviderConnection({
   };
   return (
     <div className="min-w-0 max-w-full">
-      <ModelSourceTiles
+      {!advancedConnection?.selectionOnly && <ModelSourceTiles
         label={advancedConnection ? "Connection type" : "Connect your model provider"}
         sources={advancedConnection ? [
           { id: "subscription", label: provider, icon: <AdapterMark type={adapterType} />, credentialMode: "subscription" },
@@ -273,7 +273,18 @@ export function AgentProviderConnection({
           if (advancedConnection) switchMode(id as ModelConnectionMode);
           else setOpened(true);
         }}
-      />
+      />}
+      {advancedConnection?.selectionOnly ? <>
+        <div className="pt-5">{advancedConnection.content}</div>
+        <FooterNav
+          onBack={onBack}
+          primaryLabel="Use connection"
+          primaryDisabled={!advancedConnection.value}
+          onPrimary={() => {
+            if (advancedConnection.value) onConnected({ env: {}, aiConnection: advancedConnection.value });
+          }}
+        />
+      </> : <>
       {!advancedConnection && (!opened || managedAccount) && !managedAccount?.fixedMethod && (
         <div className="-ml-3 mt-1">
           <CredentialModeLink mode={method} onChange={switchMode} />
@@ -473,6 +484,7 @@ export function AgentProviderConnection({
           } else void connect();
         }}
       />
+      </>}
       </>}
     </div>
   );
