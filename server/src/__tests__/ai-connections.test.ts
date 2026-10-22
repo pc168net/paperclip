@@ -1795,6 +1795,9 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const readerList = await request(app).get(base).set("x-test-user", reader);
     expect(readerList.status).toBe(200);
     expect(readerList.body).toEqual([expect.objectContaining({ modelId: "verified-model", status: "verified" })]);
+    expect(readerList.body).toHaveLength(1);
+    expect(JSON.stringify(readerList.body)).not.toContain("stale-model");
+    expect(JSON.stringify(readerList.body)).not.toContain("failed-model");
 
     expect((await request(app).get(base).set("x-test-user", outsider)).status).toBe(404);
     expect((await request(app).get(base.replace(deploymentCompanyId, deploymentOtherCompanyId)).set("x-test-user", manager)).status).toBe(403);

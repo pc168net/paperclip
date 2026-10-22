@@ -65,7 +65,7 @@ export function ManagedAiConnectionDetails({
   );
   const grant = grants.data?.grants.find((g) => g.id === account?.grantId);
   const grantId = grant?.id;
-  const canManageDeployments = Boolean(accounts.data?.canManageConnections || account?.ownerUserId === accounts.data?.currentUserId || account?.createdByUserId === accounts.data?.currentUserId);
+  const canManageDeployments = accounts.data?.canManageConnections === true;
   const deployments = useQuery({
     queryKey: ["ai-deployments", connection.companyId, connection.id],
     queryFn: () => aiConnectionsApi.deployments(connection.companyId, connection.id),

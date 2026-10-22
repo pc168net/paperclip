@@ -126,6 +126,24 @@ export function AiProviderSetup({
     customEndpointDraft?.models[0] ?? reconnect?.routing?.models[0]?.id ?? "",
   );
   const [apiKey, setApiKey] = useState(customEndpointDraft?.apiKey ?? "");
+  const deploymentSyncKey = customEndpointDraft
+    ? [
+        "draft",
+        customEndpointDraft.baseUrl,
+        customEndpointDraft.protocol,
+        customEndpointDraft.auth,
+        customEndpointDraft.models.join("\u0000"),
+      ].join("|")
+    : reconnect?.routing
+      ? [
+          "reconnect",
+          reconnect.id,
+          reconnect.routing.kind,
+          reconnect.routing.protocol,
+          reconnect.routing.baseUrl ?? "",
+          reconnect.routing.models.map((model) => model.id).join("\u0000"),
+        ].join("|")
+      : `provider:${provider ?? ""}`;
   const isAzureOpenAiGateway = (() => {
     try {
       return new URL(baseUrl).hostname.endsWith(".openai.azure.com");
@@ -183,13 +201,18 @@ export function AiProviderSetup({
     });
   };
   useEffect(() => {
-    if (!customEndpointDraft) return;
-    if (provider !== "gateway" && provider !== "local") return;
-    if (customEndpointDraft.models.length) {
-      setDeploymentName(customEndpointDraft.models[0]!);
+    if (provider !== "gateway" && provider !== "local") {
+      setDeploymentName("");
+      return;
+    }
+    const nextDeploymentName = customEndpointDraft
+      ? customEndpointDraft.models[0] ?? ""
+      : reconnect?.routing?.models[0]?.id ?? "";
+    setDeploymentName((current) => (current === nextDeploymentName ? current : nextDeploymentName));
+    if (customEndpointDraft) {
       setModels(customEndpointDraft.models.join(", "));
     }
-  }, [customEndpointDraft, provider]);
+  }, [customEndpointDraft, reconnect?.routing, provider, deploymentSyncKey]);
   const save = useMutation({
     mutationFn: () => {
       const routing = reconnect && !editingExisting
