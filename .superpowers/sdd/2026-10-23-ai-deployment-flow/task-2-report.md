@@ -73,3 +73,58 @@ Output:
 - Avoided `/models` as deployment evidence
 - Kept stale propagation company/connection scoped
 - Confirmed the new service interfaces are the ones used by the route
+
+## Follow-up fix report
+
+### Commit
+
+- Fix commit: `497b064d76ab462f0e216bbe1b7c1c7e119ceb29`
+
+### Exact fix file set
+
+```text
+server/src/routes/ai-connections.ts
+server/src/services/ai-deployments.test.ts
+server/src/services/ai-deployments.ts
+ui/src/api/ai-connections.ts
+ui/src/components/ai-connections/ManagedAiConnectionDetails.tsx
+```
+
+### Verification
+
+Command:
+
+```sh
+pnpm exec vitest run server/src/services/ai-deployments.test.ts
+```
+
+Output:
+
+```text
+Test Files  1 passed (1)
+Tests  8 passed (8)
+```
+
+Command:
+
+```sh
+pnpm --filter @paperclipai/server exec tsc --noEmit
+```
+
+Output:
+
+```text
+(no output)
+```
+
+Command:
+
+```sh
+pnpm --filter @paperclipai/ui exec tsc --noEmit
+```
+
+Output:
+
+```text
+(no output)
+```
