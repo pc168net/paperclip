@@ -473,6 +473,7 @@ function Setup({
       ...defaultCreateValues,
       adapterType,
       runner,
+      ...(selectedDeployment ? { protocol: selectedDeployment.protocol } : {}),
         model:
         runnerModel || (brandType === "codex_local" ? DEFAULT_CODEX_LOCAL_MODEL : ""),
       thinkingEffort: effort,
@@ -489,6 +490,7 @@ function Setup({
         : {}),
     };
     const config = getUIAdapter(adapterType).buildAdapterConfig(values);
+    if (selectedDeployment) Object.assign(config, { protocol: selectedDeployment.protocol });
     if (nativeCustomRunner) {
       Object.assign(config, {
         provider: "codex",

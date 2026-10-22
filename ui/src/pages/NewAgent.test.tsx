@@ -771,6 +771,7 @@ describe("New agent setup", () => {
       deploymentId: "00000000-0000-4000-8000-000000000023",
     });
     expect(api.testEnvironment.mock.calls[0][2].adapterConfig.model).toBe("azure-deployment");
+    expect(api.testEnvironment.mock.calls[0][2].adapterConfig.protocol).toBe("responses");
     await click("Finish setup");
     expect(api.hire.mock.calls[0][1].runtimeConfig.aiConnection).toEqual({
       provider: "openai",
@@ -781,6 +782,7 @@ describe("New agent setup", () => {
       deploymentId: "00000000-0000-4000-8000-000000000023",
     });
     expect(api.hire.mock.calls[0][1].adapterConfig.model).toBe("azure-deployment");
+    expect(api.hire.mock.calls[0][1].adapterConfig.protocol).toBe("responses");
   });
   it("requires the current connection choice to connect before Configure can save it", async () => {
     await render("codex_local");
