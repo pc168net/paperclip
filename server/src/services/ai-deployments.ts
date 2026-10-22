@@ -69,6 +69,7 @@ export async function markAiDeploymentsStale(db: Db, companyId: string, connecti
 export async function resolveVerifiedAiDeployment(
   db: Db,
   input: { companyId: string; deploymentId: string; connectionId: string; grantId?: string },
+  options: { requireVerified?: boolean } = {},
 ): Promise<{
   deployment: typeof aiDeployments.$inferSelect;
   connection: typeof toolConnections.$inferSelect;
@@ -100,7 +101,7 @@ export async function resolveVerifiedAiDeployment(
   if (!metadata.success || !metadata.data.routing || !["gateway", "local"].includes(metadata.data.routing.kind)) {
     throw configFailure({ companyId: input.companyId, connectionId: input.connectionId, deploymentId: input.deploymentId, grantId: input.grantId });
   }
-  if (row.deployment.status !== "verified" || row.deployment.verifiedCredentialEpoch !== row.connection.credentialEpoch) {
+  if (options.requireVerified !== false && (row.deployment.status !== "verified" || row.deployment.verifiedCredentialEpoch !== row.connection.credentialEpoch)) {
     throw configFailure({ companyId: input.companyId, connectionId: input.connectionId, deploymentId: input.deploymentId, grantId: input.grantId, verifiedCredentialEpoch: row.deployment.verifiedCredentialEpoch, currentCredentialEpoch: row.connection.credentialEpoch });
   }
   return { deployment: row.deployment, connection: row.connection, grant: row.grant, routing: metadata.data.routing };

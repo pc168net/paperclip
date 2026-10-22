@@ -74,6 +74,19 @@ async function assertAiDeploymentManageAccess(db: Db, req: Request, companyId: s
   return { connection, userId };
 }
 
+async function assertAiDeploymentReadAccess(db: Db, service: ReturnType<typeof aiConnectionService>, req: Request, companyId: string, connectionId: string) {
+  assertBoard(req);
+  assertCompanyAccess(req, companyId);
+  const userId = getActorInfo(req).actorId;
+  const [connection] = await db.select({ id: toolConnections.id })
+    .from(toolConnections).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId), eq(toolConnections.connectionPurpose, "ai"))).limit(1);
+  if (!connection) throw notFound("AI connection not found");
+  const manager = await canManageAiConnections(db, req, companyId);
+  if (!manager && !(await service.list(companyId, userId)).some((account) => account.id === connectionId))
+    throw notFound("AI connection not found");
+  return { manager };
+}
+
 function deploymentSummary(row: typeof aiDeployments.$inferSelect): AiDeploymentSummary {
   return {
     id: row.id,
@@ -263,15 +276,20 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
     const agentId = req.query.agentId;
     if (agentId !== undefined && !z.string().uuid().safeParse(agentId).success)
       throw unprocessable("Invalid agent ID");
+    const canManageConnections = await canManageAiConnections(db, req, companyId);
+    const connections = await service.list(
+      companyId,
+      currentUserId,
+      agentId as string | undefined,
+    );
     res.json({
       currentUserId,
       pools: await pools.selectable(companyId, currentUserId),
-      canManageConnections: await canManageAiConnections(db, req, companyId),
-      connections: await service.list(
-        companyId,
-        currentUserId,
-        agentId as string | undefined,
-      ),
+      canManageConnections,
+      connections: canManageConnections ? connections : connections.map((connection) => ({
+        ...connection,
+        deployments: connection.deployments?.filter((deployment) => deployment.status === "verified"),
+      })),
     } satisfies AiConnectionList);
   });
   router.get(
@@ -379,9 +397,9 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
   router.get("/companies/:companyId/ai-connections/:connectionId/deployments", async (req, res) => {
     const companyId = req.params.companyId as string;
     const connectionId = z.string().uuid().parse(req.params.connectionId);
-    await assertAiDeploymentManageAccess(db, req, companyId, connectionId);
+    const { manager } = await assertAiDeploymentReadAccess(db, service, req, companyId, connectionId);
     res.setHeader("Cache-Control", "no-store");
-    res.json((await db.select().from(aiDeployments).where(and(eq(aiDeployments.companyId, companyId), eq(aiDeployments.connectionId, connectionId)))).map(deploymentSummary));
+    res.json((await db.select().from(aiDeployments).where(and(eq(aiDeployments.companyId, companyId), eq(aiDeployments.connectionId, connectionId), ...(manager ? [] : [eq(aiDeployments.status, "verified")])))).map(deploymentSummary));
   });
   router.post("/companies/:companyId/ai-connections/:connectionId/deployments", validate(createAiDeploymentSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -389,7 +407,8 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
     const { userId } = await assertAiDeploymentManageAccess(db, req, companyId, connectionId);
     const input = createAiDeploymentSchema.parse(req.body);
     const [deployment] = await db.insert(aiDeployments).values({ companyId, connectionId, ...input, createdByUserId: userId })
-      .onConflictDoUpdate({ target: [aiDeployments.companyId, aiDeployments.connectionId, aiDeployments.modelId, aiDeployments.protocol], set: { status: "stale", lastError: null, verifiedAt: null, updatedAt: new Date() } }).returning();
+      .onConflictDoNothing({ target: [aiDeployments.companyId, aiDeployments.connectionId, aiDeployments.modelId, aiDeployments.protocol] }).returning();
+    if (!deployment) throw conflict("AI deployment already exists");
     await logActivity(db, { companyId, actorType: "user", actorId: userId, action: "ai_deployment.created", entityType: "ai_deployment", entityId: deployment!.id, details: { connectionId, modelId: input.modelId, protocol: input.protocol } });
     res.status(201).json(deploymentSummary(deployment!));
   });
@@ -399,11 +418,12 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
     const deploymentId = z.string().uuid().parse(req.params.deploymentId);
     const grantId = typeof req.query.grantId === "string" ? z.string().uuid().parse(req.query.grantId) : undefined;
     const { userId } = await assertAiDeploymentManageAccess(db, req, companyId, connectionId);
-    const resolved = await resolveVerifiedAiDeployment(db, { companyId, connectionId, deploymentId, grantId });
+    const resolved = await resolveVerifiedAiDeployment(db, { companyId, connectionId, deploymentId, grantId }, { requireVerified: false });
     const credential = await service.credential({ connection: resolved.connection, grant: resolved.grant });
     const result = await verifyAiDeployment(resolved.routing, credential, { modelId: resolved.deployment.modelId, protocol: resolved.deployment.protocol as AiDeploymentProtocol }, fetch);
     const [saved] = await db.update(aiDeployments).set({ status: result.ok ? "verified" : "failed", lastError: result.ok ? null : result.error.slice(0, 1024), verifiedAt: result.ok ? new Date() : null, verifiedCredentialEpoch: resolved.connection.credentialEpoch, updatedAt: new Date() })
-      .where(and(eq(aiDeployments.companyId, companyId), eq(aiDeployments.id, deploymentId))).returning();
+      .where(and(eq(aiDeployments.companyId, companyId), eq(aiDeployments.connectionId, connectionId), eq(aiDeployments.id, deploymentId))).returning();
+    if (!saved) throw notFound("AI deployment not found");
     await logActivity(db, { companyId, actorType: "user", actorId: userId, action: "ai_deployment.verified", entityType: "ai_deployment", entityId: deploymentId, details: { connectionId, status: saved!.status } });
     res.json(deploymentSummary(saved!));
   });

@@ -15,7 +15,7 @@ import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:f
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants, aiDeployments } from "@paperclipai/db";
+import { createDb, activityLog, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants, aiDeployments } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
@@ -1713,6 +1713,116 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     } finally {
       network.mockRestore();
     }
+  });
+  it("does not create deployment rows during Azure model discovery", async () => {
+    const azureCompanyId = randomUUID();
+    await db.insert(companies).values({ id: azureCompanyId, name: "Azure discovery", issuePrefix: "AZD" });
+    await db.insert(companyMemberships).values({ companyId: azureCompanyId, principalType: "user", principalId: "alice", status: "active", membershipRole: "member" });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "session", userId: "alice", companyIds: [azureCompanyId], memberships: [{ companyId: azureCompanyId, status: "active", membershipRole: "member" }] };
+      next();
+    });
+    app.use("/api", aiConnectionRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+    const before = await db.select().from(aiDeployments).where(eq(aiDeployments.companyId, azureCompanyId));
+    const response = await request(app).post(`/api/companies/${azureCompanyId}/ai-connections/custom/discover`).send({ baseUrl: "https://my-resource.openai.azure.com/v1", auth: "api_key", apiKey: "azure-key" });
+    expect(response.status).toBe(422);
+    expect(response.body.error).toContain("Azure OpenAI model catalogs are not deployments");
+    expect(await db.select().from(aiDeployments).where(eq(aiDeployments.companyId, azureCompanyId))).toEqual(before);
+  });
+  it("authorizes deployment reads and mutations by grant and manager scope", async () => {
+    const deploymentCompanyId = randomUUID();
+    const deploymentOtherCompanyId = randomUUID();
+    const manager = "deployment-manager";
+    const reader = "deployment-reader";
+    const outsider = "deployment-outsider";
+    await db.insert(companies).values([
+      { id: deploymentCompanyId, name: "Deployment authz", issuePrefix: "DPA" },
+      { id: deploymentOtherCompanyId, name: "Deployment authz other", issuePrefix: "DPB" },
+    ]);
+    const deploymentMemberships = [manager, reader, outsider].flatMap((principalId) => [deploymentCompanyId, deploymentOtherCompanyId].map((companyId) => ({ companyId, principalId, principalType: "user" as const, status: "active" as const, membershipRole: "member" as const })));
+    await db.insert(companyMemberships).values(deploymentMemberships);
+    await db.insert(principalPermissionGrants).values({ companyId: deploymentCompanyId, principalType: "user", principalId: manager, permissionKey: "tools:manage_connections" });
+    const account = await service.save(deploymentCompanyId, manager, {
+      provider: "openai",
+      method: "api_key",
+      ownership: "shared",
+      name: "Deployment account",
+      apiKey: "stored-secret",
+      routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://example.test/v1", models: [] },
+      agentIds: [],
+      allAgents: true,
+    }, "stored-secret");
+    await db.insert(connectionGrantMembers).values({ companyId: deploymentCompanyId, grantId: account.grantId, subjectType: "user", subjectId: reader });
+    await db.insert(aiDeployments).values([
+      { id: randomUUID(), companyId: deploymentCompanyId, connectionId: account.connectionId, modelId: "verified-model", displayName: "Verified", protocol: "responses", status: "verified", verifiedCredentialEpoch: 1, verifiedAt: new Date(), lastError: null, createdByUserId: manager },
+      { id: randomUUID(), companyId: deploymentCompanyId, connectionId: account.connectionId, modelId: "stale-model", displayName: "Stale", protocol: "chat", status: "stale", verifiedCredentialEpoch: 1, verifiedAt: null, lastError: null, createdByUserId: manager },
+    ]);
+
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      const userId = String(req.headers["x-test-user"] ?? manager);
+      const role = req.headers["x-test-role"] === "viewer" ? "viewer" : "member";
+      req.actor = { type: "board", source: "session", userId, companyIds: [deploymentCompanyId], memberships: [{ companyId: deploymentCompanyId, membershipRole: role, status: "active" }] };
+      next();
+    });
+    app.use("/api", aiConnectionRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+
+    const base = `/api/companies/${deploymentCompanyId}/ai-connections/${account.connectionId}/deployments`;
+    const createResponse = await request(app).post(base).set("x-test-user", manager).send({ modelId: "new-model", displayName: "New", protocol: "responses" });
+    const createBody = createResponse.body as { id: string };
+    expect(createResponse.status).toBe(201);
+    expect(createResponse.body).toMatchObject({ modelId: "new-model", status: "stale", verifiedCredentialEpoch: 1, lastError: null, verifiedAt: null });
+
+    const managerList = await request(app).get(base).set("x-test-user", manager);
+    expect(managerList.status).toBe(200);
+    expect(managerList.body).toEqual(expect.arrayContaining([
+      expect.objectContaining({ modelId: "verified-model", status: "verified" }),
+      expect.objectContaining({ modelId: "stale-model", status: "stale" }),
+      expect.objectContaining({ modelId: "new-model", status: "stale" }),
+    ]));
+
+    const readerList = await request(app).get(base).set("x-test-user", reader);
+    expect(readerList.status).toBe(200);
+    expect(readerList.body).toEqual([expect.objectContaining({ modelId: "verified-model", status: "verified" })]);
+
+    expect((await request(app).get(base).set("x-test-user", outsider)).status).toBe(404);
+    expect((await request(app).get(base.replace(deploymentCompanyId, deploymentOtherCompanyId)).set("x-test-user", manager)).status).toBe(403);
+
+    const duplicate = await request(app).post(base).set("x-test-user", manager).send({ modelId: "new-model", displayName: "Duplicate", protocol: "responses" });
+    expect(duplicate.status).toBe(409);
+    expect((await db.select().from(aiDeployments).where(and(eq(aiDeployments.companyId, deploymentCompanyId), eq(aiDeployments.connectionId, account.connectionId), eq(aiDeployments.modelId, "new-model")))).map(row => row.displayName)).toEqual(["New"]);
+
+    const [currentConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, account.connectionId));
+    const verifyCalls: Array<{ url: string; init?: RequestInit }> = [];
+    const probe = vi.spyOn(globalThis, "fetch").mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
+      verifyCalls.push({ url: String(url), init });
+      return new Response(JSON.stringify({ id: "ok" }), { status: 200 });
+    });
+    try {
+      const verify = await request(app).post(`${base}/${createBody.id}/verify?grantId=${account.grantId}`).set("x-test-user", manager);
+      expect(verify.status).toBe(200);
+      expect(verify.body).toMatchObject({ id: createBody.id, status: "verified", verifiedCredentialEpoch: currentConnection?.credentialEpoch, lastError: null, verifiedAt: expect.any(String) });
+      expect(verifyCalls).toHaveLength(1);
+      expect(verifyCalls[0]).toMatchObject({ url: "https://example.test/v1/responses", init: { method: "POST", headers: expect.objectContaining({ "api-key": "stored-secret" }) } });
+      expect(JSON.stringify(verify.body)).not.toContain("stored-secret");
+    } finally {
+      probe.mockRestore();
+    }
+
+    const deleted = await request(app).delete(`${base}/${createBody.id}`).set("x-test-user", manager);
+    expect(deleted.status).toBe(200);
+    expect(deleted.body).toEqual({ ok: true });
+    expect((await db.select().from(aiDeployments).where(eq(aiDeployments.id, createBody.id)))).toHaveLength(0);
+    expect((await db.select().from(activityLog).where(and(eq(activityLog.companyId, deploymentCompanyId), eq(activityLog.entityId, createBody.id), eq(activityLog.action, "ai_deployment.deleted"))))).toHaveLength(1);
+
+    expect((await request(app).post(base).set("x-test-user", reader).send({ modelId: "reader-denied", protocol: "responses" })).status).toBe(403);
+    expect((await request(app).post(`${base}/${createBody.id}/verify?grantId=${account.grantId}`).set("x-test-user", reader).send()).status).toBe(403);
+    expect((await request(app).delete(`${base}/${createBody.id}`).set("x-test-user", reader)).status).toBe(403);
   });
   it.each(["anthropic", "openai"] as const)("reports a missing %s browser process after a server restart", async provider => {
     const [environment] = await db.select().from(environments).where(eq(environments.driver, "local")).limit(1);
