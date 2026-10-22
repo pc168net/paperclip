@@ -58,6 +58,15 @@ export async function canManageAiConnections(db: Db, req: Request, companyId: st
     || await accessService(db).hasPermission(companyId, "user", getActorInfo(req).actorId, "tools:manage_connections");
 }
 
+async function canManageAiDeploymentForConnection(db: Db, req: Request, companyId: string, connectionId: string): Promise<boolean> {
+  if (await canManageAiConnections(db, req, companyId)) return true;
+  const [connection] = await db.select({ createdByUserId: toolConnections.createdByUserId })
+    .from(toolConnections)
+    .where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId), eq(toolConnections.connectionPurpose, "ai")))
+    .limit(1);
+  return connection?.createdByUserId === getActorInfo(req).actorId;
+}
+
 /** Deployment changes can be made by the connection owner or the existing
  * company connection-management authority; ordinary connection users cannot
  * turn an arbitrary model name into an approved deployment. */
@@ -68,8 +77,8 @@ async function assertAiDeploymentManageAccess(db: Db, req: Request, companyId: s
   const [connection] = await db.select({ id: toolConnections.id })
     .from(toolConnections).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId), eq(toolConnections.connectionPurpose, "ai"))).limit(1);
   if (!connection) throw notFound("AI connection not found");
-  if (!(await canManageAiConnections(db, req, companyId)))
-    throw forbidden("Only a connection manager can manage deployments");
+  if (!(await canManageAiDeploymentForConnection(db, req, companyId, connectionId)))
+    throw forbidden("Only the connection owner or a connection manager can manage deployments");
   return { connection, userId };
 }
 
@@ -80,8 +89,8 @@ async function assertAiDeploymentReadAccess(db: Db, req: Request, companyId: str
   const [connection] = await db.select({ id: toolConnections.id })
     .from(toolConnections).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId), eq(toolConnections.connectionPurpose, "ai"))).limit(1);
   if (!connection) throw notFound("AI connection not found");
-  const manager = await canManageAiConnections(db, req, companyId);
-  if (!manager) {
+  const canManageDeployments = await canManageAiDeploymentForConnection(db, req, companyId, connectionId);
+  if (!canManageDeployments) {
     const [directGrant] = await db.select({ id: connectionGrants.id })
       .from(connectionGrants).where(and(eq(connectionGrants.companyId, companyId), eq(connectionGrants.connectionId, connectionId), eq(connectionGrants.subjectUserId, userId), eq(connectionGrants.status, "active"))).limit(1);
     if (!directGrant) {
@@ -101,7 +110,7 @@ async function assertAiDeploymentReadAccess(db: Db, req: Request, companyId: str
       if (!memberGrant) throw notFound("AI connection not found");
     }
   }
-  return { manager };
+  return { manager: canManageDeployments };
 }
 
 async function selectAiDeploymentsForConnection(db: Db, companyId: string, connectionId: string, manager: boolean) {

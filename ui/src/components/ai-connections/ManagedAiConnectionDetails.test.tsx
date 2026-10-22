@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { expect, it, vi } from "vitest";
 import { ManagedAiConnectionDetails } from "./ManagedAiConnectionDetails";
+import { aiConnectionsApi } from "@/api/ai-connections";
 
 vi.mock("@/lib/router", () => ({ useNavigate: () => vi.fn() }));
 
@@ -66,7 +67,40 @@ function render() {
   };
 }
 
-it("does not show deployment mutations to non-managers even when they own the connection", async () => {
+it("shows deployment mutations to the connection owner even without manager privileges", async () => {
+  const { container, mount, unmount } = render();
+  try {
+    await mount();
+    await vi.waitFor(() => expect(container.textContent).toContain("Verified deployments"));
+    expect(container.textContent).toContain("Add deployment");
+    await vi.waitFor(() => expect(container.textContent).toContain("Remove"));
+    expect(container.textContent).toContain("Reverify");
+  } finally {
+    await unmount();
+  }
+});
+
+it("keeps deployment mutations hidden from unrelated non-owners", async () => {
+  vi.mocked(aiConnectionsApi.list).mockResolvedValueOnce({
+    currentUserId: "other",
+    canManageConnections: false,
+    connections: [
+      {
+        id: "connection",
+        grantId: "grant",
+        companyId: "company",
+        provider: "openai",
+        method: "api_key",
+        name: "Azure Connector",
+        ownership: "personal",
+        ownerUserId: "owner",
+        createdByUserId: "owner",
+        isDefault: false,
+        status: "connected",
+        routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://example.com/v1", models: [] },
+      },
+    ],
+  });
   const { container, mount, unmount } = render();
   try {
     await mount();

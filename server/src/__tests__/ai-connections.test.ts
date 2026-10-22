@@ -1927,7 +1927,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     expect((await request(app).post(`${base}/${createBody.id}/verify?grantId=${account.grantId}`).set("x-test-user", expiredReader).send()).status).toBe(403);
     expect((await request(app).delete(`${base}/${createBody.id}`).set("x-test-user", expiredReader)).status).toBe(403);
   });
-  it("blocks a connection creator without manager permission from mutating deployments", async () => {
+  it("allows a connection owner without manager permission to mutate deployments", async () => {
     const deploymentCompanyId = randomUUID();
     const creator = "deployment-creator";
     await db.insert(companies).values({ id: deploymentCompanyId, name: "Deployment creator authz", issuePrefix: "DPC" });
@@ -1952,9 +1952,14 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
 
     const base = `/api/companies/${deploymentCompanyId}/ai-connections/${account.connectionId}/deployments`;
-    expect((await request(app).post(base).set("x-test-user", creator).send({ modelId: "creator-model", protocol: "responses" })).status).toBe(403);
-    expect((await request(app).post(`${base}/${randomUUID()}/verify?grantId=${account.grantId}`).set("x-test-user", creator).send()).status).toBe(403);
-    expect((await request(app).delete(`${base}/${randomUUID()}`).set("x-test-user", creator)).status).toBe(403);
+    const create = await request(app).post(base).set("x-test-user", creator).send({ modelId: "creator-model", protocol: "responses" });
+    expect(create.status).toBe(201);
+    const list = await request(app).get(base).set("x-test-user", creator);
+    expect(list.status).toBe(200);
+    expect(list.body).toEqual(expect.arrayContaining([expect.objectContaining({ modelId: "creator-model", status: "stale" })]));
+    const verify = await request(app).post(`${base}/${create.body.id}/verify?grantId=${account.grantId}`).set("x-test-user", creator).send();
+    expect(verify.status).toBe(200);
+    expect((await request(app).delete(`${base}/${create.body.id}`).set("x-test-user", creator)).status).toBe(200);
   });
   it.each(["anthropic", "openai"] as const)("reports a missing %s browser process after a server restart", async provider => {
     const [environment] = await db.select().from(environments).where(eq(environments.driver, "local")).limit(1);
