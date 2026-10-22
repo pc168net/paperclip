@@ -11,6 +11,7 @@ import {
   heartbeatRuns,
   toolConnections,
   connectionGrants,
+  connectionGrantMembers,
   agents,
   aiDeployments,
 } from "@paperclipai/db";
@@ -81,9 +82,24 @@ async function assertAiDeploymentReadAccess(db: Db, req: Request, companyId: str
   if (!connection) throw notFound("AI connection not found");
   const manager = await canManageAiConnections(db, req, companyId);
   if (!manager) {
-    const [grant] = await db.select({ id: connectionGrants.id })
+    const [directGrant] = await db.select({ id: connectionGrants.id })
       .from(connectionGrants).where(and(eq(connectionGrants.companyId, companyId), eq(connectionGrants.connectionId, connectionId), eq(connectionGrants.subjectUserId, userId), eq(connectionGrants.status, "active"))).limit(1);
-    if (!grant) throw notFound("AI connection not found");
+    if (!directGrant) {
+      const [memberGrant] = await db.select({ id: connectionGrants.id })
+        .from(connectionGrants)
+        .innerJoin(
+          connectionGrantMembers,
+          and(
+            eq(connectionGrantMembers.companyId, companyId),
+            eq(connectionGrantMembers.grantId, connectionGrants.id),
+            eq(connectionGrantMembers.subjectType, "user"),
+            eq(connectionGrantMembers.subjectId, userId),
+          ),
+        )
+        .where(and(eq(connectionGrants.companyId, companyId), eq(connectionGrants.connectionId, connectionId), eq(connectionGrants.kind, "organization"), eq(connectionGrants.status, "active")))
+        .limit(1);
+      if (!memberGrant) throw notFound("AI connection not found");
+    }
   }
   return { manager };
 }

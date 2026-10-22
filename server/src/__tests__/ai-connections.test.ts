@@ -1737,6 +1737,8 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const deploymentOtherCompanyId = randomUUID();
     const manager = "deployment-manager";
     const reader = "deployment-reader";
+    const orgMember = "deployment-org-member";
+    const orgNonMember = "deployment-org-nonmember";
     const revokedReader = "deployment-revoked-reader";
     const expiredReader = "deployment-expired-reader";
     const outsider = "deployment-outsider";
@@ -1744,7 +1746,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       { id: deploymentCompanyId, name: "Deployment authz", issuePrefix: "DPA" },
       { id: deploymentOtherCompanyId, name: "Deployment authz other", issuePrefix: "DPB" },
     ]);
-    const deploymentMemberships = [manager, reader, revokedReader, expiredReader, outsider].flatMap((principalId) => [deploymentCompanyId, deploymentOtherCompanyId].map((companyId) => ({ companyId, principalId, principalType: "user" as const, status: "active" as const, membershipRole: "member" as const })));
+    const deploymentMemberships = [manager, reader, orgMember, orgNonMember, revokedReader, expiredReader, outsider].flatMap((principalId) => [deploymentCompanyId, deploymentOtherCompanyId].map((companyId) => ({ companyId, principalId, principalType: "user" as const, status: "active" as const, membershipRole: "member" as const })));
     await db.insert(companyMemberships).values(deploymentMemberships);
     await db.insert(principalPermissionGrants).values({ companyId: deploymentCompanyId, principalType: "user", principalId: manager, permissionKey: "tools:manage_connections" });
     const account = await service.save(deploymentCompanyId, manager, {
@@ -1757,16 +1759,28 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       agentIds: [],
       allAgents: true,
     }, "stored-secret");
+    const organizationAccount = await service.save(deploymentCompanyId, manager, {
+      provider: "openai",
+      method: "api_key",
+      ownership: "shared",
+      name: "Organization deployment account",
+      apiKey: "organization-secret",
+      routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://example.test/v1", models: [] },
+      agentIds: [],
+      allAgents: true,
+    }, "organization-secret");
     await db.insert(connectionGrants).values({ companyId: deploymentCompanyId, connectionId: account.connectionId, kind: "user", status: "active", subjectUserId: reader, createdByUserId: manager, providerTenant: {}, credentialSecretRefs: [] });
     await db.insert(connectionGrants).values([
       { companyId: deploymentCompanyId, connectionId: account.connectionId, kind: "user", status: "revoked", subjectUserId: revokedReader, createdByUserId: manager, providerTenant: {}, credentialSecretRefs: [] },
       { companyId: deploymentCompanyId, connectionId: account.connectionId, kind: "user", status: "expired", subjectUserId: expiredReader, createdByUserId: manager, providerTenant: {}, credentialSecretRefs: [] },
     ]);
+    await db.insert(connectionGrantMembers).values({ companyId: deploymentCompanyId, grantId: organizationAccount.grantId, subjectType: "user", subjectId: orgMember });
     await db.insert(aiDeployments).values([
       { id: randomUUID(), companyId: deploymentCompanyId, connectionId: account.connectionId, modelId: "verified-model", displayName: "Verified", protocol: "responses", status: "verified", verifiedCredentialEpoch: 1, verifiedAt: new Date(), lastError: null, createdByUserId: manager },
       { id: randomUUID(), companyId: deploymentCompanyId, connectionId: account.connectionId, modelId: "stale-model", displayName: "Stale", protocol: "chat", status: "stale", verifiedCredentialEpoch: 1, verifiedAt: null, lastError: null, createdByUserId: manager },
       { id: randomUUID(), companyId: deploymentCompanyId, connectionId: account.connectionId, modelId: "failed-model", displayName: "Failed", protocol: "responses", status: "failed", verifiedCredentialEpoch: 1, verifiedAt: null, lastError: "Provider rejected the verification probe.", createdByUserId: manager },
     ]);
+    const [organizationDeployment] = await db.insert(aiDeployments).values({ id: randomUUID(), companyId: deploymentCompanyId, connectionId: organizationAccount.connectionId, modelId: "org-model", displayName: "Org Verified", protocol: "responses", status: "verified", verifiedCredentialEpoch: 1, verifiedAt: new Date(), lastError: null, createdByUserId: manager }).returning();
 
     const app = express();
     app.use(express.json());
@@ -1829,6 +1843,26 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(verifyCalls).toHaveLength(2);
       expect(verifyCalls[1]).toMatchObject({ url: "https://example.test/v1/chat/completions", init: { method: "POST", headers: expect.objectContaining({ "api-key": "stored-secret" }) } });
       expect(JSON.parse(String(verifyCalls[1].init?.body))).toEqual({ model: "chat-model", messages: [{ role: "user", content: "ping" }], max_tokens: 1 });
+
+      const orgBase = `/api/companies/${deploymentCompanyId}/ai-connections/${organizationAccount.connectionId}/deployments`;
+      const orgMemberList = await request(app).get(orgBase).set("x-test-user", orgMember);
+      expect(orgMemberList.status).toBe(200);
+      expect(orgMemberList.body).toEqual(expect.arrayContaining([expect.objectContaining({ id: organizationDeployment.id, modelId: "org-model", status: "verified" })]));
+      expect((await request(app).get(orgBase).set("x-test-user", orgNonMember)).status).toBe(404);
+      await expect(service.select({
+        companyId: deploymentCompanyId,
+        agentId: randomUUID(),
+        userId: orgMember,
+        adapterType: "custom_local",
+        binding: { mode: "shared", provider: "openai", method: "api_key", connectionId: organizationAccount.connectionId, grantId: organizationAccount.grantId, deploymentId: organizationDeployment.id },
+      })).resolves.toMatchObject({ deployment: expect.objectContaining({ id: organizationDeployment.id, status: "verified" }), attribution: expect.objectContaining({ grantId: organizationAccount.grantId }) });
+      await expect(service.select({
+        companyId: deploymentCompanyId,
+        agentId: randomUUID(),
+        userId: orgNonMember,
+        adapterType: "custom_local",
+        binding: { mode: "shared", provider: "openai", method: "api_key", connectionId: organizationAccount.connectionId, grantId: organizationAccount.grantId, deploymentId: organizationDeployment.id },
+      })).rejects.toMatchObject({ status: 403, message: "This credential is not shared with the responsible user" });
 
       const rotated = await service.save(deploymentCompanyId, manager, {
         provider: "openai",

@@ -35,12 +35,14 @@ describeEmbeddedPostgres("AI deployment migration backfill", () => {
       const catalogCompanyId = randomUUID();
       const applicationId = randomUUID();
       const catalogApplicationId = randomUUID();
+      const azureApplicationId = randomUUID();
       const connectionId = randomUUID();
       const catalogConnectionId = randomUUID();
+      const azureConnectionId = randomUUID();
       const unresolvedConnectionId = randomUUID();
 
       await sql`INSERT INTO companies (id, name, issue_prefix) VALUES (${companyId}, 'AI deployments', 'AID'), (${catalogCompanyId}, 'AI deployments catalog', 'AIC')`;
-      await sql`INSERT INTO tool_applications (id, company_id, application_key, name, type) VALUES (${applicationId}, ${companyId}, 'ai', 'AI', 'mcp_http'), (${catalogApplicationId}, ${catalogCompanyId}, 'ai', 'AI catalog', 'mcp_http')`;
+      await sql`INSERT INTO tool_applications (id, company_id, application_key, name, type) VALUES (${applicationId}, ${companyId}, 'ai', 'AI', 'mcp_http'), (${catalogApplicationId}, ${catalogCompanyId}, 'ai', 'AI catalog', 'mcp_http'), (${azureApplicationId}, ${catalogCompanyId}, 'ai-azure', 'Azure AI', 'mcp_http')`;
       await sql`
         INSERT INTO tool_connections (
           id, company_id, application_id, name, uid, connection_kind, connection_purpose,
@@ -53,6 +55,10 @@ describeEmbeddedPostgres("AI deployment migration backfill", () => {
           ${catalogConnectionId}, ${catalogCompanyId}, ${catalogApplicationId}, 'Catalog AI', 'catalog-ai', 'managed', 'ai',
           'runtime_auth', 'api_key', 'paperclip_vault', 'active', true, 'ok', 'board',
           ${{ ai: { provider: 'openai', method: 'api_key', routing: { kind: 'gateway', protocol: 'chat', auth: 'bearer', baseUrl: 'https://catalog.example/v1', models: [{ id: 'chat-prod' }] } } }}
+        ), (
+          ${azureConnectionId}, ${catalogCompanyId}, ${azureApplicationId}, 'Azure AI', 'azure-ai', 'managed', 'ai',
+          'runtime_auth', 'api_key', 'paperclip_vault', 'active', true, 'ok', 'board',
+          ${{ ai: { provider: 'openai', method: 'api_key', routing: { kind: 'gateway', protocol: 'responses', auth: 'api_key', baseUrl: 'https://resource.openai.azure.com/v1', models: [{ id: 'azure-eastus' }, { id: 'azure-eastus' }, { id: 'azure-westus' }] } } }}
         ), (
           ${unresolvedConnectionId}, ${companyId}, ${applicationId}, 'Legacy only', 'legacy-only', 'managed', 'ai',
           'runtime_auth', 'api_key', 'paperclip_vault', 'active', true, 'ok', 'board',
@@ -73,6 +79,12 @@ describeEmbeddedPostgres("AI deployment migration backfill", () => {
       const catalogRows = await db.select().from(aiDeployments).where(eq(aiDeployments.connectionId, catalogConnectionId));
       expect(catalogRows).toEqual([
         { id: expect.any(String), companyId: catalogCompanyId, connectionId: catalogConnectionId, modelId: 'chat-prod', displayName: null, protocol: 'chat', status: 'stale', verifiedCredentialEpoch: 1, lastError: null, verifiedAt: null, createdByUserId: 'board', createdAt: expect.any(Date), updatedAt: expect.any(Date) },
+      ]);
+
+      const azureRows = await db.select().from(aiDeployments).where(eq(aiDeployments.connectionId, azureConnectionId));
+      expect(azureRows.map((row) => ({ modelId: row.modelId, status: row.status, verifiedCredentialEpoch: row.verifiedCredentialEpoch })).sort((a, b) => a.modelId.localeCompare(b.modelId))).toEqual([
+        { modelId: 'azure-eastus', status: 'stale', verifiedCredentialEpoch: 1 },
+        { modelId: 'azure-westus', status: 'stale', verifiedCredentialEpoch: 1 },
       ]);
 
       const unresolvedRows = await db.select().from(aiDeployments).where(eq(aiDeployments.connectionId, unresolvedConnectionId));
