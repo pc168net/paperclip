@@ -122,6 +122,7 @@ export const toolConnections = pgTable(
     uid: text("uid").notNull(),
     connectionKind: text("connection_kind").$type<ToolConnectionKind>().notNull().default("managed"),
     connectionPurpose: text("connection_purpose").$type<ToolConnectionPurpose>().notNull().default("tool"),
+    credentialEpoch: integer("credential_epoch").notNull().default(1),
     ownership: text("ownership").$type<ToolConnectionOwnership>().notNull().default("customer"),
     transport: text("transport").$type<ToolConnectionTransport>().notNull(),
     authKind: text("auth_kind").$type<ToolConnectionAuthKind>().notNull().default("none"),

@@ -39,6 +39,29 @@ export const aiAuthMethodSchema = z.enum(["subscription", "api_key"]);
 export type AiProvider = z.infer<typeof aiProviderSchema>;
 export type AiAuthMethod = z.infer<typeof aiAuthMethodSchema>;
 const requirement = { provider: aiProviderSchema, method: aiAuthMethodSchema };
+export const aiDeploymentProtocolSchema = z.enum(["responses", "chat"]);
+export const aiDeploymentStatusSchema = z.enum(["stale", "verified", "failed"]);
+export type AiDeploymentProtocol = z.infer<typeof aiDeploymentProtocolSchema>;
+export type AiDeploymentStatus = z.infer<typeof aiDeploymentStatusSchema>;
+export const createAiDeploymentSchema = z.object({
+  modelId: z.string().trim().min(1).max(256),
+  displayName: z.string().trim().min(1).max(160).optional(),
+  protocol: aiDeploymentProtocolSchema,
+}).strict();
+export type CreateAiDeployment = z.infer<typeof createAiDeploymentSchema>;
+export interface AiDeploymentSummary {
+  id: string;
+  companyId: string;
+  connectionId: string;
+  modelId: string;
+  displayName?: string;
+  protocol: AiDeploymentProtocol;
+  status: AiDeploymentStatus;
+  verifiedCredentialEpoch: number;
+  lastError?: string;
+  verifiedAt?: string;
+  createdByUserId?: string;
+}
 export const aiConnectionBindingSchema = z.discriminatedUnion("mode", [
   z.object({
     provider: aiProviderSchema,
@@ -53,6 +76,7 @@ export const aiConnectionBindingSchema = z.discriminatedUnion("mode", [
       mode: z.literal("shared"),
       connectionId: z.string().uuid(),
       grantId: z.string().uuid(),
+      deploymentId: z.string().uuid().optional(),
     })
     .strict(),
   z
@@ -62,6 +86,7 @@ export const aiConnectionBindingSchema = z.discriminatedUnion("mode", [
       mode: z.literal("delegated"),
       connectionId: z.string().uuid(),
       grantId: z.string().uuid(),
+      deploymentId: z.string().uuid().optional(),
     })
     .strict(),
 ]);
@@ -165,9 +190,11 @@ export interface AiManagedConnectionSummary {
   method: AiAuthMethod;
   name: string;
   routing?: AiProviderRouting;
+  deployments?: AiDeploymentSummary[];
   accountLabel?: string;
   ownership: "personal" | "shared";
   ownerUserId?: string;
+  createdByUserId?: string;
   ownerName?: string;
   isDefault: boolean;
   status: "connected" | "needs_attention" | "expired" | "revoked";
