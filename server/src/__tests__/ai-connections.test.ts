@@ -1659,6 +1659,33 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(network).not.toHaveBeenCalled();
     } finally { network.mockRestore(); }
   });
+  it("validates custom gateway api-key connections before saving them", async () => {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "session", userId: "alice", companyIds: [companyId], memberships: [{ companyId, membershipRole: "member", status: "active" }] };
+      next();
+    });
+    app.use("/api", aiConnectionRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+    const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("must not reach provider"));
+    try {
+      const response = await request(app).post(`/api/companies/${companyId}/ai-connections`).send({
+        provider: "openai",
+        method: "api_key",
+        name: "Custom gateway",
+        ownership: "personal",
+        apiKey: "fixture",
+        allAgents: false,
+        agentIds: [],
+        routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://gateway.example/v1", models: [] },
+      });
+      expect(response.status).toBe(422);
+      expect(network).toHaveBeenCalledTimes(1);
+    } finally {
+      network.mockRestore();
+    }
+  });
   it.each(["anthropic", "openai"] as const)("reports a missing %s browser process after a server restart", async provider => {
     const [environment] = await db.select().from(environments).where(eq(environments.driver, "local")).limit(1);
     const id = randomUUID();

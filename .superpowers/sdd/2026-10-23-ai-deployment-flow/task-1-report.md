@@ -55,3 +55,12 @@
 - `pnpm --filter @paperclipai/ui exec vitest run src/components/ai-connections/useConnectionModels.test.tsx`
   - `Test Files  1 passed (1)`
   - `Tests  11 passed (11)`
+
+## Fix round 2
+- Restored the create-route validation branch for custom gateway/local API-key connections so `validateAiApiKey()` still runs before persistence.
+- Added a focused route regression test that posts a custom gateway API-key connection and verifies the request is rejected before save.
+
+### Verification rerun
+- `pnpm --filter @paperclipai/server exec vitest run src/__tests__/ai-connections.test.ts -t "validates custom gateway api-key connections before saving them"`
+  - `Test Files  1 passed (1)`
+  - `Tests  1 passed | 113 skipped (114)`

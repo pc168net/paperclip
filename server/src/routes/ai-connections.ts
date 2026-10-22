@@ -474,7 +474,8 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
         );
       const attemptStartedAt = new Date();
       // Validate official providers and OpenAI-compatible gateway destinations.
-      if (!input.routing || input.routing.kind === "openrouter") await validateAiApiKey(input.provider, input.apiKey!, fetch, input.routing);
+      if (!input.routing || input.routing.kind === "openrouter" || input.routing.kind === "gateway" || input.routing.kind === "local")
+        await validateAiApiKey(input.provider, input.apiKey!, fetch, input.routing);
       const result = await service.save(
         companyId,
         userId,
