@@ -153,6 +153,42 @@ it("rejects stale and failed deployments in connected-only mode", async () => {
   expect(container.textContent).toContain("No verified deployment is available");
 });
 
+it("keeps a legacy shared binding usable before a deployment is chosen", async () => {
+  const selected = {
+    id: "deployment-verified",
+    companyId: "company-1",
+    connectionId: "connection-1",
+    modelId: "azure-prod",
+    displayName: "Azure Prod",
+    protocol: "responses" as const,
+    status: "verified" as const,
+    verifiedCredentialEpoch: 1,
+    lastError: null,
+    verifiedAt: null,
+    createdByUserId: null,
+  };
+  await mount([connection({ deployments: [selected] })], { provider: "openai", method: "api_key", mode: "shared", connectionId: "connection-1", grantId: "grant-1" });
+
+  expect(container.textContent).toContain("Company OpenAI");
+  openSelect();
+  await settle();
+
+  const options = Array.from(document.querySelectorAll('[role="option"]')).map((node) => node.textContent ?? "");
+  expect(options).toEqual([expect.stringContaining("azure-prod")]);
+  const choice = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find((node) => node.textContent?.includes("azure-prod"));
+  expect(choice).toBeTruthy();
+  act(() => choice!.click());
+
+  expect(onChange).toHaveBeenCalledWith({
+    provider: "openai",
+    method: "api_key",
+    mode: "shared",
+    connectionId: "connection-1",
+    grantId: "grant-1",
+    deploymentId: "deployment-verified",
+  });
+});
+
 it("shows the verified deployment guidance when none are available", async () => {
   await mount([connection({ deployments: [], status: "needs_attention" })]);
 

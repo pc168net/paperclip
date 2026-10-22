@@ -1765,6 +1765,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await db.insert(aiDeployments).values([
       { id: randomUUID(), companyId: deploymentCompanyId, connectionId: account.connectionId, modelId: "verified-model", displayName: "Verified", protocol: "responses", status: "verified", verifiedCredentialEpoch: 1, verifiedAt: new Date(), lastError: null, createdByUserId: manager },
       { id: randomUUID(), companyId: deploymentCompanyId, connectionId: account.connectionId, modelId: "stale-model", displayName: "Stale", protocol: "chat", status: "stale", verifiedCredentialEpoch: 1, verifiedAt: null, lastError: null, createdByUserId: manager },
+      { id: randomUUID(), companyId: deploymentCompanyId, connectionId: account.connectionId, modelId: "failed-model", displayName: "Failed", protocol: "responses", status: "failed", verifiedCredentialEpoch: 1, verifiedAt: null, lastError: "Provider rejected the verification probe.", createdByUserId: manager },
     ]);
 
     const app = express();
@@ -1789,6 +1790,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     expect(managerList.body).toEqual(expect.arrayContaining([
       expect.objectContaining({ modelId: "verified-model", status: "verified" }),
       expect.objectContaining({ modelId: "stale-model", status: "stale" }),
+      expect.objectContaining({ modelId: "failed-model", status: "failed" }),
       expect.objectContaining({ modelId: "new-model", status: "stale" }),
     ]));
 
@@ -1819,6 +1821,50 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(verifyCalls).toHaveLength(1);
       expect(verifyCalls[0]).toMatchObject({ url: "https://example.test/v1/responses", init: { method: "POST", headers: expect.objectContaining({ "api-key": "stored-secret" }) } });
       expect(JSON.stringify(verify.body)).not.toContain("stored-secret");
+
+      const chatDeploymentId = randomUUID();
+      await db.insert(aiDeployments).values({ id: chatDeploymentId, companyId: deploymentCompanyId, connectionId: account.connectionId, modelId: "chat-model", displayName: "Chat", protocol: "chat", status: "verified", verifiedCredentialEpoch: currentConnection?.credentialEpoch ?? 1, verifiedAt: new Date(), lastError: null, createdByUserId: manager });
+      const verifyChat = await request(app).post(`${base}/${chatDeploymentId}/verify?grantId=${account.grantId}`).set("x-test-user", manager);
+      expect(verifyChat.status).toBe(200);
+      expect(verifyCalls).toHaveLength(2);
+      expect(verifyCalls[1]).toMatchObject({ url: "https://example.test/v1/chat/completions", init: { method: "POST", headers: expect.objectContaining({ "api-key": "stored-secret" }) } });
+      expect(JSON.parse(String(verifyCalls[1].init?.body))).toEqual({ model: "chat-model", messages: [{ role: "user", content: "ping" }], max_tokens: 1 });
+
+      const rotated = await service.save(deploymentCompanyId, manager, {
+        provider: "openai",
+        method: "api_key",
+        ownership: "shared",
+        name: "Deployment account",
+        connectionId: account.connectionId,
+        apiKey: "rotated-secret",
+        routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://example.test/v1", models: [] },
+        agentIds: [],
+        allAgents: true,
+      }, "rotated-secret");
+      expect(rotated.connectionId).toBe(account.connectionId);
+      const [rotatedConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, account.connectionId));
+      expect(rotatedConnection?.credentialEpoch).toBeGreaterThan(1);
+      const [rotatedVerified] = await db.select().from(aiDeployments).where(eq(aiDeployments.id, createBody.id));
+      const [rotatedFailed] = await db.select().from(aiDeployments).where(eq(aiDeployments.modelId, "failed-model"));
+      expect(rotatedVerified?.status).toBe("stale");
+      expect(rotatedFailed?.status).toBe("failed");
+      expect((await request(app).get(base).set("x-test-user", reader)).body).toEqual([]);
+      await expect(service.select({
+        companyId: deploymentCompanyId,
+        agentId: randomUUID(),
+        userId: manager,
+        adapterType: "custom_local",
+        binding: { mode: "shared", provider: "openai", method: "api_key", connectionId: account.connectionId, grantId: account.grantId, deploymentId: createBody.id },
+      })).rejects.toMatchObject({ status: 422, details: { code: "ai_connection_deployment_missing" } });
+      const legacy = await service.select({
+        companyId: deploymentCompanyId,
+        agentId: randomUUID(),
+        userId: manager,
+        adapterType: "custom_local",
+        binding: { mode: "shared", provider: "openai", method: "api_key", connectionId: account.connectionId, grantId: account.grantId },
+      });
+      expect(legacy.deployment).toBeUndefined();
+      expect(legacy.attribution).not.toHaveProperty("deploymentId");
     } finally {
       probe.mockRestore();
     }
@@ -1828,6 +1874,14 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     expect(deleted.body).toEqual({ ok: true });
     expect((await db.select().from(aiDeployments).where(eq(aiDeployments.id, createBody.id)))).toHaveLength(0);
     expect((await db.select().from(activityLog).where(and(eq(activityLog.companyId, deploymentCompanyId), eq(activityLog.entityId, createBody.id), eq(activityLog.action, "ai_deployment.deleted"))))).toHaveLength(1);
+
+    await expect(service.select({
+      companyId: deploymentCompanyId,
+      agentId: randomUUID(),
+      userId: manager,
+      adapterType: "custom_local",
+      binding: { mode: "shared", provider: "openai", method: "api_key", connectionId: account.connectionId, grantId: account.grantId, deploymentId: createBody.id },
+    })).rejects.toMatchObject({ status: 422, details: { code: "ai_connection_deployment_missing" } });
 
     expect((await request(app).post(base).set("x-test-user", reader).send({ modelId: "reader-denied", protocol: "responses" })).status).toBe(403);
     expect((await request(app).post(`${base}/${createBody.id}/verify?grantId=${account.grantId}`).set("x-test-user", reader).send()).status).toBe(403);
