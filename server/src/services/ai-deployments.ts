@@ -75,11 +75,14 @@ export async function resolveVerifiedAiDeployment(
   grant: typeof connectionGrants.$inferSelect;
   routing: AiProviderRouting;
 }> {
+  if (!input.grantId) {
+    throw configFailure({ companyId: input.companyId, connectionId: input.connectionId, deploymentId: input.deploymentId, grantId: null, grantRequired: true });
+  }
   const [row] = await db
     .select({ deployment: aiDeployments, connection: toolConnections, grant: connectionGrants })
     .from(aiDeployments)
     .innerJoin(toolConnections, and(eq(toolConnections.companyId, aiDeployments.companyId), eq(toolConnections.id, aiDeployments.connectionId)))
-    .innerJoin(connectionGrants, and(eq(connectionGrants.companyId, toolConnections.companyId), eq(connectionGrants.connectionId, toolConnections.id)))
+    .innerJoin(connectionGrants, and(eq(connectionGrants.companyId, toolConnections.companyId), eq(connectionGrants.connectionId, toolConnections.id), eq(connectionGrants.id, input.grantId)))
     .where(and(
       eq(aiDeployments.companyId, input.companyId),
       eq(aiDeployments.id, input.deploymentId),
@@ -88,18 +91,17 @@ export async function resolveVerifiedAiDeployment(
       eq(toolConnections.status, "active"),
       eq(toolConnections.enabled, true),
       eq(connectionGrants.status, "active"),
-      ...(input.grantId ? [eq(connectionGrants.id, input.grantId)] : []),
     ))
     .limit(1);
 
-  if (!row) throw configFailure({ companyId: input.companyId, connectionId: input.connectionId, deploymentId: input.deploymentId, grantId: input.grantId ?? null });
+  if (!row) throw configFailure({ companyId: input.companyId, connectionId: input.connectionId, deploymentId: input.deploymentId, grantId: input.grantId });
 
   const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
   if (!metadata.success || !metadata.data.routing || !["gateway", "local"].includes(metadata.data.routing.kind)) {
-    throw configFailure({ companyId: input.companyId, connectionId: input.connectionId, deploymentId: input.deploymentId, grantId: input.grantId ?? row.grant.id });
+    throw configFailure({ companyId: input.companyId, connectionId: input.connectionId, deploymentId: input.deploymentId, grantId: input.grantId });
   }
   if (row.deployment.status !== "verified" || row.deployment.verifiedCredentialEpoch !== row.connection.credentialEpoch) {
-    throw configFailure({ companyId: input.companyId, connectionId: input.connectionId, deploymentId: input.deploymentId, grantId: row.grant.id, verifiedCredentialEpoch: row.deployment.verifiedCredentialEpoch, currentCredentialEpoch: row.connection.credentialEpoch });
+    throw configFailure({ companyId: input.companyId, connectionId: input.connectionId, deploymentId: input.deploymentId, grantId: input.grantId, verifiedCredentialEpoch: row.deployment.verifiedCredentialEpoch, currentCredentialEpoch: row.connection.credentialEpoch });
   }
   return { deployment: row.deployment, connection: row.connection, grant: row.grant, routing: metadata.data.routing };
 }

@@ -397,8 +397,9 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
     const companyId = req.params.companyId as string;
     const connectionId = z.string().uuid().parse(req.params.connectionId);
     const deploymentId = z.string().uuid().parse(req.params.deploymentId);
+    const grantId = typeof req.query.grantId === "string" ? z.string().uuid().parse(req.query.grantId) : undefined;
     const { userId } = await assertAiDeploymentManageAccess(db, req, companyId, connectionId);
-    const resolved = await resolveVerifiedAiDeployment(db, { companyId, connectionId, deploymentId });
+    const resolved = await resolveVerifiedAiDeployment(db, { companyId, connectionId, deploymentId, grantId });
     const credential = await service.credential({ connection: resolved.connection, grant: resolved.grant });
     const result = await verifyAiDeployment(resolved.routing, credential, { modelId: resolved.deployment.modelId, protocol: resolved.deployment.protocol as AiDeploymentProtocol }, fetch);
     const [saved] = await db.update(aiDeployments).set({ status: result.ok ? "verified" : "failed", lastError: result.ok ? null : result.error.slice(0, 1024), verifiedAt: result.ok ? new Date() : null, verifiedCredentialEpoch: resolved.connection.credentialEpoch, updatedAt: new Date() })

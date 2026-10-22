@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { createDb, aiDeployments, companies, companyMemberships, toolConnections } from "@paperclipai/db";
+import { createDb, aiDeployments, companies, companyMemberships, connectionGrants, toolConnections } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { aiConnectionService } from "./ai-connections.js";
 import { verifyAiDeployment, markAiDeploymentsStale, resolveVerifiedAiDeployment } from "./ai-deployments.js";
@@ -54,9 +54,20 @@ describe("verifyAiDeployment", () => {
     expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ model: "chat-model", messages: [{ role: "user", content: "ping" }], max_tokens: 1 });
   });
 
-  it("classifies timeout and auth failures without storing provider bodies", async () => {
+  it("classifies timeout and protocol failures without storing provider bodies", async () => {
     await expect(verifyAiDeployment(routing, "stored-secret", { modelId: "azure-deployment", protocol: "responses" }, (async () => { throw Object.assign(new Error("Timeout"), { name: "TimeoutError" }); }) as typeof fetch)).resolves.toEqual({ ok: false, error: "The verification probe timed out." });
-    await expect(verifyAiDeployment(routing, "stored-secret", { modelId: "azure-deployment", protocol: "responses" }, (async () => new Response("provider detail", { status: 401 })) as typeof fetch)).resolves.toEqual({ ok: false, error: "The stored credential was rejected." });
+    await expect(verifyAiDeployment(routing, "stored-secret", { modelId: "azure-deployment", protocol: "responses" }, (async () => { throw new TypeError("network protocol error"); }) as typeof fetch)).resolves.toEqual({ ok: false, error: "The endpoint could not be reached." });
+  });
+
+  it.each([
+    { status: 401, error: "The stored credential was rejected." },
+    { status: 403, error: "The stored credential was rejected." },
+    { status: 404, error: "The deployment or API path was not found." },
+  ] as const)("redacts provider bodies for HTTP $status responses", async ({ status, error }) => {
+    const request = (async () => new Response("super-secret-provider-body", { status })) as typeof fetch;
+    const result = await verifyAiDeployment({ ...routing, auth: "bearer" }, "stored-secret", { modelId: "azure-deployment", protocol: "responses" }, request);
+    expect(result).toEqual({ ok: false, error });
+    expect((result as { ok: false; error: string }).error).not.toContain("super-secret-provider-body");
   });
 });
 
@@ -74,6 +85,18 @@ describeEmbeddedPostgres("deployment resolution and stale propagation", () => {
       const otherCreated = await service.save(otherCompanyId, "board", { provider: "openai", method: "api_key", ownership: "shared", name: "Other AI", apiKey: "stored-secret", routing, agentIds: [], allAgents: true }, "stored-secret");
       const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, created.connectionId));
       const [otherConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, otherCreated.connectionId));
+      const [primaryGrant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, created.grantId));
+      const alternateGrantId = randomUUID();
+      await db.insert(connectionGrants).values({
+        id: alternateGrantId,
+        companyId,
+        connectionId: created.connectionId,
+        kind: "organization",
+        status: "active",
+        providerTenant: primaryGrant?.providerTenant ?? {},
+        credentialSecretRefs: primaryGrant?.credentialSecretRefs ?? [],
+        createdByUserId: "board",
+      });
       const verifiedId = randomUUID();
       const failedId = randomUUID();
       const otherId = randomUUID();
@@ -94,16 +117,17 @@ describeEmbeddedPostgres("deployment resolution and stale propagation", () => {
       expect(failed?.status).toBe('failed');
       expect(other?.status).toBe('verified');
 
-      await expect(resolveVerifiedAiDeployment(db, { companyId, connectionId: created.connectionId, deploymentId: verified!.id })).rejects.toMatchObject({ status: 422, details: { code: 'ai_connection_deployment_missing' } });
+      await expect(resolveVerifiedAiDeployment(db, { companyId, connectionId: created.connectionId, deploymentId: verified!.id })).rejects.toMatchObject({ status: 422, details: { code: 'ai_connection_deployment_missing', grantRequired: true } });
 
       const [fresh] = await db.insert(aiDeployments).values({ id: randomUUID(), companyId, connectionId: created.connectionId, modelId: "fresh-model", displayName: "Fresh", protocol: "responses", status: "verified", verifiedCredentialEpoch: connection!.credentialEpoch, createdByUserId: "board", verifiedAt: new Date(), lastError: null }).returning();
-      const resolved = await resolveVerifiedAiDeployment(db, { companyId, connectionId: created.connectionId, deploymentId: fresh!.id });
+      const resolved = await resolveVerifiedAiDeployment(db, { companyId, connectionId: created.connectionId, deploymentId: fresh!.id, grantId: alternateGrantId });
       expect(resolved).toMatchObject({
         routing: expect.objectContaining({ kind: 'gateway', protocol: 'responses' }),
         deployment: expect.objectContaining({ id: fresh!.id, status: 'verified', verifiedCredentialEpoch: connection!.credentialEpoch }),
+        grant: expect.objectContaining({ id: alternateGrantId }),
       });
 
-      await expect(resolveVerifiedAiDeployment(db, { companyId, connectionId: created.connectionId, deploymentId: failed!.id })).rejects.toMatchObject({ status: 422, details: { code: 'ai_connection_deployment_missing' } });
+      await expect(resolveVerifiedAiDeployment(db, { companyId, connectionId: created.connectionId, deploymentId: failed!.id, grantId: created.grantId })).rejects.toMatchObject({ status: 422, details: { code: 'ai_connection_deployment_missing' } });
     } finally {
       await database?.cleanup();
       database = undefined;
