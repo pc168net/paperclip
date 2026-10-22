@@ -304,4 +304,65 @@ describeEmbeddedPostgres("managed AI deployment resolution", () => {
       database = undefined;
     }
   });
+
+  it("rejects execution after the selected deployment is deleted", async () => {
+    database = await startEmbeddedPostgresTestDatabase("paperclip-ai-connections-service-");
+    try {
+      const db = createDb(database.connectionString);
+      const companyId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: "PCL" });
+      await db.insert(companyMemberships).values({ companyId, principalId: "alice", principalType: "user", status: "active", membershipRole: "member" });
+      const service = aiConnectionService(db);
+      const created = await service.save(companyId, "alice", {
+        provider: "openai",
+        method: "api_key",
+        ownership: "shared",
+        name: "Managed custom",
+        apiKey: "stored-secret",
+        routing,
+        agentIds: [],
+        allAgents: true,
+      }, "stored-secret");
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, created.connectionId));
+      const deploymentId = randomUUID();
+      await db.insert(aiDeployments).values({
+        id: deploymentId,
+        companyId,
+        connectionId: created.connectionId,
+        modelId: "azure-deployment",
+        displayName: "Azure deployment",
+        protocol: "responses",
+        status: "verified",
+        verifiedCredentialEpoch: connection!.credentialEpoch,
+        createdByUserId: "alice",
+        verifiedAt: new Date(),
+        lastError: null,
+      });
+      await db.delete(aiDeployments).where(eq(aiDeployments.id, deploymentId));
+
+      await expect(prepareManagedAiRuntime(db, {
+        companyId,
+        agentId: randomUUID(),
+        responsibleUserId: "alice",
+        adapterType: "custom_local",
+        binding: {
+          mode: "shared",
+          provider: "openai",
+          method: "api_key",
+          connectionId: created.connectionId,
+          grantId: created.grantId,
+          deploymentId,
+        },
+        config: {
+          model: "gpt-5.6-luna",
+          provider: "custom",
+          managedAiRouting: routing,
+          env: { PAPERCLIP_AI_PROVIDER_KEY: "stored-secret" },
+        },
+      })).rejects.toMatchObject({ status: 422, details: { code: "ai_connection_deployment_missing" } });
+    } finally {
+      await database?.cleanup();
+      database = undefined;
+    }
+  });
 });

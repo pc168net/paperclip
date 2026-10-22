@@ -46,14 +46,14 @@ function resolveRoute(config: Record<string, unknown>) {
   return { ...parsed.data, baseUrl };
 }
 
-function resolveModel(config: Record<string, unknown>, route: ReturnType<typeof resolveRoute>): string {
+function resolveModel(config: Record<string, unknown>, route: ReturnType<typeof resolveRoute>): { model: string; managed: boolean } {
   const managed = config.managedAiConnection && typeof config.managedAiConnection === "object"
     ? config.managedAiConnection as Record<string, unknown>
     : undefined;
   const managedModel = typeof managed?.modelId === "string" ? managed.modelId.trim() : "";
+  if (managed) return { model: managedModel.replace(/^paperclip\//, ""), managed: true };
   const configured = typeof config.model === "string" ? config.model.trim() : "";
-  const model = managedModel || configured || route.models[0]?.id || "";
-  return model.replace(/^paperclip\//, "");
+  return { model: (configured || route.models[0]?.id || "").replace(/^paperclip\//, ""), managed: false };
 }
 
 function resolvePrompt(ctx: AdapterExecutionContext): string {
@@ -157,7 +157,10 @@ export async function executeCustom(ctx: AdapterExecutionContext): Promise<Adapt
     return { exitCode: 1, signal: null, timedOut: false, errorCode: "custom_configuration_invalid", errorMessage: error instanceof Error ? error.message : String(error) };
   }
 
-  const model = resolveModel(ctx.config, route);
+  const { model, managed } = resolveModel(ctx.config, route);
+  if (managed && !model) {
+    return { exitCode: 1, signal: null, timedOut: false, errorCode: "custom_model_missing", errorMessage: "Managed custom connections require a verified deployment model." };
+  }
   if (!model) return { exitCode: 1, signal: null, timedOut: false, errorCode: "custom_model_missing", errorMessage: "Custom runner requires a model or deployment ID." };
   const env = parseObject(ctx.config.env);
   const credential = route.auth === "none" ? "" : typeof env.PAPERCLIP_AI_PROVIDER_KEY === "string" ? env.PAPERCLIP_AI_PROVIDER_KEY : "";

@@ -89,4 +89,36 @@ describe("custom HTTP adapter", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     vi.unstubAllGlobals();
   });
+
+  it("rejects a managed connection that has no resolved deployment model", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await executeCustom({
+      ...context("responses"),
+      config: {
+        ...context("responses").config,
+        model: "",
+        managedAiRouting: {
+          kind: "gateway",
+          protocol: "responses",
+          baseUrl: "https://gateway.example/v1",
+          auth: "api_key",
+          models: [{ id: "gpt-5.6-luna" }],
+        },
+        managedAiConnection: {
+          connectionId: "connection-1",
+          grantId: "grant-1",
+          deploymentId: "deployment-1",
+          protocol: "responses",
+          routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://gateway.example/v1", models: [] },
+        },
+      },
+    } as AdapterExecutionContext);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("custom_model_missing");
+    expect(result.errorMessage).toContain("deployment model");
+    expect(fetchMock).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
 });
