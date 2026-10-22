@@ -12,6 +12,7 @@ import {
   toolConnections,
   connectionGrants,
   agents,
+  aiDeployments,
 } from "@paperclipai/db";
 import {
   createAiConnectionSchema,
@@ -26,6 +27,10 @@ import {
   type AiConnectionList,
   aiConnectionPoolConfigSchema,
   aiProviderRoutingSchema,
+  aiConnectionMetadataSchema,
+  createAiDeploymentSchema,
+  type AiDeploymentSummary,
+  type AiDeploymentProtocol,
 } from "@paperclipai/shared";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
@@ -35,6 +40,7 @@ import { aiConnectionRouterService } from "../services/ai-connection-router.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { validate } from "../middleware/validate.js";
 import { toolAccessService } from "../services/tool-access.js";
+import { verifyAiDeployment } from "../services/ai-deployments.js";
 
 /** Agent API calls inherit authenticated run identity, never the agent's own ID. */
 export function responsibleUserForAiRequest(req: Request): string | null {
@@ -49,6 +55,39 @@ export async function canManageAiConnections(db: Db, req: Request, companyId: st
   return req.actor.source === "local_implicit" || Boolean(req.actor.isInstanceAdmin)
     || membership?.membershipRole === "owner" || membership?.membershipRole === "admin"
     || await accessService(db).hasPermission(companyId, "user", getActorInfo(req).actorId, "tools:manage_connections");
+}
+
+/** Deployment changes can be made by the connection owner or the existing
+ * company connection-management authority; ordinary connection users cannot
+ * turn an arbitrary model name into an approved deployment. */
+async function assertAiDeploymentManageAccess(db: Db, req: Request, companyId: string, connectionId: string) {
+  assertBoard(req);
+  assertCompanyAccess(req, companyId);
+  const userId = getActorInfo(req).actorId;
+  const [connection] = await db.select({ id: toolConnections.id, creator: toolConnections.createdByUserId })
+    .from(toolConnections).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId), eq(toolConnections.connectionPurpose, "ai"))).limit(1);
+  if (!connection) throw notFound("AI connection not found");
+  const owner = connection.creator === userId || Boolean((await db.select({ id: connectionGrants.id })
+    .from(connectionGrants).where(and(eq(connectionGrants.companyId, companyId), eq(connectionGrants.connectionId, connectionId), eq(connectionGrants.subjectUserId, userId))).limit(1))[0]);
+  if (!owner && !(await canManageAiConnections(db, req, companyId)))
+    throw forbidden("Only the connection owner or a connection manager can manage deployments");
+  return { connection, userId };
+}
+
+function deploymentSummary(row: typeof aiDeployments.$inferSelect): AiDeploymentSummary {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    connectionId: row.connectionId,
+    modelId: row.modelId,
+    displayName: row.displayName,
+    protocol: row.protocol as AiDeploymentSummary["protocol"],
+    status: row.status as AiDeploymentSummary["status"],
+    verifiedCredentialEpoch: row.verifiedCredentialEpoch,
+    lastError: row.lastError,
+    verifiedAt: row.verifiedAt ? row.verifiedAt.toISOString() : null,
+    createdByUserId: row.createdByUserId,
+  };
 }
 
 export async function assertAiConnectionCreateAccess(
@@ -330,9 +369,91 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
       if (!routingResult.success)
         throw unprocessable("Base URL is invalid.", { code: "ai_connection_base_url_invalid" });
       const routing = routingResult.data;
+      if (new URL(routing.baseUrl ?? "").hostname.endsWith(".openai.azure.com"))
+        throw unprocessable("Azure OpenAI model catalogs are not deployments. Save the connection, then add and verify its deployment.", { code: "ai_connection_models_unsupported" });
       if (routing.auth !== "none" && !input.apiKey?.trim()) throw unprocessable("Enter an API key before discovering models.", { code: "ai_connection_api_key_rejected" });
       res.setHeader("Cache-Control", "no-store");
       res.json(await discoverAiGateway(input.apiKey?.trim() ?? "", routing, fetch));
+    },
+  );
+  router.get("/companies/:companyId/ai-connections/:connectionId/deployments", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const connectionId = z.string().uuid().parse(req.params.connectionId);
+    await assertAiDeploymentManageAccess(db, req, companyId, connectionId);
+    res.setHeader("Cache-Control", "no-store");
+    res.json((await db.select().from(aiDeployments).where(and(eq(aiDeployments.companyId, companyId), eq(aiDeployments.connectionId, connectionId)))).map(deploymentSummary));
+  });
+  router.post("/companies/:companyId/ai-connections/:connectionId/deployments", validate(createAiDeploymentSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const connectionId = z.string().uuid().parse(req.params.connectionId);
+    const { userId } = await assertAiDeploymentManageAccess(db, req, companyId, connectionId);
+    const input = createAiDeploymentSchema.parse(req.body);
+    const [deployment] = await db.insert(aiDeployments).values({ companyId, connectionId, ...input, createdByUserId: userId })
+      .onConflictDoUpdate({ target: [aiDeployments.companyId, aiDeployments.connectionId, aiDeployments.modelId, aiDeployments.protocol], set: { status: "stale", lastError: null, verifiedAt: null, updatedAt: new Date() } }).returning();
+    await logActivity(db, { companyId, actorType: "user", actorId: userId, action: "ai_deployment.created", entityType: "ai_deployment", entityId: deployment!.id, details: { connectionId, modelId: input.modelId, protocol: input.protocol } });
+    res.status(201).json(deploymentSummary(deployment!));
+  });
+  router.post("/companies/:companyId/ai-connections/:connectionId/deployments/:deploymentId/verify", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const connectionId = z.string().uuid().parse(req.params.connectionId);
+    const deploymentId = z.string().uuid().parse(req.params.deploymentId);
+    const { userId } = await assertAiDeploymentManageAccess(db, req, companyId, connectionId);
+    const [row] = await db.select({ deployment: aiDeployments, connection: toolConnections, grant: connectionGrants })
+      .from(aiDeployments).innerJoin(toolConnections, eq(toolConnections.id, aiDeployments.connectionId))
+      .innerJoin(connectionGrants, and(eq(connectionGrants.connectionId, toolConnections.id), eq(connectionGrants.companyId, toolConnections.companyId)))
+      .where(and(eq(aiDeployments.companyId, companyId), eq(aiDeployments.connectionId, connectionId), eq(aiDeployments.id, deploymentId), eq(connectionGrants.status, "active"))).limit(1);
+    if (!row) throw notFound("AI deployment not found");
+    const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
+    if (!metadata.success || !metadata.data.routing || !["gateway", "local"].includes(metadata.data.routing.kind))
+      throw unprocessable("This connection does not support deployable endpoint verification");
+    const credential = await service.credential(row);
+    const result = await verifyAiDeployment(metadata.data.routing, credential, { modelId: row.deployment.modelId, protocol: row.deployment.protocol as AiDeploymentProtocol }, fetch);
+    const [saved] = await db.update(aiDeployments).set({ status: result.ok ? "verified" : "failed", lastError: result.ok ? null : result.error.slice(0, 1024), verifiedAt: result.ok ? new Date() : null, verifiedCredentialEpoch: row.connection.credentialEpoch, updatedAt: new Date() })
+      .where(and(eq(aiDeployments.companyId, companyId), eq(aiDeployments.id, deploymentId))).returning();
+    await logActivity(db, { companyId, actorType: "user", actorId: userId, action: "ai_deployment.verified", entityType: "ai_deployment", entityId: deploymentId, details: { connectionId, status: saved!.status } });
+    res.json(deploymentSummary(saved!));
+  });
+  router.delete("/companies/:companyId/ai-connections/:connectionId/deployments/:deploymentId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const connectionId = z.string().uuid().parse(req.params.connectionId);
+    const deploymentId = z.string().uuid().parse(req.params.deploymentId);
+    const { userId } = await assertAiDeploymentManageAccess(db, req, companyId, connectionId);
+    const [removed] = await db.delete(aiDeployments).where(and(eq(aiDeployments.companyId, companyId), eq(aiDeployments.connectionId, connectionId), eq(aiDeployments.id, deploymentId))).returning();
+    if (!removed) throw notFound("AI deployment not found");
+    await logActivity(db, { companyId, actorType: "user", actorId: userId, action: "ai_deployment.deleted", entityType: "ai_deployment", entityId: deploymentId, details: { connectionId } });
+    res.json({ ok: true });
+  });
+  router.get(
+    "/companies/:companyId/ai-connections/:connectionId/models",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertBoard(req);
+      assertCompanyAccess(req, companyId);
+      const connectionId = z.string().uuid().parse(req.params.connectionId);
+      const grantId = typeof req.query.grantId === "string" ? z.string().uuid().parse(req.query.grantId) : undefined;
+      const account = (await service.list(companyId, getActorInfo(req).actorId)).find(item =>
+        item.id === connectionId && (!grantId || item.grantId === grantId),
+      );
+      if (!account?.routing || account.routing.kind !== "gateway") throw notFound("Custom AI connection not found");
+      try {
+        if (new URL(account.routing.baseUrl ?? "").hostname.endsWith(".openai.azure.com"))
+          throw unprocessable("Azure OpenAI model catalogs are not deployments. Add and verify a deployment instead.", { code: "ai_connection_models_unsupported" });
+      } catch (error) {
+        if (error instanceof Error && "status" in error) throw error;
+      }
+      const [row] = await db.select({ connection: toolConnections, grant: connectionGrants })
+        .from(connectionGrants)
+        .innerJoin(toolConnections, eq(toolConnections.id, connectionGrants.connectionId))
+        .where(and(
+          eq(toolConnections.companyId, companyId),
+          eq(toolConnections.id, connectionId),
+          eq(connectionGrants.id, account.grantId),
+        ))
+        .limit(1);
+      if (!row) throw notFound("Custom AI connection not found");
+      const credential = account.routing.auth === "none" ? "" : await service.credential(row);
+      res.setHeader("Cache-Control", "no-store");
+      res.json(await discoverAiGateway(credential, account.routing, fetch));
     },
   );
   router.post(
@@ -353,7 +474,7 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
         );
       const attemptStartedAt = new Date();
       // Validate official providers and OpenAI-compatible gateway destinations.
-      if (!input.routing || input.routing.kind === "openrouter" || input.routing.kind === "gateway") await validateAiApiKey(input.provider, input.apiKey!, fetch, input.routing);
+      if (!input.routing || input.routing.kind === "openrouter") await validateAiApiKey(input.provider, input.apiKey!, fetch, input.routing);
       const result = await service.save(
         companyId,
         userId,

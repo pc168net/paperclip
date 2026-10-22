@@ -39,4 +39,19 @@
 
 ## Notes / Concerns
 - `db:generate` produced a small follow-up migration (`0356_happy_lilandra.sql`) for default-setting changes after the main `0355` migration.
-- The server route/service code still contains the older deployment field/status usage and will need the later flow tasks to consume the new shared contract.
+
+## Fix follow-up
+- Aligned the current server consumers to the canonical deployment contract:
+  - `server/src/routes/ai-connections.ts` now reads/writes `status: stale|verified|failed`, `lastError`, and `verifiedCredentialEpoch`.
+  - `server/src/services/ai-connections.ts` now projects `displayName`, `lastError`, `verifiedCredentialEpoch`, and null-preserving timestamps.
+- Preserved nullability in shared deployment types so summary fields are not lossy:
+  - `AiDeploymentSummary.displayName | lastError | verifiedAt | createdByUserId` are now nullable.
+  - `CreateAiDeployment.displayName` now accepts `null`.
+- Updated the deployment fixture in `ui/src/components/ai-connections/useConnectionModels.test.tsx` to include the new required summary fields.
+
+### Verification rerun
+- `pnpm -r exec tsc --noEmit --pretty false`
+  - Passed with no output.
+- `pnpm --filter @paperclipai/ui exec vitest run src/components/ai-connections/useConnectionModels.test.tsx`
+  - `Test Files  1 passed (1)`
+  - `Tests  11 passed (11)`

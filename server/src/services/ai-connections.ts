@@ -10,6 +10,7 @@ import {
   adapterAuthSessions,
   aiConnectionDefaults,
   aiProviderDefaults,
+  aiDeployments,
   agents,
   heartbeatRuns,
   companyMemberships,
@@ -103,7 +104,7 @@ export function aiConnectionService(db: Db) {
     userId: string,
     _agentId?: string,
   ): Promise<AiManagedConnectionSummary[]> {
-    const [accounts, defaults, members, owners] =
+    const [accounts, defaults, members, owners, deployments] =
       await Promise.all([
         rows(companyId),
         db
@@ -130,6 +131,7 @@ export function aiConnectionService(db: Db) {
               eq(companyMemberships.principalType, "user"),
             ),
           ),
+        db.select().from(aiDeployments).where(eq(aiDeployments.companyId, companyId)),
       ]);
     return accounts.flatMap(({ connection, grant }) => {
       const metadata = aiConnectionMetadataSchema.safeParse(
@@ -145,6 +147,21 @@ export function aiConnectionService(db: Db) {
           grantId: grant.id,
           companyId,
           ...metadata.data,
+          deployments: deployments
+            .filter((deployment) => deployment.connectionId === connection.id)
+            .map((deployment) => ({
+              id: deployment.id,
+              companyId: deployment.companyId,
+              connectionId: deployment.connectionId,
+              modelId: deployment.modelId,
+              displayName: deployment.displayName,
+              protocol: deployment.protocol as "responses" | "chat",
+              status: deployment.status as "stale" | "verified" | "failed",
+              verifiedCredentialEpoch: deployment.verifiedCredentialEpoch,
+              lastError: deployment.lastError,
+              verifiedAt: deployment.verifiedAt ? deployment.verifiedAt.toISOString() : null,
+              createdByUserId: deployment.createdByUserId,
+            })),
           usageProbeSupported: supportsAiConnectionUsage(metadata.data.provider, metadata.data.method),
           name: connection.name,
           accountLabel: grant.providerTenant?.name,
@@ -152,6 +169,7 @@ export function aiConnectionService(db: Db) {
           ownership:
             grant.kind === "user" ? ("personal" as const) : ("shared" as const),
           ownerUserId: grant.subjectUserId ?? undefined,
+          createdByUserId: connection.createdByUserId ?? undefined,
           ownerName:
             owners.find((owner) => owner.id === grant.subjectUserId)?.name ??
             (grant.subjectUserId === userId ? "You" : "Account owner"),
@@ -324,6 +342,18 @@ export function aiConnectionService(db: Db) {
         ))
     )
       throw aiConnectionConfigurationFailure("ai_connection_unavailable", "Reconnect or validate the selected AI account", { connectionId: connection.id });
+    if (metadata.data.routing && ["gateway", "local"].includes(metadata.data.routing.kind) && binding.mode !== "responsible_user" && binding.deploymentId) {
+      const [deployment] = await db.select().from(aiDeployments).where(and(
+        eq(aiDeployments.companyId, companyId),
+        eq(aiDeployments.id, binding.deploymentId),
+        eq(aiDeployments.connectionId, connection.id),
+        eq(aiDeployments.status, "verified"),
+      )).limit(1);
+      if (!deployment)
+        throw aiConnectionConfigurationFailure("ai_connection_deployment_missing", "The selected deployment is not verified", { connectionId: connection.id });
+      if (typeof input.model === "string" && input.model && input.model !== deployment.modelId)
+        throw aiConnectionConfigurationFailure("ai_connection_incompatible", "The agent model must match the selected verified deployment", { connectionId: connection.id });
+    }
     if (
       grant.kind === "user" &&
       !(await membership(companyId, grant.subjectUserId))

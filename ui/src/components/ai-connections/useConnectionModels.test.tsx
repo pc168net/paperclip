@@ -79,6 +79,23 @@ it("does not reuse public OpenRouter models after switching to a custom gateway"
   expect(result?.refreshModels).toBeUndefined();
 });
 
+it("uses only the bound verified deployment model for a custom endpoint", async () => {
+  const gateway: AiManagedConnectionSummary = {
+    ...account,
+    id: "gateway",
+    grantId: "gateway-grant",
+    provider: "openai",
+    routing: { kind: "gateway", protocol: "chat", auth: "bearer", baseUrl: "https://example.com/v1", models: [{ id: "legacy-catalog" }] },
+    deployments: [
+      { id: "verified", companyId: "company", connectionId: "gateway", modelId: "approved-deployment", displayName: null, protocol: "chat", status: "verified", verifiedCredentialEpoch: 1, lastError: null, verifiedAt: null, createdByUserId: null },
+      { id: "failed", companyId: "company", connectionId: "gateway", modelId: "unapproved-deployment", displayName: null, protocol: "chat", status: "failed", verifiedCredentialEpoch: 1, lastError: null, verifiedAt: null, createdByUserId: null },
+    ],
+  };
+  await mount([gateway], "custom_local", { provider: "openai", method: "api_key", mode: "shared", connectionId: gateway.id, grantId: gateway.grantId, deploymentId: "verified" });
+  expect(result?.models).toEqual([{ id: "approved-deployment", label: "approved-deployment" }]);
+  expect(agentsApi.adapterModels).not.toHaveBeenCalled();
+});
+
 it("leaves native model discovery alone", async () => {
   await mount([], "codex_local", { provider: "openai", method: "subscription", mode: "responsible_user" });
   expect(result).toBeUndefined();

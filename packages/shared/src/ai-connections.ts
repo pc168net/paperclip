@@ -45,7 +45,7 @@ export type AiDeploymentProtocol = z.infer<typeof aiDeploymentProtocolSchema>;
 export type AiDeploymentStatus = z.infer<typeof aiDeploymentStatusSchema>;
 export const createAiDeploymentSchema = z.object({
   modelId: z.string().trim().min(1).max(256),
-  displayName: z.string().trim().min(1).max(160).optional(),
+  displayName: z.string().trim().min(1).max(160).nullable().optional(),
   protocol: aiDeploymentProtocolSchema,
 }).strict();
 export type CreateAiDeployment = z.infer<typeof createAiDeploymentSchema>;
@@ -54,13 +54,13 @@ export interface AiDeploymentSummary {
   companyId: string;
   connectionId: string;
   modelId: string;
-  displayName?: string;
+  displayName: string | null;
   protocol: AiDeploymentProtocol;
   status: AiDeploymentStatus;
   verifiedCredentialEpoch: number;
-  lastError?: string;
-  verifiedAt?: string;
-  createdByUserId?: string;
+  lastError: string | null;
+  verifiedAt: string | null;
+  createdByUserId: string | null;
 }
 export const aiConnectionBindingSchema = z.discriminatedUnion("mode", [
   z.object({
