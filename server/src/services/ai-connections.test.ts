@@ -305,6 +305,56 @@ describeEmbeddedPostgres("managed AI deployment resolution", () => {
     }
   });
 
+  it("preserves the configured model for a legacy managed binding without deployment metadata", async () => {
+    database = await startEmbeddedPostgresTestDatabase("paperclip-ai-connections-service-");
+    try {
+      const db = createDb(database.connectionString);
+      const companyId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: "PCL" });
+      await db.insert(companyMemberships).values({ companyId, principalId: "alice", principalType: "user", status: "active", membershipRole: "member" });
+      const service = aiConnectionService(db);
+      const created = await service.save(companyId, "alice", {
+        provider: "openai",
+        method: "api_key",
+        ownership: "shared",
+        name: "Managed custom",
+        apiKey: "stored-secret",
+        routing,
+        agentIds: [],
+        allAgents: true,
+      }, "stored-secret");
+
+      const runtime = await prepareManagedAiRuntime(db, {
+        companyId,
+        agentId: randomUUID(),
+        responsibleUserId: "alice",
+        adapterType: "custom_local",
+        binding: {
+          mode: "shared",
+          provider: "openai",
+          method: "api_key",
+          connectionId: created.connectionId,
+          grantId: created.grantId,
+        },
+        config: {
+          model: "legacy-model",
+          provider: "custom",
+          managedAiRouting: routing,
+          env: { PAPERCLIP_AI_PROVIDER_KEY: "stored-secret" },
+        },
+      });
+
+      expect(runtime.config).toMatchObject({
+        model: "legacy-model",
+        managedAiConnection: expect.not.objectContaining({ deploymentId: expect.any(String) }),
+      });
+      expect(runtime.attribution).not.toHaveProperty("deploymentId");
+    } finally {
+      await database?.cleanup();
+      database = undefined;
+    }
+  });
+
   it("rejects execution after the selected deployment is deleted", async () => {
     database = await startEmbeddedPostgresTestDatabase("paperclip-ai-connections-service-");
     try {

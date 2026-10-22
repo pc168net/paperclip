@@ -90,6 +90,31 @@ describe("custom HTTP adapter", () => {
     vi.unstubAllGlobals();
   });
 
+  it("keeps legacy managed custom connections on the configured model path", async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(JSON.parse(String(init.body))).toMatchObject({ model: "legacy-model" });
+      return new Response(JSON.stringify({ id: "resp-3", output: [{ content: [{ text: "done" }] }] }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await executeCustom({
+      ...context("responses"),
+      config: {
+        ...context("responses").config,
+        model: "legacy-model",
+        managedAiConnection: {
+          connectionId: "connection-legacy",
+          grantId: "grant-legacy",
+          protocol: "responses",
+          routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://gateway.example/v1", models: [] },
+        },
+      },
+    } as AdapterExecutionContext);
+
+    expect(result.exitCode).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+
   it("rejects a managed connection that has no resolved deployment model", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

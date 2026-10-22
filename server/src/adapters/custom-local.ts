@@ -50,8 +50,9 @@ function resolveModel(config: Record<string, unknown>, route: ReturnType<typeof 
   const managed = config.managedAiConnection && typeof config.managedAiConnection === "object"
     ? config.managedAiConnection as Record<string, unknown>
     : undefined;
+  const managedDeploymentId = typeof managed?.deploymentId === "string" ? managed.deploymentId.trim() : "";
   const managedModel = typeof managed?.modelId === "string" ? managed.modelId.trim() : "";
-  if (managed) return { model: managedModel.replace(/^paperclip\//, ""), managed: true };
+  if (managedDeploymentId) return { model: managedModel.replace(/^paperclip\//, ""), managed: true };
   const configured = typeof config.model === "string" ? config.model.trim() : "";
   return { model: (configured || route.models[0]?.id || "").replace(/^paperclip\//, ""), managed: false };
 }
