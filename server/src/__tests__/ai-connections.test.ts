@@ -15,7 +15,7 @@ import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:f
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
+import { createDb, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants, aiDeployments } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
@@ -662,6 +662,34 @@ describe("managed AI connections", () => {
     // A real later revocation still fences this same old reconnect attempt.
     await db.update(connectionGrants).set({ status: "revoked", updatedAt: new Date() }).where(eq(connectionGrants.id, account.grantId));
     await expect(service.save(companyId, owner, { ...intent, agentIds: [], connectionId: account.connectionId }, auth("stale", 13), undefined, started)).rejects.toThrow("changed");
+  });
+
+  it("bumps the credential epoch and stales only verified deployments after a successful credential replacement, but not after a failed save", async () => {
+    const owner = "deployment-epoch-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const first = await service.save(companyId, owner, { provider: "openai", method: "api_key", ownership: "personal", name: "Epoch account", apiKey: "stored-secret", routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://example.test/v1", models: [] }, agentIds: [], allAgents: true }, "stored-secret");
+    const [initialConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, first.connectionId));
+    const verifiedId = randomUUID();
+    const failedId = randomUUID();
+    await db.insert(aiDeployments).values([
+      { id: verifiedId, companyId, connectionId: first.connectionId, modelId: "verified-model", displayName: "Verified", protocol: "responses", status: "verified", verifiedCredentialEpoch: initialConnection!.credentialEpoch, lastError: null, verifiedAt: new Date(), createdByUserId: owner },
+      { id: failedId, companyId, connectionId: first.connectionId, modelId: "failed-model", displayName: "Failed", protocol: "chat", status: "failed", verifiedCredentialEpoch: initialConnection!.credentialEpoch, lastError: "Provider rejected the verification probe.", verifiedAt: null, createdByUserId: owner },
+    ]);
+
+    const replaced = await service.save(companyId, owner, { provider: "openai", method: "api_key", ownership: "personal", name: "Epoch account", apiKey: "stored-secret-2", connectionId: first.connectionId, routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://example.test/v1", models: [] }, agentIds: [], allAgents: true }, "stored-secret-2");
+    expect(replaced.connectionId).toBe(first.connectionId);
+    const [afterReplaceConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, first.connectionId));
+    expect(afterReplaceConnection?.credentialEpoch).toBe((initialConnection?.credentialEpoch ?? 1) + 1);
+    const [staleVerified] = await db.select().from(aiDeployments).where(eq(aiDeployments.id, verifiedId));
+    const [untouchedFailed] = await db.select().from(aiDeployments).where(eq(aiDeployments.id, failedId));
+    expect(staleVerified).toMatchObject({ status: "stale", verifiedCredentialEpoch: initialConnection?.credentialEpoch, verifiedAt: null, lastError: null });
+    expect(untouchedFailed).toMatchObject({ status: "failed", verifiedCredentialEpoch: initialConnection?.credentialEpoch, lastError: "Provider rejected the verification probe." });
+
+    await expect(service.save(companyId, owner, { provider: "openai", method: "api_key", ownership: "personal", name: "Epoch account", apiKey: "stored-secret-3", connectionId: first.connectionId, routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://example.test/v1", models: [] }, agentIds: [randomUUID()], allAgents: false }, "stored-secret-3")).rejects.toThrow();
+    const [afterFailureConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, first.connectionId));
+    const [afterFailureVerified] = await db.select().from(aiDeployments).where(eq(aiDeployments.id, verifiedId));
+    expect(afterFailureConnection?.credentialEpoch).toBe(afterReplaceConnection?.credentialEpoch);
+    expect(afterFailureVerified?.status).toBe("stale");
   });
 
   it.each(["lock", "database"])("preserves replacement tokens after exhausted %s write-back and permits a later retry", async failure => {

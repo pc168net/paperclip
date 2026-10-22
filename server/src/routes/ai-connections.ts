@@ -40,7 +40,7 @@ import { aiConnectionRouterService } from "../services/ai-connection-router.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { validate } from "../middleware/validate.js";
 import { toolAccessService } from "../services/tool-access.js";
-import { verifyAiDeployment } from "../services/ai-deployments.js";
+import { verifyAiDeployment, resolveVerifiedAiDeployment } from "../services/ai-deployments.js";
 
 /** Agent API calls inherit authenticated run identity, never the agent's own ID. */
 export function responsibleUserForAiRequest(req: Request): string | null {
@@ -398,17 +398,10 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
     const connectionId = z.string().uuid().parse(req.params.connectionId);
     const deploymentId = z.string().uuid().parse(req.params.deploymentId);
     const { userId } = await assertAiDeploymentManageAccess(db, req, companyId, connectionId);
-    const [row] = await db.select({ deployment: aiDeployments, connection: toolConnections, grant: connectionGrants })
-      .from(aiDeployments).innerJoin(toolConnections, eq(toolConnections.id, aiDeployments.connectionId))
-      .innerJoin(connectionGrants, and(eq(connectionGrants.connectionId, toolConnections.id), eq(connectionGrants.companyId, toolConnections.companyId)))
-      .where(and(eq(aiDeployments.companyId, companyId), eq(aiDeployments.connectionId, connectionId), eq(aiDeployments.id, deploymentId), eq(connectionGrants.status, "active"))).limit(1);
-    if (!row) throw notFound("AI deployment not found");
-    const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
-    if (!metadata.success || !metadata.data.routing || !["gateway", "local"].includes(metadata.data.routing.kind))
-      throw unprocessable("This connection does not support deployable endpoint verification");
-    const credential = await service.credential(row);
-    const result = await verifyAiDeployment(metadata.data.routing, credential, { modelId: row.deployment.modelId, protocol: row.deployment.protocol as AiDeploymentProtocol }, fetch);
-    const [saved] = await db.update(aiDeployments).set({ status: result.ok ? "verified" : "failed", lastError: result.ok ? null : result.error.slice(0, 1024), verifiedAt: result.ok ? new Date() : null, verifiedCredentialEpoch: row.connection.credentialEpoch, updatedAt: new Date() })
+    const resolved = await resolveVerifiedAiDeployment(db, { companyId, connectionId, deploymentId });
+    const credential = await service.credential({ connection: resolved.connection, grant: resolved.grant });
+    const result = await verifyAiDeployment(resolved.routing, credential, { modelId: resolved.deployment.modelId, protocol: resolved.deployment.protocol as AiDeploymentProtocol }, fetch);
+    const [saved] = await db.update(aiDeployments).set({ status: result.ok ? "verified" : "failed", lastError: result.ok ? null : result.error.slice(0, 1024), verifiedAt: result.ok ? new Date() : null, verifiedCredentialEpoch: resolved.connection.credentialEpoch, updatedAt: new Date() })
       .where(and(eq(aiDeployments.companyId, companyId), eq(aiDeployments.id, deploymentId))).returning();
     await logActivity(db, { companyId, actorType: "user", actorId: userId, action: "ai_deployment.verified", entityType: "ai_deployment", entityId: deploymentId, details: { connectionId, status: saved!.status } });
     res.json(deploymentSummary(saved!));

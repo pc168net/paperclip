@@ -46,6 +46,7 @@ import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
 import { probeAiConnectionUsage } from "./ai-connection-usage.js";
+import { markAiDeploymentsStale } from "./ai-deployments.js";
 
 /** Same human audience displayed by the existing Connections identity controls. */
 function canUseCredential(
@@ -708,21 +709,23 @@ export function aiConnectionService(db: Db) {
           .from(connectionGrants)
           .where(eq(connectionGrants.id, grantId))
           .for("update");
-        if (
-          !current ||
-          current.updatedAt.getTime() !== reconnect.grant.updatedAt.getTime() ||
-          current.updatedAt.getTime() > attemptStartedAt.getTime()
-        )
-          throw unprocessable("The connection changed. Start reconnect again.");
+      if (
+        !current ||
+        current.updatedAt.getTime() !== reconnect.grant.updatedAt.getTime() ||
+        current.updatedAt.getTime() > attemptStartedAt.getTime()
+      )
+        throw unprocessable("The connection changed. Start reconnect again.");
       }
+      const currentCredential = reconnect ? await aiConnectionService(tx as unknown as Db).credential(reconnect) : null;
       let secretId = reconnect?.grant.credentialSecretRefs.find(
         (r) => r.configPath === "ai.credential",
       )?.secretId;
+      const credentialChanged = reconnect ? currentCredential !== verifiedCredential : true;
       // Adoption indexes existing credentials without transferring ownership.
       // Only rotate the private slot created for this grant. A reconnect of an
       // indexed credential must leave every legacy consumer's value untouched,
       // even after adoption has cleared the connection's validation marker.
-      if (secretId) {
+      if (reconnect && credentialChanged && secretId) {
         const [source] = await tx.select({ name: companySecrets.name, key: userSecretDefinitions.key })
           .from(companySecrets)
           .leftJoin(userSecretDefinitions, eq(userSecretDefinitions.id, companySecrets.userSecretDefinitionId))
@@ -733,41 +736,43 @@ export function aiConnectionService(db: Db) {
         if (!privateSlot) secretId = undefined;
       }
       if (!verifiedCredential) { secretId = undefined; }
-      else if (secretId)
-        await secrets.rotate(
-          secretId,
-          { value: verifiedCredential },
-          { userId },
-        );
-      else if (input.ownership === "personal") {
-        const definition = await secrets.createUserSecretDefinition(
-          companyId,
-          {
-            key: `ai_${grantId.replaceAll("-", "_")}`,
-            name: connectionName,
-            provider: "local_encrypted",
-          },
-          { userId },
-        );
-        const secret = await secrets.createCurrentUserSecretValue(
-          companyId,
-          userId,
-          { definitionId: definition.id, value: verifiedCredential },
-          { userId },
-        );
-        secretId = secret.id;
-      } else
-        secretId = (
-          await secrets.create(
+      else if (!reconnect || credentialChanged) {
+        if (secretId)
+          await secrets.rotate(
+            secretId,
+            { value: verifiedCredential },
+            { userId },
+          );
+        else if (input.ownership === "personal") {
+          const definition = await secrets.createUserSecretDefinition(
             companyId,
             {
-              name: `ai-${grantId}`,
+              key: `ai_${grantId.replaceAll("-", "_")}`,
+              name: connectionName,
               provider: "local_encrypted",
-              value: verifiedCredential,
             },
             { userId },
-          )
-        ).id;
+          );
+          const secret = await secrets.createCurrentUserSecretValue(
+            companyId,
+            userId,
+            { definitionId: definition.id, value: verifiedCredential },
+            { userId },
+          );
+          secretId = secret.id;
+        } else
+          secretId = (
+            await secrets.create(
+              companyId,
+              {
+                name: `ai-${grantId}`,
+                provider: "local_encrypted",
+                value: verifiedCredential,
+              },
+              { userId },
+            )
+          ).id;
+      }
       if (input.agentIds.length) {
         const targets = await tx
           .select({ id: agents.id })
@@ -824,6 +829,7 @@ export function aiConnectionService(db: Db) {
               ai: { provider: input.provider, method: input.method, ...(routing ? { routing } : {}) },
               aiIsolatedSubscription: input.method === "subscription" && input.provider !== "anthropic",
             },
+            ...(reconnect && credentialChanged ? { credentialEpoch: reconnect.connection.credentialEpoch + 1 } : {}),
             updatedAt: new Date(),
           })
           .where(eq(toolConnections.id, id));
@@ -910,6 +916,8 @@ export function aiConnectionService(db: Db) {
         .select()
         .from(toolConnections)
         .where(eq(toolConnections.id, id));
+      if (reconnect && credentialChanged)
+        await markAiDeploymentsStale(tx as unknown as Db, companyId, id, reconnect.connection.credentialEpoch);
       await syncConnectionCredentialBindings(tx, savedConnection, refs);
       if (input.ownership === "personal" && !routing) {
         await tx
