@@ -55,4 +55,38 @@ describe("custom HTTP adapter", () => {
     expect(result.summary).toBe("done");
     vi.unstubAllGlobals();
   });
+
+  it("uses the resolved deployment model instead of the first catalog entry", async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(JSON.parse(String(init.body))).toMatchObject({ model: "azure-deployment" });
+      return new Response(JSON.stringify({ id: "resp-2", output: [{ content: [{ text: "done" }] }] }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await executeCustom({
+      ...context("responses"),
+      config: {
+        ...context("responses").config,
+        model: "",
+        managedAiRouting: {
+          kind: "gateway",
+          protocol: "responses",
+          baseUrl: "https://gateway.example/v1",
+          auth: "api_key",
+          models: [{ id: "gpt-5.6-luna" }],
+        },
+        managedAiConnection: {
+          connectionId: "connection-1",
+          grantId: "grant-1",
+          deploymentId: "deployment-1",
+          modelId: "azure-deployment",
+          protocol: "responses",
+          routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://gateway.example/v1", models: [] },
+        },
+      },
+    } as AdapterExecutionContext);
+
+    expect(result.exitCode).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
 });

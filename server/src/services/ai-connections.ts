@@ -46,7 +46,7 @@ import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
 import { probeAiConnectionUsage } from "./ai-connection-usage.js";
-import { markAiDeploymentsStale } from "./ai-deployments.js";
+import { markAiDeploymentsStale, resolveVerifiedAiDeployment } from "./ai-deployments.js";
 
 /** Same human audience displayed by the existing Connections identity controls. */
 function canUseCredential(
@@ -343,18 +343,9 @@ export function aiConnectionService(db: Db) {
         ))
     )
       throw aiConnectionConfigurationFailure("ai_connection_unavailable", "Reconnect or validate the selected AI account", { connectionId: connection.id });
-    if (metadata.data.routing && ["gateway", "local"].includes(metadata.data.routing.kind) && binding.mode !== "responsible_user" && binding.deploymentId) {
-      const [deployment] = await db.select().from(aiDeployments).where(and(
-        eq(aiDeployments.companyId, companyId),
-        eq(aiDeployments.id, binding.deploymentId),
-        eq(aiDeployments.connectionId, connection.id),
-        eq(aiDeployments.status, "verified"),
-      )).limit(1);
-      if (!deployment)
-        throw aiConnectionConfigurationFailure("ai_connection_deployment_missing", "The selected deployment is not verified", { connectionId: connection.id });
-      if (typeof input.model === "string" && input.model && input.model !== deployment.modelId)
-        throw aiConnectionConfigurationFailure("ai_connection_incompatible", "The agent model must match the selected verified deployment", { connectionId: connection.id });
-    }
+    const deployment = binding.mode !== "responsible_user" && binding.deploymentId
+      ? (await resolveVerifiedAiDeployment(db, { companyId, connectionId: connection.id, deploymentId: binding.deploymentId, grantId: grant.id })).deployment
+      : undefined;
     if (
       grant.kind === "user" &&
       !(await membership(companyId, grant.subjectUserId))
@@ -416,9 +407,11 @@ export function aiConnectionService(db: Db) {
       throw forbidden("This connection is not permitted for this agent");
     return {
       ...row,
+      ...(deployment ? { deployment } : {}),
       attribution: {
         connectionId: connection.id,
         grantId: grant.id,
+        ...(deployment ? { deploymentId: deployment.id, modelId: deployment.modelId, protocol: deployment.protocol, routing: metadata.data.routing } : {}),
         provider: binding.provider,
         method: metadata.data.method,
         mode: binding.mode,

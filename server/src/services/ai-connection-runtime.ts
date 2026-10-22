@@ -253,6 +253,7 @@ export async function prepareManagedAiRuntime(
     runnerProvider: input.config.provider,
     acpxAgent: input.config.acpxAgent,
   });
+  const selectedModel = selection.deployment?.modelId ?? (typeof input.config.model === "string" ? input.config.model : "");
   const subscriptionFile =
     selection.attribution.method === "subscription" &&
     input.binding.provider !== "anthropic";
@@ -262,7 +263,7 @@ export async function prepareManagedAiRuntime(
     selection = await service.select({
       ...input,
       userId: input.responsibleUserId,
-      model: input.config.model,
+      model: selectedModel,
       runnerProvider: input.config.provider,
       acpxAgent: input.config.acpxAgent,
     });
@@ -270,6 +271,7 @@ export async function prepareManagedAiRuntime(
       throw unprocessable(
         "The selected default changed. Retry this execution.",
       );
+    const runtimeModel = selection.deployment?.modelId ?? selectedModel;
     const credentialRef = selection.grant.credentialSecretRefs.find((ref) => ref.configPath === "ai.credential");
     const routing = aiConnectionMetadataSchema.parse(selection.connection.config.ai).routing;
     const noAuth = routing?.auth === "none";
@@ -350,13 +352,21 @@ export async function prepareManagedAiRuntime(
         security: { auth: { selectedType: "gemini-api-key" } },
       }), { mode: 0o600 });
     }
-    const projected = routing ? managedProviderRouting(routing, harness, value, typeof input.config.model === "string" ? input.config.model : "") : undefined;
+    const projected = routing ? managedProviderRouting(routing, harness, value, runtimeModel) : undefined;
     if (projected) {
       Object.assign(env, projected.env);
       if (projected.hermesConfig) await writeFile(path.join(providerHome, "config.yaml"), projected.hermesConfig, { mode: 0o600 });
       if (projected.codexConfig) await writeFile(path.join(providerHome, "config.toml"), 'cli_auth_credentials_store = "file"\n' + projected.codexConfig, { mode: 0o600 });
     }
-    const attribution = { ...selection.attribution } as typeof selection.attribution & { subscriptionId?: string };
+    const attribution = {
+      ...selection.attribution,
+      ...(selection.deployment ? {
+        deploymentId: selection.deployment.id,
+        modelId: selection.deployment.modelId,
+        protocol: selection.deployment.protocol,
+        routing,
+      } : {}),
+    } as typeof selection.attribution & { subscriptionId?: string };
     if (attribution.method === "subscription") {
       const subscription = {
         companyId: input.companyId, connectionId: selection.connection.id, grantId: selection.grant.id,
@@ -377,6 +387,7 @@ export async function prepareManagedAiRuntime(
       config: {
         ...input.config,
         ...projected?.config,
+        model: runtimeModel,
         ...(routing ? { managedAiRouting: routing } : {}),
         env,
         managedAiConnection: { ...attribution, identity, sessionIdentity },

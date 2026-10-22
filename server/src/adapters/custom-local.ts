@@ -47,8 +47,12 @@ function resolveRoute(config: Record<string, unknown>) {
 }
 
 function resolveModel(config: Record<string, unknown>, route: ReturnType<typeof resolveRoute>): string {
+  const managed = config.managedAiConnection && typeof config.managedAiConnection === "object"
+    ? config.managedAiConnection as Record<string, unknown>
+    : undefined;
+  const managedModel = typeof managed?.modelId === "string" ? managed.modelId.trim() : "";
   const configured = typeof config.model === "string" ? config.model.trim() : "";
-  const model = configured || route.models[0]?.id || "";
+  const model = managedModel || configured || route.models[0]?.id || "";
   return model.replace(/^paperclip\//, "");
 }
 

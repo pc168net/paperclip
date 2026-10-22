@@ -91,6 +91,7 @@ export async function resolveVerifiedAiDeployment(
       eq(toolConnections.connectionPurpose, "ai"),
       eq(toolConnections.status, "active"),
       eq(toolConnections.enabled, true),
+      eq(toolConnections.healthStatus, "ok"),
       eq(connectionGrants.status, "active"),
     ))
     .limit(1);

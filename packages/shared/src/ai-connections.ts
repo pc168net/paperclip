@@ -173,6 +173,10 @@ export interface AiConnectionAttribution {
   subscriptionId?: string;
   connectionId: string;
   grantId: string;
+  deploymentId?: string;
+  modelId?: string;
+  protocol?: AiDeploymentProtocol;
+  routing?: AiProviderRouting;
   provider: AiProvider;
   method: AiAuthMethod;
   mode: AiConnectionBinding["mode"];
