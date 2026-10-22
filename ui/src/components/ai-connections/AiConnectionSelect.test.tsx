@@ -81,7 +81,7 @@ function openSelect() {
   });
 }
 
-it("shows only verified same-company deployments and returns the selected deployment id", async () => {
+it("shows only verified same-company deployments and omits plain/default options", async () => {
   const selected = {
     id: "deployment-verified",
     companyId: "company-1",
@@ -97,6 +97,7 @@ it("shows only verified same-company deployments and returns the selected deploy
   };
   await mount([
     connection({ deployments: [selected, { ...selected, id: "deployment-stale", modelId: "azure-stale", status: "stale" }] }),
+    { ...connection({ id: "plain-connection", name: "Plain AI", routing: undefined }), deployments: [] },
     connection({ id: "other-connection", companyId: "other-company", grantId: "other-grant", name: "Other Company", deployments: [{ ...selected, id: "deployment-other", companyId: "other-company", modelId: "other-prod" }] }),
     connection({ id: "needs-attention", grantId: "grant-2", name: "Needs Attention", status: "needs_attention", deployments: [selected] }),
   ]);
@@ -107,9 +108,12 @@ it("shows only verified same-company deployments and returns the selected deploy
   await settle();
 
   const options = Array.from(document.querySelectorAll('[role="option"]')).map((node) => node.textContent ?? "");
+  expect(options).toHaveLength(1);
   expect(options.some((text) => text.includes("Company OpenAI") && text.includes("azure-prod"))).toBe(true);
   expect(options.some((text) => text.includes("azure-stale"))).toBe(false);
+  expect(options.some((text) => text.includes("Plain AI"))).toBe(false);
   expect(options.some((text) => text.includes("Other Company"))).toBe(false);
+  expect(container.textContent).not.toContain("Responsible user’s default");
 
   const choice = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find((node) => node.textContent?.includes("azure-prod"));
   expect(choice).toBeTruthy();
@@ -123,6 +127,30 @@ it("shows only verified same-company deployments and returns the selected deploy
     grantId: "grant-1",
     deploymentId: "deployment-verified",
   });
+});
+
+it("rejects stale and failed deployments in connected-only mode", async () => {
+  const stale = {
+    id: "deployment-stale",
+    companyId: "company-1",
+    connectionId: "connection-1",
+    modelId: "azure-stale",
+    displayName: "Azure Stale",
+    protocol: "responses" as const,
+    status: "stale" as const,
+    verifiedCredentialEpoch: 1,
+    lastError: null,
+    verifiedAt: null,
+    createdByUserId: null,
+  };
+  const failed = { ...stale, id: "deployment-failed", modelId: "azure-failed", displayName: "Azure Failed", status: "failed" as const };
+  await mount([connection({ deployments: [stale, failed] })]);
+
+  openSelect();
+  await settle();
+
+  expect(document.querySelectorAll('[role="option"]')).toHaveLength(0);
+  expect(container.textContent).toContain("No verified deployment is available");
 });
 
 it("shows the verified deployment guidance when none are available", async () => {

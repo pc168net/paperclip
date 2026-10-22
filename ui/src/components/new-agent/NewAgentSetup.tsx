@@ -306,8 +306,13 @@ function Setup({
     ? aiConnections.data?.connections.find(connection => connection.id === effectiveAiBinding.connectionId)
     : undefined;
   const selectedDeployment = effectiveAiBinding && effectiveAiBinding.mode !== "responsible_user"
-    ? selectedAiConnection?.deployments?.find((deployment) => deployment.id === effectiveAiBinding.deploymentId)
+    ? selectedAiConnection?.deployments?.find((deployment) => deployment.id === effectiveAiBinding.deploymentId && deployment.status === "verified")
     : undefined;
+  const selectedDeploymentNeedsVerification = Boolean(
+    effectiveAiBinding &&
+    effectiveAiBinding.mode !== "responsible_user" &&
+    !selectedDeployment,
+  );
   const nameConflict = Boolean(
     name.trim() && agents.data?.some((agent) =>
       agent.status !== "terminated" && String(agent.name ?? "").trim().toLocaleLowerCase() === name.trim().toLocaleLowerCase(),
@@ -1017,7 +1022,11 @@ function Setup({
                              onChange={binding => { binding.mode !== "router" && setRuntimeAiBinding(binding); resetTest(); }} />
                         )}
                           {(connectionModels ? connectionModels.error : models.error) && <p role="alert" className="text-sm text-destructive">Could not load models. Retry or enter a model ID manually.</p>}
-                          {aiBinding?.mode !== "responsible_user" && (
+                          {selectedDeploymentNeedsVerification ? (
+                            <p role="alert" className="text-sm text-destructive">
+                              This deployment is unavailable or needs verification. Reverify it in Connectors.
+                            </p>
+                          ) : aiBinding?.mode !== "responsible_user" && selectedDeployment ? (
                             <Field label="Verified deployment">
                               <div className="space-y-1 rounded-lg border border-border bg-card px-3 py-2">
                                 <p className="text-sm font-medium">
@@ -1030,7 +1039,7 @@ function Setup({
                                 </p>
                               </div>
                             </Field>
-                          )}
+                          ) : null}
                          {((showModel && !usingKimiApi && (!aiBinding || aiBinding.mode === "responsible_user")) ||
                            efforts.length > 0) && (
                             <div className="grid items-start gap-5 sm:grid-cols-2">

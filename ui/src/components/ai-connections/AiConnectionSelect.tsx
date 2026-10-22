@@ -51,18 +51,20 @@ export function AiConnectionSelect({
   connectedOnly?: boolean;
 }) {
   const selectId = useId();
-  const personal = personalAiDefault(connections, requirement, currentUserId);
+  const personal = connectedOnly ? undefined : personalAiDefault(connections, requirement, currentUserId);
   /** Routed endpoints are represented by their verified deployment, not their
    * provider catalog. Plain provider accounts retain their existing choice. */
   const choices: Array<{ id: string; connection: AiConnectionSummary; deployment?: AiDeploymentSummary }> = connections.flatMap((connection) => {
     const requiresDeployment = connection.routing && ["gateway", "local"].includes(connection.routing.kind);
-    if (!requiresDeployment) return [{ id: connection.id, connection }];
+    if (!requiresDeployment) return connectedOnly ? [] : [{ id: connection.id, connection }];
     return (connection.deployments ?? [])
       .filter((deployment) => deployment.status === "verified")
       .map((deployment) => ({ id: deployment.id, connection, deployment }));
   });
   const selected =
-    value?.mode === "responsible_user"
+    connectedOnly && value?.mode === "responsible_user"
+      ? undefined
+      : value?.mode === "responsible_user"
       ? personal
       : connections.find(
           (c) => c.id === value?.connectionId && c.grantId === value?.grantId,
@@ -108,6 +110,7 @@ export function AiConnectionSelect({
   const incompatible =
     selected && !compatible.some((choice) => choice.id === selectedChoice?.id);
   const change = (id: string) => {
+    if (connectedOnly && (id === "connect" || id === "responsible_user")) return;
     if (id === "connect") return onConnect();
     if (id === "responsible_user")
       return onChange({
@@ -172,7 +175,7 @@ export function AiConnectionSelect({
               <ConnectionLabel connection={connection} label={`${connection.name}${deployment ? ` · ${deployment.modelId}` : ""}${connection.status !== "connected" ? " · Reconnect" : ""}`} />
             </SelectItem>
           ))}
-          {(canUseDefault || value?.mode === "responsible_user") && (
+          {!connectedOnly && (canUseDefault || value?.mode === "responsible_user") && (
             <SelectItem value="responsible_user" disabled={!canUseDefault}>
               <span className="flex size-5 shrink-0 items-center justify-center"><UserRound className="size-4" /></span>
               Responsible user’s default
@@ -189,7 +192,7 @@ export function AiConnectionSelect({
           Manage {connection.name}
         </Button>
       ))}
-      {!readOnly && onReconnect && !loading && !error && (
+      {!connectedOnly && !readOnly && onReconnect && !loading && !error && (
         <Button type="button" variant="outline" onClick={onReconnect}>Reconnect account</Button>
       )}
       {error && (
@@ -202,7 +205,7 @@ export function AiConnectionSelect({
           </Button>
         </div>
       )}
-      {value?.mode === "responsible_user" && !personal && !loading && !error ? (
+      {!connectedOnly && value?.mode === "responsible_user" && !personal && !loading && !error ? (
         <p role="alert" className="text-sm text-destructive">
           {connectedOnly
             ? "No verified connection is available for this provider. Add or reconnect it in Connectors."
