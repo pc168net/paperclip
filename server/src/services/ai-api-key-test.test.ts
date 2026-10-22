@@ -31,6 +31,7 @@ describe("validateAiApiKey custom gateways", () => {
 
   it.each([
     [401, "ai_connection_api_key_rejected"],
+    [403, "ai_connection_api_key_rejected"],
     [404, "ai_connection_base_url_invalid"],
     [429, "ai_connection_rate_limited"],
   ] as const)("classifies gateway status %s", async (status, code) => {
@@ -46,16 +47,28 @@ describe("validateAiApiKey custom gateways", () => {
       details: { code: "ai_connection_model_not_found" },
     });
   });
+
+  it.each([
+    [{ models: [{ id: "gpt-test", label: "Test model" }] }, "object models"],
+    [{ models: ["gpt-test"] }, "string models"],
+  ] as const)("validates configured models from the %s envelope", async (body, _description) => {
+    const request = vi.fn(async () => new Response(JSON.stringify(body), { status: 200 }));
+    await expect(validateAiApiKey("openai", "fixture-key", request, gateway())).resolves.toBeUndefined();
+  });
 });
 
 describe("discoverAiGateway", () => {
-  it("returns models and detects supported protocols without sending a prompt", async () => {
+  it.each([
+    [{ data: [{ id: "gpt-test", name: "Test model" }] }, [{ id: "gpt-test" }]],
+    [{ models: [{ id: "gpt-test", label: "Test model" }, "gpt-string"] }, [{ id: "gpt-test", label: "Test model" }, { id: "gpt-string" }]],
+    [{ models: ["gpt-test"] }, [{ id: "gpt-test" }]],
+  ] as const)("returns models from an OpenAI-compatible %s envelope", async (body, models) => {
     const request = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       if (init?.method === "OPTIONS") return new Response(null, { status: 204 });
-      return new Response(JSON.stringify({ data: [{ id: "gpt-test", name: "Test model" }] }), { status: 200 });
+      return new Response(JSON.stringify(body), { status: 200 });
     });
     await expect(discoverAiGateway("fixture-key", gateway(), request)).resolves.toEqual({
-      models: [{ id: "gpt-test" }],
+      models,
       protocols: { responses: true, chat: true },
     });
     expect(request).toHaveBeenCalledWith("https://gateway.example/v1/models", expect.objectContaining({ redirect: "error" }));
@@ -79,11 +92,27 @@ describe("discoverAiGateway", () => {
     await expect(discoverAiGateway("secret-value", gateway(), request)).rejects.not.toThrow("secret-value");
   });
 
-  it("rejects an empty model list without probing either protocol", async () => {
-    const request = vi.fn(async () => new Response(JSON.stringify({ data: [] }), { status: 200 }));
+  it.each([{ data: [] }, { models: [] }])("rejects an empty model list without probing either protocol", async (body) => {
+    const request = vi.fn(async () => new Response(JSON.stringify(body), { status: 200 }));
     await expect(discoverAiGateway("fixture-key", gateway(), request)).rejects.toMatchObject({
       details: { code: "ai_connection_models_unsupported" },
     });
     expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an invalid model-list response without probing either protocol", async () => {
+    const request = vi.fn(async () => new Response(JSON.stringify({ object: "not-a-model-list" }), { status: 200 }));
+    await expect(discoverAiGateway("fixture-key", gateway(), request)).rejects.toMatchObject({
+      details: { code: "ai_connection_models_unsupported" },
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifies a timeout without exposing the credential", async () => {
+    const request = vi.fn(async () => { throw Object.assign(new Error("upstream timeout: secret-value"), { name: "TimeoutError" }); });
+    await expect(discoverAiGateway("secret-value", gateway(), request)).rejects.toMatchObject({
+      details: { code: "ai_connection_timeout" },
+    });
+    await expect(discoverAiGateway("secret-value", gateway(), request)).rejects.not.toThrow("secret-value");
   });
 });

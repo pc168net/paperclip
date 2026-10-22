@@ -84,6 +84,23 @@ describe("provider routing", () => {
       ),
     ).toBe(false);
   });
+  it("selects harnesses compatible with each custom gateway protocol", () => {
+    const responses = aiProviderRoutingSchema.parse({
+      kind: "gateway", protocol: "responses", auth: "bearer", baseUrl: "https://gateway.example/v1",
+    });
+    const chat = aiProviderRoutingSchema.parse({
+      kind: "gateway", protocol: "chat", auth: "bearer", baseUrl: "https://gateway.example/v1",
+    });
+    expect(isAiConnectionCompatible({ provider: "openai", method: "api_key", routing: responses }, "paperclip_runner", "model", "codex")).toBe(true);
+    expect(isAiConnectionCompatible({ provider: "openai", method: "api_key", routing: responses }, "custom_local")).toBe(true);
+    expect(isAiConnectionCompatible({ provider: "openai", method: "api_key", routing: chat }, "opencode_local")).toBe(true);
+    expect(isAiConnectionCompatible({ provider: "openai", method: "api_key", routing: chat }, "hermes_local")).toBe(true);
+    expect(isAiConnectionCompatible({ provider: "openai", method: "api_key", routing: chat }, "custom_local")).toBe(true);
+    const codex = managedProviderRouting(responses, "codex_local", "fixture-key", "deployment-a");
+    expect(codex.codexConfig).toContain('wire_api = "responses"');
+    const opencode = managedProviderRouting(chat, "opencode_local", "fixture-key", "deployment-a");
+    expect(opencode.config).toMatchObject({ provider: "custom", model: "paperclip/deployment-a" });
+  });
   it.each(["gateway", "openrouter"] as const)("uses a terminal-filtered secret variable for Hermes %s authentication", kind => {
     const route = aiProviderRoutingSchema.parse({ kind, protocol: "chat", auth: "bearer", ...(kind === "gateway" ? { baseUrl: "https://gateway.example/v1" } : {}) });
     const projected = managedProviderRouting(route, "hermes_local", "selected-key", "fixture-model");

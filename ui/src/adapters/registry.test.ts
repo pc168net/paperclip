@@ -38,6 +38,15 @@ describe("ui adapter registry", () => {
     expect(listUIAdapters().some((adapter) => adapter.type === "external_test")).toBe(true);
   });
 
+  it("registers the built-in custom gateway adapter", () => {
+    const custom = getUIAdapter("custom_local");
+
+    expect(custom.type).toBe("custom_local");
+    expect(custom.label).toBe("Custom");
+    expect(findUIAdapter("custom_local")).toBe(custom);
+    expect(listUIAdapters().map((adapter) => adapter.type)).toContain("custom_local");
+  });
+
   it("falls back to the process parser for unknown types after unregistering", () => {
     registerUIAdapter(externalUIAdapter);
 

@@ -85,7 +85,7 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     label: "Custom",
     description: "OpenAI-compatible custom endpoint runner",
     icon: Cpu,
-    hideFromVisualSelection: true,
+    recommended: true,
   },
   paperclip_runner: {
     label: "Paperclip Runner",

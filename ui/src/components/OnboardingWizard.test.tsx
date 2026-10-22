@@ -19,13 +19,14 @@ const mockAuthApi = vi.hoisted(() => ({ getSession: vi.fn() }));
 const localHealth = vi.hoisted(() => ({ get: vi.fn() }));
 vi.mock("@/api/health", () => ({ healthApi: localHealth }));
 const managedApi = vi.hoisted(() => ({
-  list: vi.fn(async () => ({ currentUserId: "user-1", connections: [] })),
+  list: vi.fn(async () => ({ currentUserId: "user-1", connections: [] as Array<Record<string, unknown>> })),
   startLocalLogin: vi.fn(async () => ({ sessionId: "local-attempt", expiresAt: "2099-01-01T00:00:00Z" })),
   submitLocalLoginCode: vi.fn(async () => ({ ok: true })),
   checkLocalLogin: vi.fn(async (): Promise<LocalAiLoginStatus> => ({ status: "sign_in_required" })),
   cancelLocalLogin: vi.fn(async () => ({})),
   connectLocal: vi.fn(async () => ({ connectionId: "local-connection", grantId: "local-grant" })),
   create: vi.fn(async () => ({ connectionId: "managed-connection", grantId: "managed-grant" })),
+  discoverCustom: vi.fn(async () => ({ models: [{ id: "gpt-4o-mini" }], protocols: { responses: true, chat: true } })),
 }));
 vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: managedApi }));
 vi.mock("../api/auth", async (importOriginal) => {
@@ -256,7 +257,14 @@ import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, getEnvironmentCapabilities } from "@paperclipai/shared";
 import { CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
-import { ONBOARDING_STORAGE_KEY, OnboardingWizard } from "./OnboardingWizard";
+import { ONBOARDING_STORAGE_KEY, OnboardingWizard, onboardingCustomHarness } from "./OnboardingWizard";
+
+describe("custom onboarding harness mapping", () => {
+  it("uses the custom runner for both supported gateway protocols", () => {
+    expect(onboardingCustomHarness("responses")).toBe("custom_local");
+    expect(onboardingCustomHarness("chat")).toBe("custom_local");
+  });
+});
 import { CONNECTED_HOLD_MS } from "./onboarding/onboarding-motion";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -350,6 +358,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       code: "TEST-CODE",
     });
     managedApi.connectLocal.mockReset().mockResolvedValue({ connectionId: "local-connection", grantId: "local-grant" });
+    managedApi.list.mockReset().mockResolvedValue({ currentUserId: "user-1", connections: [] });
     mockAuthApi.getSession.mockResolvedValue({
       session: { id: "session-b", userId: SESSION_USER_ID },
       user: { id: SESSION_USER_ID, name: "B", email: "b@example.com", image: null },
@@ -2017,19 +2026,155 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // then never read, so the row went on rendering whatever the registry
       // supplied: "Claude Code" and "Codex" in the app, and the bare type here,
       // since this suite's registry mock returns `label: type`.
-      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
+      // The primary model-source row must remain complete even when the
+      // runtime registry has no recommended entries.
+      mockAdapterRegistry.list = [];
       const { root } = await openStep4({ adapterType: "claude_local" });
 
       const labels = [...document.body.querySelectorAll("button[aria-checked]")].map(
         (tile) => tile.textContent ?? "",
       );
-      expect(labels.length, "both recommended sources should render").toBe(2);
+      expect(labels.length, "all recommended sources should render").toBe(3);
       expect(labels.some((l) => l.includes("Claude"))).toBe(true);
       expect(labels.some((l) => l.includes("OpenAI"))).toBe(true);
+      expect(labels.some((l) => l.includes("Custom"))).toBe(true);
       // The negative half is the one that fails on the unwired version: the
       // registry label is the adapter type, and it must not reach the tile.
       expect(labels.join(" ")).not.toContain("claude_local");
       expect(labels.join(" ")).not.toContain("codex_local");
+
+      await act(async () => root.unmount());
+    });
+
+    it("keeps the custom gateway fields on the custom source path", async () => {
+      mockAdapterRegistry.list = [];
+      const { root } = await openStep4({ adapterType: "custom_local" });
+
+      const customTile = [...document.body.querySelectorAll("button[aria-checked]")]
+        .find(
+          (tile): tile is HTMLButtonElement =>
+            tile instanceof HTMLButtonElement && tile.textContent?.includes("Custom") === true,
+        );
+      expect(customTile).toBeTruthy();
+      if (!customTile) throw new Error("Custom source tile did not render");
+      await act(async () => {
+        customTile.click();
+      });
+      for (let i = 0; i < 4; i++) await flushReact();
+
+      expect(document.body.textContent).toContain("Base URL");
+      expect(document.body.textContent).toContain("Authentication");
+      expect(document.body.textContent).toContain("API protocol");
+      expect(document.body.textContent).toContain("Discover models");
+      expect(document.body.querySelector('[aria-label="Bearer token"]')).toBeTruthy();
+      expect([...document.body.querySelectorAll("button")].some((button) => button.textContent?.includes("Connect"))).toBe(true);
+
+      await act(async () => root.unmount());
+    });
+
+    it("binds the CEO to the saved personal custom connection without creating another one", async () => {
+      mockAdapterRegistry.list = [];
+      managedApi.list.mockResolvedValue({
+        currentUserId: "user-1",
+        // An existing OpenAI default must not win over the custom gateway grant
+        // created from the credential entered in this flow.
+        connections: [{
+          id: "openai-default",
+          grantId: "openai-default-grant",
+          companyId: "company-new",
+          provider: "openai",
+          method: "api_key",
+          name: "Existing OpenAI default",
+          ownership: "personal",
+          ownerUserId: "user-1",
+          status: "connected",
+          isDefault: true,
+        } as never],
+      });
+      const { root } = await openStep4({ adapterType: "custom_local" });
+      const customTile = [...document.body.querySelectorAll("button[aria-checked]")]
+        .find((tile) => tile.textContent?.includes("Custom"));
+      expect(customTile).toBeTruthy();
+      await act(async () => customTile!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      for (let i = 0; i < 5; i++) await flushReact();
+
+      await act(async () => {
+        setControlledValue(document.querySelector("#onboarding-custom-base-url") as HTMLInputElement, "https://gateway.example/v1");
+        setControlledValue(document.querySelector("#onboarding-custom-model-manual") as HTMLInputElement, "gpt-4o-mini");
+        setControlledValue(document.querySelector('input[aria-label="Bearer token"]') as HTMLInputElement, "custom-secret");
+      });
+      await flushReact();
+      const connect = [...document.body.querySelectorAll("button")]
+        .find((button) => button.textContent?.trim() === "Connect") as HTMLButtonElement;
+      expect(connect.disabled).toBe(false);
+      await act(async () => connect.click());
+      for (let i = 0; i < 8; i++) await flushReact();
+
+      expect(managedApi.create).toHaveBeenCalledTimes(1);
+      expect(managedApi.create).toHaveBeenCalledWith("company-new", expect.objectContaining({
+        ownership: "personal",
+        routing: expect.objectContaining({ kind: "gateway", protocol: "responses", baseUrl: "https://gateway.example/v1" }),
+      }));
+      const hireBody = (mockAgentsApi.hire.mock.calls.at(-1) as unknown[])[1] as { runtimeConfig: { aiConnection: unknown } };
+      expect(hireBody.runtimeConfig.aiConnection).toEqual({
+        provider: "openai",
+        method: "api_key",
+        mode: "delegated",
+        connectionId: "managed-connection",
+        grantId: "managed-grant",
+      });
+      expect(mockAgentsApi.testEnvironment).toHaveBeenCalledWith("company-new", "custom_local", expect.any(Object));
+      expect((mockAgentsApi.hire.mock.calls.at(-1) as unknown[])[1]).toMatchObject({
+        adapterType: "custom_local",
+        adapterConfig: { provider: "custom", model: "gpt-4o-mini" },
+      });
+      expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+
+      await act(async () => root.unmount());
+    });
+
+    it.each([
+      ["api_key", "Azure API key (api-key header)", "Enter Azure API key"],
+      ["bearer", "Bearer token", "Enter bearer token"],
+    ] as const)("gates custom discovery until the %s credential is entered and never drafts it", async (auth, label, placeholder) => {
+      mockAdapterRegistry.list = [];
+      const secret = `custom-${auth}-secret`;
+      const { root } = await openStep4({ adapterType: "custom_local", customAuth: auth });
+      const customTile = [...document.body.querySelectorAll("button[aria-checked]")]
+        .find((tile) => tile.textContent?.includes("Custom"));
+      expect(customTile).toBeTruthy();
+      await act(async () => customTile!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      for (let i = 0; i < 5; i++) await flushReact();
+
+      const keyField = document.body.querySelector(`input[aria-label="${label}"]`) as HTMLInputElement;
+      expect(keyField).toBeTruthy();
+      expect(keyField.type).toBe("password");
+      expect(keyField.placeholder).toBe(placeholder);
+      const discover = [...document.body.querySelectorAll("button")]
+        .find((button) => button.textContent?.includes("Discover models")) as HTMLButtonElement;
+      const connect = [...document.body.querySelectorAll("button")]
+        .find((button) => button.textContent?.trim() === "Connect") as HTMLButtonElement;
+      expect(discover.disabled).toBe(true);
+      expect(connect.disabled).toBe(true);
+
+      await act(async () => {
+        setControlledValue(document.querySelector("#onboarding-custom-base-url") as HTMLInputElement, "https://gateway.example/v1");
+        setControlledValue(document.querySelector("#onboarding-custom-model-manual") as HTMLInputElement, "gpt-4o-mini");
+        setControlledValue(keyField, secret);
+      });
+      await flushReact();
+
+      expect(discover.disabled).toBe(false);
+      expect(connect.disabled).toBe(false);
+      await act(async () => discover.click());
+      await flushReact();
+      expect(managedApi.discoverCustom).toHaveBeenCalledWith("company-new", {
+        baseUrl: "https://gateway.example/v1",
+        auth,
+        apiKey: secret,
+      });
+      expect(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)).not.toContain(secret);
+      expect(document.body.textContent).not.toContain(secret);
 
       await act(async () => root.unmount());
     });

@@ -157,6 +157,17 @@ const ONBOARDING_EXCLUDED_ADAPTER_TYPES = new Set([
   "paperclip_runner",
 ]);
 
+// These are the model-source choices promised by onboarding. Keep them
+// explicit: a provider source must not disappear just because its adapter was
+// omitted from (or not marked recommended in) the runtime UI registry. The
+// adapter registry still supplies the implementation and any additional
+// choices below these primary sources.
+const ONBOARDING_PRIMARY_ADAPTER_TYPES = [
+  "claude_local",
+  "codex_local",
+  "custom_local",
+] as const;
+
 function restoreOnboardingAdapterType(savedAdapterType: unknown, provider?: unknown): AdapterType {
   if (savedAdapterType === "paperclip_runner" && (provider === undefined || provider === "codex")) return "codex_local";
   return typeof savedAdapterType === "string" && savedAdapterType !== "paperclip_runner"
@@ -257,6 +268,19 @@ const API_KEY_ENV_KEYS: Record<string, string> = {
 
 function apiKeyEnvKeyFor(adapterType: string): string {
   return API_KEY_ENV_KEYS[adapterType] ?? "API_KEY";
+}
+
+/**
+ * Custom Gateway is a UI source, but the custom runner is its runtime too.
+ *
+ * Routing a Responses gateway through native Codex turns its credential probe
+ * into a Codex login probe. That both obscures the actual gateway error and
+ * prevents an Azure `api-key` connection from being adopted. `custom_local`
+ * implements both supported protocols directly, so test and execution remain
+ * on the endpoint and authentication method selected in this form.
+ */
+export function onboardingCustomHarness(_protocol: "responses" | "chat"): "custom_local" {
+  return "custom_local";
 }
 
 function ModelSourceMark({
@@ -637,6 +661,16 @@ function OnboardingWizardInner({
   const [url, setUrl] = useState(
     savedNativeRunnerDraft ? "" : (saved?.url as string) ?? "",
   );
+  const [customProtocol, setCustomProtocol] = useState<"responses" | "chat">(
+    saved?.customProtocol === "chat" ? "chat" : "responses",
+  );
+  const [customAuth, setCustomAuth] = useState<"bearer" | "api_key">(
+    saved?.customAuth === "api_key" ? "api_key" : "bearer",
+  );
+  const customCredentialLabel = customAuth === "api_key" ? "Azure API key (api-key header)" : "Bearer token";
+  const customCredentialPlaceholder = customAuth === "api_key"
+    ? "Enter Azure API key"
+    : "Enter bearer token";
   const [adapterEnvResult, setAdapterEnvResult] =
     useState<AdapterEnvironmentTestResult | null>(null);
   const [adapterEnvError, setAdapterEnvError] = useState<string | null>(null);
@@ -685,11 +719,46 @@ function OnboardingWizardInner({
    * `localStorage`, and a provider key does not belong there.
    */
   const [apiKey, setApiKey] = useState("");
+  const [customDiscovery, setCustomDiscovery] = useState<{
+    models: Array<{ id: string; label?: string }>;
+    protocols: { responses: boolean; chat: boolean };
+  } | null>(null);
+  const [customDiscoveryError, setCustomDiscoveryError] = useState<string | null>(null);
+  const [customDiscoveryLoading, setCustomDiscoveryLoading] = useState(false);
   // The owner's stored Claude subscription login, read right before the hire
   // (see handleGiveHeartbeat). Onboarding applies it with no extra control,
   // so nothing else reads this state yet.
   const [claudeOAuthStatus, setClaudeOAuthStatus] =
     useState<ClaudeOAuthTokenStatusResponse | null>(null);
+
+  async function discoverCustomGateway() {
+    if (!createdCompanyId || !url.trim()) {
+      setCustomDiscoveryError("Enter a Base URL before discovering models.");
+      return;
+    }
+    if (!apiKey.trim()) {
+      setCustomDiscoveryError("Enter an API key before discovering models.");
+      return;
+    }
+    setCustomDiscoveryLoading(true);
+    setCustomDiscoveryError(null);
+    try {
+      const result = await aiConnectionsApi.discoverCustom(createdCompanyId, {
+        baseUrl: url.trim(),
+        auth: customAuth,
+        apiKey: apiKey.trim(),
+      });
+      setCustomDiscovery(result);
+      const nextProtocol = result.protocols.responses ? "responses" : result.protocols.chat ? "chat" : customProtocol;
+      setCustomProtocol(nextProtocol);
+      if (!model.trim() && result.models[0]?.id) setModel(result.models[0].id);
+    } catch (err) {
+      setCustomDiscovery(null);
+      setCustomDiscoveryError(err instanceof ApiError ? err.message : "Could not discover models from this gateway.");
+    } finally {
+      setCustomDiscoveryLoading(false);
+    }
+  }
 
   // Created entity IDs — pre-populate from existing company when skipping step 1
   const [createdCompanyId, setCreatedCompanyId] = useState<string | null>(
@@ -765,9 +834,17 @@ function OnboardingWizardInner({
   const managedProvider = aiProviderForAdapter(adapterType);
   const managedSubscriptionProvider = managedProvider === "anthropic" || managedProvider === "openai" || managedProvider === "xai" ? managedProvider : undefined;
   function managedBindingForStep(): AiConnectionBinding | undefined {
-    if (credentialMode === "api") return selectedApiKey?.aiConnection ?? (
-      !selectedApiKey && apiKeySecretRef.current?.companyId === createdCompanyId && apiKeySecretRef.current.envKey === apiKeyEnvKeyFor(adapterType)
-        ? apiKeySecretRef.current.aiConnection : undefined);
+    if (credentialMode === "api") {
+      // A custom gateway creates a new connection for the key entered on this
+      // step. Prefer that exact grant over any saved OpenAI default: the latter
+      // is unrelated to the gateway and would silently restore responsible_user
+      // routing for the first agent.
+      const storedBinding = apiKeySecretRef.current?.companyId === createdCompanyId
+        && apiKeySecretRef.current.envKey === apiKeyEnvKeyFor(adapterType)
+        ? apiKeySecretRef.current.aiConnection
+        : undefined;
+      return storedBinding ?? selectedApiKey?.aiConnection;
+    }
     return savedSubscription?.aiConnection ?? (managedSubscriptionRef.current?.companyId === createdCompanyId && managedSubscriptionRef.current.binding.provider === managedProvider ? managedSubscriptionRef.current.binding : undefined);
   }
   createdCompanyIdRef.current = createdCompanyId;
@@ -805,6 +882,24 @@ function OnboardingWizardInner({
     setAgentAppearance(randomAgentAppearance());
     setCreatedCompanyPrefix(null);
     setCompanyName("");
+    // Credentials and gateway routing belong to the company currently being
+    // onboarded too. Leaving these mounted when the route switches companies
+    // reuses the previous company's endpoint/key, and can either validate the
+    // wrong connection or bind the new agent to the old company's grant.
+    setApiKey("");
+    setUrl("");
+    setModel("");
+    setCustomProtocol("responses");
+    setCustomAuth("bearer");
+    setCustomDiscovery(null);
+    setCustomDiscoveryError(null);
+    setCustomDiscoveryLoading(false);
+    setSelectedSavedKey(null);
+    apiKeySecretRef.current = null;
+    managedSubscriptionRef.current = null;
+    setAdapterEnvResult(null);
+    adapterEnvResultAppliedStoredLoginRef.current = false;
+    setAdapterEnvError(null);
     setCreatedCompanyGoalId(null);
     setCreatedProjectId(null);
     setCreatedIssueRef(null);
@@ -915,7 +1010,7 @@ function OnboardingWizardInner({
     if (!effectiveOnboardingOpen) return;
     const state = {
       step, companyName,
-      agentName, agentAppearance, agentRole, adapterType, runner, cwd, model, command, args, url,
+      agentName, agentAppearance, agentRole, adapterType, runner, cwd, model, command, args, url, customProtocol, customAuth,
       // The mode, never the key: this blob is localStorage.
       credentialMode, credentialModeChoice,
       createdCompanyId, createdCompanyPrefix, createdAgentId,
@@ -924,7 +1019,7 @@ function OnboardingWizardInner({
     onboardingDraftStorage.write(JSON.stringify(state));
   }, [
     effectiveOnboardingOpen, step, companyName,
-    agentName, agentAppearance, agentRole, adapterType, runner, cwd, model, command, args, url,
+    agentName, agentAppearance, agentRole, adapterType, runner, cwd, model, command, args, url, customProtocol, customAuth,
     credentialMode, credentialModeChoice,
     createdCompanyId, createdCompanyPrefix, createdAgentId,
     createdCompanyGoalId, createdProjectId, createdIssueRef,
@@ -1152,11 +1247,12 @@ function OnboardingWizardInner({
     adapterType === "opencode_local" ||
     adapterType === "pi_local" ||
     adapterType === "cursor";
-  // Build adapter grids dynamically from the UI registry + display metadata.
-  // External/plugin adapters automatically appear with generic defaults, and
-  // server-disabled types are filtered out.
+  // Keep the three model-source choices explicit, then append additional
+  // registry-driven choices. This prevents Custom (and the provider choices)
+  // from depending on a dynamic adapter's `recommended` flag while retaining
+  // plugin/external adapter discovery and server-disabled filtering.
   const { recommendedAdapters, moreAdapters } = useMemo(() => {
-    const all = listUIAdapters()
+    const registered = listUIAdapters()
       .filter((a) =>
         !ONBOARDING_EXCLUDED_ADAPTER_TYPES.has(a.type) &&
         !disabledTypes.has(a.type) &&
@@ -1164,9 +1260,15 @@ function OnboardingWizardInner({
       )
       .map((a) => ({ ...getAdapterDisplay(a.type), type: a.type }));
 
+    const primary = ONBOARDING_PRIMARY_ADAPTER_TYPES
+      .filter((type) => !disabledTypes.has(type))
+      .map((type) => ({ ...getAdapterDisplay(type), type, recommended: true }));
+    const primaryTypes = new Set(ONBOARDING_PRIMARY_ADAPTER_TYPES);
+    const additional = registered.filter((adapter) => !primaryTypes.has(adapter.type as typeof ONBOARDING_PRIMARY_ADAPTER_TYPES[number]));
+
     return {
-      recommendedAdapters: all.filter((a) => a.recommended),
-      moreAdapters: all.filter((a) => !a.recommended),
+      recommendedAdapters: [...primary, ...additional.filter((a) => a.recommended)],
+      moreAdapters: additional.filter((a) => !a.recommended),
     };
   }, [disabledTypes]);
 
@@ -1406,7 +1508,9 @@ function OnboardingWizardInner({
                 label: "Connect",
                 icon: "arrow",
                 disabled:
-                  !connectStepReady || (credentialMode === "api" && !apiKey.trim() && !selectedApiKey),
+                  !connectStepReady ||
+                  (adapterType === "custom_local" && (!url.trim() || !model.trim() || !apiKey.trim())) ||
+                  (credentialMode === "api" && adapterType !== "custom_local" && !apiKey.trim() && !selectedApiKey),
               }
           : // Nothing is chosen on arrival, and the row is what chooses. Until
             // it has been answered the button has nothing to do.
@@ -1654,6 +1758,15 @@ function OnboardingWizardInner({
     setCommand("");
     setArgs("");
     setUrl("");
+    setApiKey("");
+    setCustomProtocol("responses");
+    setCustomAuth("bearer");
+    setCustomDiscovery(null);
+    setCustomDiscoveryError(null);
+    setCustomDiscoveryLoading(false);
+    setSelectedSavedKey(null);
+    apiKeySecretRef.current = null;
+    managedSubscriptionRef.current = null;
     setAdapterEnvResult(null);
     adapterEnvResultAppliedStoredLoginRef.current = false;
     setAdapterEnvError(null);
@@ -1821,8 +1934,42 @@ function OnboardingWizardInner({
     if (apiKeySecretRef.current?.key === key && apiKeySecretRef.current.companyId === companyId && apiKeySecretRef.current.envKey === envKey) return true;
     try {
       if (managedProvider) {
-        await aiConnectionsApi.create(companyId, { provider: managedProvider, method: "api_key", name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} API`, ownership: "personal", apiKey: key, agentIds: [], allAgents: true });
-        apiKeySecretRef.current = { key, companyId, envKey, aiConnection: { provider: managedProvider, method: "api_key", mode: "responsible_user" } };
+        const savedConnection = await aiConnectionsApi.create(companyId, {
+          provider: managedProvider,
+          method: "api_key",
+          name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} API`,
+          ownership: "personal",
+          apiKey: key,
+          agentIds: [],
+          allAgents: true,
+          ...(adapterType === "custom_local" ? {
+            routing: {
+              kind: "gateway" as const,
+              protocol: customProtocol,
+              auth: customAuth,
+              baseUrl: url.trim(),
+              models: model.trim() ? [{ id: model.trim() }] : [],
+            },
+          } : {}),
+        });
+        apiKeySecretRef.current = {
+          key,
+          companyId,
+          envKey,
+          aiConnection: adapterType === "custom_local"
+            ? {
+                provider: managedProvider,
+                method: "api_key",
+                mode: "delegated",
+                connectionId: savedConnection.connectionId,
+                grantId: savedConnection.grantId,
+              }
+            : {
+                provider: managedProvider,
+                method: "api_key",
+                mode: "responsible_user",
+              },
+        };
         return true;
       }
       const stored = await storeProviderApiKey(companyId, envKey, key);
@@ -1864,6 +2011,16 @@ function OnboardingWizardInner({
           ? runner === "legacy" && DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX
           : defaultCreateValues.dangerouslyBypassSandbox
     });
+    if (adapterType === "custom_local") {
+      config.model = model.trim();
+      config.managedAiRouting = {
+        kind: "gateway",
+        protocol: customProtocol,
+        auth: customAuth,
+        baseUrl: url.trim(),
+        models: model.trim() ? [{ id: model.trim() }] : [],
+      };
+    }
     if (adapterType === "claude_local" && forceUnsetAnthropicApiKey) {
       const env =
         typeof config.env === "object" &&
@@ -2012,7 +2169,7 @@ function OnboardingWizardInner({
       }
       const result = await agentsApi.testEnvironment(
         createdCompanyId,
-        adapterType,
+        adapterType === "custom_local" ? onboardingCustomHarness(customProtocol) : adapterType,
         {
           adapterConfig: adapterConfigOverride ?? buildAdapterConfig(),
           ...(adapterType === "codex_local" && runner !== "auto" ? { runner } : {}),
@@ -2094,6 +2251,9 @@ function OnboardingWizardInner({
       return;
     }
     if (hiringAgentRef.current !== null) return;
+    const onboardingHarness = adapterType === "custom_local"
+      ? onboardingCustomHarness(customProtocol)
+      : adapterType;
     const attempt = ++connectAttemptRef.current;
     const isCurrent = () => connectAttemptRef.current === attempt && stillTheSameCompany(createdCompanyId);
     hiringAgentRef.current = attempt;
@@ -2152,7 +2312,11 @@ function OnboardingWizardInner({
       // hire describe it the same way — as a reference. A failure here stops the
       // hire rather than falling through to a configuration with no credential.
       let apiKeyStored = false;
-      if (credentialMode === "api" && !selectedApiKey && apiKey.trim()) {
+      if (adapterType === "custom_local" && (!url.trim() || !model.trim())) {
+        setError("Enter a Base URL and model for the custom gateway.");
+        return;
+      }
+      if (credentialMode === "api" && (adapterType === "custom_local" || !selectedApiKey) && apiKey.trim()) {
         apiKeyStored = await storeApiKeyUserSecret(createdCompanyId);
         if (!apiKeyStored || !isCurrent()) return;
       }
@@ -2163,6 +2327,11 @@ function OnboardingWizardInner({
       }
       const managedBinding = managedBindingForStep();
       const baseAdapterConfig = buildAdapterConfig(apiKeyStored);
+      if (adapterType === "custom_local") {
+        // The custom runner executes both supported protocols directly.
+        baseAdapterConfig.provider = "custom";
+        baseAdapterConfig.model = model.trim();
+      }
       let storedClaudeLogin: ClaudeOAuthTokenStatusResponse | null = null;
       if (
         !managedBinding && adapterType === "claude_local" &&
@@ -2190,7 +2359,7 @@ function OnboardingWizardInner({
           }
         : baseAdapterConfig;
 
-      if (isLocalAdapter) {
+      if (isLocalAdapter || adapterType === "custom_local") {
         // A cached result is reusable only when it tested the same
         // configuration the hire below sends, and only when it does not
         // block the hire — see blocksAgentCreate. With the "Test now" card
@@ -2212,7 +2381,7 @@ function OnboardingWizardInner({
         // pass or a warn result that reports missing authentication — the
         // agent cannot run without one of those.
         if (blocksAgentCreate(result)) {
-          const nativeCodexError = adapterType === "codex_local" && result.adapterType === "paperclip_runner"
+          const nativeCodexError = (adapterType === "codex_local" || onboardingHarness === "paperclip_runner") && result.adapterType === "paperclip_runner"
             ? result.checks.find(check => check.level === "error")?.message : undefined;
           setError(
             nativeCodexError || (result.status === "fail"
@@ -2242,7 +2411,7 @@ function OnboardingWizardInner({
       const existing = existingAgents?.find(
         (agent) =>
           agent.name.trim().toLowerCase() === hireName.toLowerCase() &&
-          agentHarnessType(agent.adapterType, agent.adapterConfig) === adapterType,
+          agentHarnessType(agent.adapterType, agent.adapterConfig) === onboardingHarness,
       );
       if (existing) {
         if (!isCurrent()) return;
@@ -2264,9 +2433,9 @@ function OnboardingWizardInner({
         name: hireName,
         appearance: agentAppearance,
         role: agentRole,
-        adapterType,
+        adapterType: onboardingHarness,
         adapterConfig: hireAdapterConfig,
-        ...(adapterType === "codex_local" && runner !== "auto" ? { runner } : {}),
+        ...(onboardingHarness === "codex_local" && runner !== "auto" ? { runner } : {}),
         ...(shouldApplyStoredClaudeLogin ? { applyStoredClaudeLogin: true } : {}),
         // The server owns what the first agent is told now: this marker seeds
         // the chief-of-staff persona over the agent's entry instruction file.
@@ -2728,11 +2897,10 @@ function OnboardingWizardInner({
               {step === 4 && (
                 <motion.div key="step-4" {...stepContentMotion} exit={stepHandoff ? stepContentMotion.exit : undefined} className="space-y-8">
                   <div>
-                    {/* Sources come from `recommendedAdapters`, not a list
-                        written here — that filter is `recommended` in the
-                        display registry, so a third tile appears the day
-                        someone marks one rather than the day someone
-                        remembers to edit this file.
+                    {/* Primary sources are explicit in the wizard so Custom
+                        remains available independently of the runtime
+                        adapter registry. Additional visual adapters still
+                        come from `recommendedAdapters`.
 
                         Picking one starts the sign-in now. The row is the
                         question, and answering it is what opens the card. */}
@@ -2757,6 +2925,7 @@ function OnboardingWizardInner({
                         autoConnectStartedRef.current = false;
                         setSourcePicked(true);
                         setAdapterType(id);
+                        if (id === "custom_local") setCredentialMode("api");
                         if (id !== adapterType) setRunner("auto");
                         if (id === "opencode_local") setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
                         else if (id !== "codex_local") setModel("");
@@ -2787,7 +2956,7 @@ function OnboardingWizardInner({
                       transition={{ opacity: SOURCE_LINK_EXIT, height: MAKE_ROOM }}
                     >
                       <div className="-ml-3 mt-1">
-                        <CredentialModeLink mode={credentialMode} onChange={setCredentialMode} />
+                        {adapterType !== "custom_local" && <CredentialModeLink mode={credentialMode} onChange={setCredentialMode} />}
                         {savedKeys.options.length > 0 && <p className="px-3 text-sm text-muted-foreground">{savedKeys.options.length} saved API {savedKeys.options.length === 1 ? "key available" : "keys available"}.</p>}
                         {credentialMode === "subscription" && authSignalStatus === "present" && <p className="px-3 text-sm text-muted-foreground">An existing provider connection is available.</p>}
                       </div>
@@ -2841,14 +3010,14 @@ function OnboardingWizardInner({
                           CONNECT_SOURCE_NAMES[adapterType] ?? adapterType
                         } API key to connect`}
                       >
-                        <SavedProviderKeySelect {...savedKeys} disabled={loading || adapterEnvLoading} value={selectedApiKey?.id ?? ""} onChange={(id) => {
+                        {adapterType !== "custom_local" && <SavedProviderKeySelect {...savedKeys} disabled={loading || adapterEnvLoading} value={selectedApiKey?.id ?? ""} onChange={(id) => {
                           setSelectedSavedKey(createdCompanyId ? { companyId: createdCompanyId, envKey: apiKeyEnvKeyFor(adapterType), id } : null);
                           setApiKey("");
-                        }} />
-                        {!selectedApiKey && <OnboardingCardField
-                          label="API key"
-                          placeholder="Enter API key here"
-                          masked
+                        }} />}
+                        {(adapterType === "custom_local" || !selectedApiKey) && <OnboardingCardField
+                           label={adapterType === "custom_local" ? customCredentialLabel : "API key"}
+                           placeholder={adapterType === "custom_local" ? customCredentialPlaceholder : "Enter API key here"}
+                           masked
                           // The card is the answer to the tile just pressed, so
                           // the field is unambiguously the next thing. Carried
                           // over from the key field this card replaced.
@@ -2970,6 +3139,62 @@ function OnboardingWizardInner({
                       supportedRunners={runnerDiscovery.data?.find(item => item.type === "codex_local")?.supportedRunners}
                       onChange={setRunner} />
                   </details>}
+
+                  {adapterType === "custom_local" && (
+                   <div className="mt-4 space-y-3 rounded-lg border border-border bg-card p-3">
+                       <div className="space-y-1">
+                         <Label htmlFor="onboarding-custom-base-url">Base URL</Label>
+                         <Input
+                           id="onboarding-custom-base-url"
+                           placeholder="https://api.example.com/v1"
+                           value={url}
+                           onChange={(event) => setUrl(event.target.value)}
+                         />
+                       </div>
+                       <div className="space-y-1">
+                         <Label htmlFor="onboarding-custom-auth">Authentication</Label>
+                         <Select value={customAuth} onValueChange={(value) => setCustomAuth(value as "bearer" | "api_key")}>
+                           <SelectTrigger id="onboarding-custom-auth"><SelectValue /></SelectTrigger>
+                           <SelectContent>
+                             <SelectItem value="bearer">Bearer token</SelectItem>
+                             <SelectItem value="api_key">API key header</SelectItem>
+                           </SelectContent>
+                         </Select>
+                       </div>
+                       <div className="space-y-1">
+                         <Label htmlFor="onboarding-custom-protocol">API protocol</Label>
+                         <Select value={customProtocol} onValueChange={(value) => setCustomProtocol(value as "responses" | "chat")}>
+                           <SelectTrigger id="onboarding-custom-protocol"><SelectValue /></SelectTrigger>
+                           <SelectContent>
+                             <SelectItem value="responses">OpenAI Responses API</SelectItem>
+                             <SelectItem value="chat">OpenAI Chat Completions</SelectItem>
+                           </SelectContent>
+                         </Select>
+                       </div>
+                       <div className="space-y-1">
+                         <Label htmlFor="onboarding-custom-model">Model</Label>
+                         {customDiscovery?.models.length ? (
+                           <Select value={model} onValueChange={setModel}>
+                             <SelectTrigger id="onboarding-custom-model"><SelectValue placeholder="Choose a discovered model" /></SelectTrigger>
+                             <SelectContent>
+                               {customDiscovery.models.map((entry) => <SelectItem key={entry.id} value={entry.id}>{entry.label ?? entry.id}</SelectItem>)}
+                             </SelectContent>
+                           </Select>
+                         ) : null}
+                         <Input
+                           id="onboarding-custom-model-manual"
+                           placeholder="e.g. gpt-4o-mini"
+                           value={model}
+                           onChange={(event) => setModel(event.target.value)}
+                         />
+                       </div>
+                       <Button type="button" variant="outline" onClick={discoverCustomGateway} disabled={customDiscoveryLoading || !url.trim() || !apiKey.trim()}>
+                         {customDiscoveryLoading ? "Discovering models…" : "Discover models"}
+                       </Button>
+                       {customDiscoveryError ? <p className="text-sm text-destructive" role="alert">{customDiscoveryError}</p> : null}
+                       {customDiscovery ? <p className="text-xs text-muted-foreground" role="status">Detected {customDiscovery.models.length} model{customDiscovery.models.length === 1 ? "" : "s"}; {customDiscovery.protocols.responses || customDiscovery.protocols.chat ? "supported protocol detected" : "choose a protocol manually"}.</p> : null}
+                    </div>
+                  )}
 
                   {/* Conditional adapter fields */}
                   {/* No model picker. Every adapter this step offers resolves

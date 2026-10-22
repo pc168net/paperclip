@@ -67,6 +67,22 @@ beforeAll(async () => {
 afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
 
 describe("managed AI connections", () => {
+  it("keeps a custom gateway personal and selectable without requiring a provider default", async () => {
+    const owner = "custom-gateway-onboarding-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const account = await service.save(companyId, owner, {
+      provider: "openai", method: "api_key", ownership: "personal", name: "Custom onboarding gateway",
+      apiKey: "custom-gateway-fixture", agentIds: [], allAgents: true,
+      routing: { kind: "gateway", protocol: "responses", auth: "bearer", baseUrl: "https://gateway.example/v1", models: [{ id: "gpt-4o-mini" }] },
+    }, "custom-gateway-fixture");
+    const listed = await service.list(companyId, owner);
+    expect(listed).toEqual([expect.objectContaining({ id: account.connectionId, grantId: account.grantId, ownership: "personal", isDefault: false, routing: expect.objectContaining({ kind: "gateway", protocol: "responses" }) })]);
+    await expect(service.select({
+      companyId, agentId, userId: owner, adapterType: "paperclip_runner", runnerProvider: "codex", model: "gpt-4o-mini",
+      binding: { provider: "openai", method: "api_key", mode: "delegated", connectionId: account.connectionId, grantId: account.grantId },
+    })).resolves.toMatchObject({ connection: { id: account.connectionId }, grant: { id: account.grantId } });
+  });
+
   it("marks explicit AI selection rejections without changing their HTTP contract", async () => {
     const owner = "selection-blocker-owner";
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });

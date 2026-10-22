@@ -15,6 +15,24 @@ function isTimeout(error: unknown): boolean {
   return error instanceof Error && (error.name === "TimeoutError" || /timed?\s*out|timeout/i.test(error.message));
 }
 
+/** Read the two OpenAI-compatible model-list envelopes without trusting payload shape. */
+function modelListFromPayload(payload: unknown): unknown[] | undefined {
+  if (typeof payload !== "object" || payload === null) return undefined;
+  const value = payload as { data?: unknown; models?: unknown };
+  return Array.isArray(value.data) ? value.data : Array.isArray(value.models) ? value.models : undefined;
+}
+
+function modelIdsFromPayload(payload: unknown): Set<string> | undefined {
+  const rawModels = modelListFromPayload(payload);
+  if (!rawModels) return undefined;
+  return new Set(rawModels.flatMap((entry) => {
+    if (typeof entry === "string") return entry.trim() ? [entry.trim()] : [];
+    if (typeof entry !== "object" || entry === null || typeof (entry as { id?: unknown }).id !== "string") return [];
+    const id = (entry as { id: string }).id.trim();
+    return id ? [id] : [];
+  }));
+}
+
 /** Discover models and non-consuming protocol support for a custom gateway. */
 export async function discoverAiGateway(
   key: string,
@@ -52,13 +70,7 @@ export async function discoverAiGateway(
   } catch {
     throw unprocessable("The endpoint returned an invalid /models response.", { code: "ai_connection_models_unsupported" });
   }
-  const rawModels = typeof payload === "object" && payload !== null
-    ? Array.isArray((payload as { data?: unknown }).data)
-      ? (payload as { data: unknown[] }).data
-      : Array.isArray((payload as { models?: unknown }).models)
-        ? (payload as { models: unknown[] }).models
-        : []
-    : [];
+  const rawModels = modelListFromPayload(payload) ?? [];
   const models = rawModels.flatMap((entry) => {
     if (typeof entry === "string") return [{ id: entry }];
     if (typeof entry !== "object" || entry === null || typeof (entry as { id?: unknown }).id !== "string") return [];
@@ -121,8 +133,9 @@ export async function validateAiApiKey(
   let advertisedModels: Set<string> | undefined;
   if (custom && routing?.models.length) {
     try {
-      const payload = await response.clone().json() as { data?: Array<{ id?: string }> };
-      advertisedModels = new Set((payload.data ?? []).flatMap((model) => model.id ? [model.id] : []));
+      // Preserve validation's existing behavior for a JSON response that does
+      // not contain a model list: configured models are not considered advertised.
+      advertisedModels = modelIdsFromPayload(await response.clone().json()) ?? new Set();
     } catch {
       // A successful authentication response without a JSON model list is still
       // useful for gateways that intentionally hide model discovery.
