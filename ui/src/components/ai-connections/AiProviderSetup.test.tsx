@@ -78,6 +78,24 @@ it.each(providerSources)("opens %s directly with shared access folded under Adva
   }
 });
 
+it("uses Azure guardrails instead of catalog fetches or free-form model lists", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: true, connections: [] });
+  client.setQueryData(["agents", "company", "provider-access"], []);
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><AiProviderSetup companyId="company" initialProvider="gateway" customEndpointDraft={{ baseUrl: "https://my-resource.openai.azure.com/v1", auth: "api_key", apiKey: "secret", protocol: "responses", models: [] }} onCancel={() => {}} onComplete={() => {}} /></QueryClientProvider>));
+    expect(container.textContent).toContain("Enter the deployment name shown in Azure Portal. Azure OpenAI model catalogs do not identify this resource’s deployments.");
+    expect(container.textContent).not.toContain("Fetch models");
+    expect(container.textContent).not.toContain("458-catalog");
+    expect(container.querySelector('[aria-label="Model / deployment"]')).toBeNull();
+  } finally {
+    await act(async () => root.unmount());
+    client.clear();
+  }
+});
+
 it("saves the default organization grant and all-agent installation from the direct connect screen", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: true, connections: [] });

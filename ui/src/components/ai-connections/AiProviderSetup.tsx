@@ -122,14 +122,17 @@ export function AiProviderSetup({
   const [models, setModels] = useState(
     customEndpointDraft?.models.join(", ") ?? reconnect?.routing?.models.map((m) => m.id).join(", ") ?? "",
   );
-  const [discoveredModels, setDiscoveredModels] = useState<Array<{ id: string; label?: string }>>([]);
-  const [discoveryProtocols, setDiscoveryProtocols] = useState<{ responses: boolean; chat: boolean }>();
+  const [deploymentName, setDeploymentName] = useState(
+    customEndpointDraft?.models[0] ?? reconnect?.routing?.models[0]?.id ?? "",
+  );
   const [apiKey, setApiKey] = useState(customEndpointDraft?.apiKey ?? "");
-  // A draft only seeds the shared form. It must remain editable: hiding the
-  // fields made a stale model/protocol from the previous adapter step look
-  // authoritative and could disable Connect when discovery did not advertise
-  // OPTIONS support.
-  const isDraftedGateway = false;
+  const isAzureOpenAiGateway = (() => {
+    try {
+      return new URL(baseUrl).hostname.endsWith(".openai.azure.com");
+    } catch {
+      return false;
+    }
+  })();
   const client = useQueryClient();
   const accounts = useQuery({
     queryKey: ["ai-connections", companyId, agentId],
@@ -179,30 +182,14 @@ export function AiProviderSetup({
       ...result,
     });
   };
-  const discover = useMutation({
-    mutationFn: () => aiConnectionsApi.discoverCustom(companyId, {
-      baseUrl,
-      auth,
-      ...(auth !== "none" ? { apiKey } : {}),
-    }),
-    onSuccess: (result) => {
-      setDiscoveredModels(result.models);
-      // A connection owns the endpoint and credential; keep the complete
-      // provider model catalog so each agent can choose its own model later.
-      setModels(result.models.map((model) => model.id).join(", "));
-      setDiscoveryProtocols(result.protocols);
-       if (result.protocols.responses && !result.protocols.chat) setProtocol("responses");
-       if (result.protocols.chat && !result.protocols.responses) setProtocol("chat");
-       if (!result.protocols.responses && !result.protocols.chat) setProtocol("responses");
-    },
-  });
   useEffect(() => {
-    if (!customEndpointDraft || provider !== "gateway" || !baseUrl.trim() || (auth !== "none" && !apiKey.trim())) return;
-    discover.mutate();
-    // This is a one-time handoff from the New Agent adapter step. The shared
-    // form owns discovery from here onward.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [customEndpointDraft]);
+    if (!customEndpointDraft) return;
+    if (provider !== "gateway" && provider !== "local") return;
+    if (customEndpointDraft.models.length) {
+      setDeploymentName(customEndpointDraft.models[0]!);
+      setModels(customEndpointDraft.models.join(", "));
+    }
+  }, [customEndpointDraft, provider]);
   const save = useMutation({
     mutationFn: () => {
       const routing = reconnect && !editingExisting
@@ -216,11 +203,13 @@ export function AiProviderSetup({
             : provider === "gateway" || provider === "local"
               ? { baseUrl }
               : {}),
-          models: models
-            .split(",")
-            .map((id) => id.trim())
-            .filter(Boolean)
-            .map((id) => ({ id })),
+          models: provider === "gateway" || provider === "local"
+            ? (deploymentName.trim() ? [{ id: deploymentName.trim() }] : [])
+            : models
+              .split(",")
+              .map((id) => id.trim())
+              .filter(Boolean)
+              .map((id) => ({ id })),
         });
       return aiConnectionsApi.create(
         companyId,
@@ -276,16 +265,19 @@ export function AiProviderSetup({
   );
   const modelSettings = (
     <label className="block space-y-2 text-xs text-muted-foreground">
-      Model IDs (comma separated)
+      {provider === "gateway" || provider === "local" ? "Deployment name" : "Model IDs (comma separated)"}
       <Input
-        aria-label="Model IDs"
-        value={models}
-        onChange={(e) => setModels(e.target.value)}
-        disabled={Boolean(reconnect)}
+        aria-label={provider === "gateway" || provider === "local" ? "Deployment name" : "Model IDs"}
+        value={provider === "gateway" || provider === "local" ? deploymentName : models}
+        onChange={(e) => provider === "gateway" || provider === "local" ? setDeploymentName(e.target.value) : setModels(e.target.value)}
+        disabled={Boolean(reconnect && !editingExisting)}
       />
       <span className="block">
-        Use the provider’s model ID or your gateway’s alias. You can
-        also enter one on the agent.
+        {provider === "gateway" || provider === "local"
+          ? (isAzureOpenAiGateway
+            ? "Enter the deployment name shown in Azure Portal. Azure OpenAI model catalogs do not identify this resource’s deployments."
+            : "Enter the deployment name used by this connector.")
+          : "Use the provider’s model ID or your gateway’s alias. Separate multiple models with commas. Changes are available to Agent setup after saving."}
       </span>
     </label>
   );
@@ -372,49 +364,37 @@ export function AiProviderSetup({
           )}
           {(provider === "gateway" || provider === "local") && (
             <>
-              {isDraftedGateway ? (
-                <div className="space-y-2 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
-                  <p>Custom endpoint configuration carried from the previous step.</p>
-                  <p className="break-all"><span className="font-medium text-foreground">Base URL:</span> {baseUrl}</p>
-                  <p><span className="font-medium text-foreground">API format:</span> {protocol === "responses" ? "OpenAI Responses · Codex" : "Chat Completions · OpenCode"}</p>
-                </div>
-              ) : (
-                <>
-                  <label className="block space-y-2 text-xs text-muted-foreground">
-                    Base URL
-                    <Input
-                      aria-label="Base URL"
-                      placeholder={provider === "local" ? "http://localhost:11434/v1" : "https://gateway.example.com/v1"}
-                      value={baseUrl}
-                      onChange={(e) => setBaseUrl(e.target.value)}
-                       disabled={Boolean(reconnect && !editingExisting)}
-                    />
-                    {provider === "gateway" && (
-                      <Button type="button" variant="outline" onClick={() => discover.mutate()} disabled={discover.isPending || !baseUrl.trim() || (auth !== "none" && !apiKey.trim())}>
-                        {discover.isPending ? "Fetching models…" : "Fetch models"}
-                      </Button>
-                    )}
-                  </label>
-                  <label className="block space-y-2 text-xs text-muted-foreground">
-                    API format
-                    <Select
-                      value={protocol}
-                      onValueChange={(v) => {
-                        setProtocol(v as typeof protocol);
-                        if (v !== "messages" && provider !== "gateway" && auth === "api_key") setAuth("bearer");
-                      }}
-                       disabled={Boolean(reconnect && !editingExisting) || Boolean(initialProtocol)}
-                    >
-                      <SelectTrigger aria-label="API format" className="w-full"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="responses">OpenAI Responses · Custom</SelectItem>
-                        <SelectItem value="messages">Anthropic Messages · Claude</SelectItem>
-                        <SelectItem value="chat">Chat Completions · Custom</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </label>
-                </>
-              )}
+              <label className="block space-y-2 text-xs text-muted-foreground">
+                Base URL
+                <Input
+                  aria-label="Base URL"
+                  placeholder={provider === "local" ? "http://localhost:11434/v1" : "https://gateway.example.com/v1"}
+                  value={baseUrl}
+                  onChange={(e) => setBaseUrl(e.target.value)}
+                  disabled={Boolean(reconnect && !editingExisting)}
+                />
+                {provider === "gateway" && isAzureOpenAiGateway && (
+                  <p className="text-xs text-muted-foreground">Enter the deployment name shown in Azure Portal. Azure OpenAI model catalogs do not identify this resource’s deployments.</p>
+                )}
+              </label>
+              <label className="block space-y-2 text-xs text-muted-foreground">
+                API format
+                <Select
+                  value={protocol}
+                  onValueChange={(v) => {
+                    setProtocol(v as typeof protocol);
+                    if (v !== "messages" && provider !== "gateway" && auth === "api_key") setAuth("bearer");
+                  }}
+                  disabled={Boolean(reconnect && !editingExisting) || Boolean(initialProtocol)}
+                >
+                  <SelectTrigger aria-label="API format" className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="responses">OpenAI Responses · Custom</SelectItem>
+                    <SelectItem value="messages">Anthropic Messages · Claude</SelectItem>
+                    <SelectItem value="chat">Chat Completions · Custom</SelectItem>
+                  </SelectContent>
+                </Select>
+              </label>
             </>
           )}
           {provider === "bedrock" && (
@@ -428,7 +408,7 @@ export function AiProviderSetup({
               />
             </label>
           )}
-          {provider !== "openrouter" && !isDraftedGateway && (
+          {provider !== "openrouter" && (
             <label className="block space-y-2 text-xs text-muted-foreground">
               Authentication
               <Select
@@ -462,7 +442,7 @@ export function AiProviderSetup({
             </label>
           )}
           {
-            auth !== "none" && !isDraftedGateway && (
+            auth !== "none" && (
               <label className="block space-y-2 text-xs text-muted-foreground">
                 API key
                 <Input
@@ -475,35 +455,9 @@ export function AiProviderSetup({
               </label>
             )
           }
-          {provider === "gateway" && (isDraftedGateway || discoveredModels.length > 0) && (
-            <label className="block space-y-2 text-xs text-muted-foreground">
-              Model / deployment
-              {isDraftedGateway ? (
-                <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-foreground">{models}</p>
-              ) : <>
-                 <select aria-label="Model / deployment" className="block w-full rounded-md border bg-background px-3 py-2 text-sm" value={models.split(",")[0]?.trim() ?? ""} onChange={(event) => setModels([event.target.value, ...models.split(",").map((id) => id.trim()).filter((id) => id && id !== event.target.value)].join(", "))}>
-                  {discoveredModels.map((model) => <option key={model.id} value={model.id}>{model.label ?? model.id}</option>)}
-                </select>
-                <Input aria-label="Model / deployment fallback" value={models} onChange={(event) => setModels(event.target.value)} placeholder="Enter a deployment or model ID" />
-              </>}
-            </label>
-          )}
-          {provider === "gateway" && discoveryProtocols && !isDraftedGateway && (
-            <div className="space-y-1 text-xs text-muted-foreground" role="status">
-              {discoveryProtocols.responses && discoveryProtocols.chat
-                ? "Both API formats are supported. Using OpenAI Responses by default."
-                : discoveryProtocols.responses
-                   ? "Detected: OpenAI Responses · Custom runner"
-                  : discoveryProtocols.chat
-                     ? "Detected: Chat Completions · Custom runner"
-                    : "This endpoint does not advertise Responses or Chat Completions support."}
-              {discoveryProtocols.responses && discoveryProtocols.chat && <span className="block">Change format above to override the default.</span>}
-            </div>
-          )}
           {reconnect && <details><summary className="cursor-pointer text-sm text-muted-foreground">Model settings</summary>{modelSettings}</details>}
           <p className="text-xs text-muted-foreground">
-            Paperclip tests this endpoint with <code>/models</code> before saving.
-            Agent execution compatibility is checked separately when the connection is used.
+            Paperclip stores the endpoint and credential here; deployment names are verified separately.
           </p>
           {save.error && (
             <p role="alert" className="text-sm text-destructive">
@@ -528,7 +482,7 @@ export function AiProviderSetup({
                 save.isPending || accounts.isPending || accounts.isError ||
                 (!reconnect && ownership === "shared" && !allAgents && agentIds.size === 0) ||
                 (auth !== "none" && !apiKey.trim()) ||
-                 (provider === "gateway" && !models.trim())
+                ((provider === "gateway" || provider === "local") && !deploymentName.trim())
               }
             >
               {save.isPending
