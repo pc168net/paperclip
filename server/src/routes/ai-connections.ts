@@ -64,12 +64,11 @@ async function assertAiDeploymentManageAccess(db: Db, req: Request, companyId: s
   assertBoard(req);
   assertCompanyAccess(req, companyId);
   const userId = getActorInfo(req).actorId;
-  const [connection] = await db.select({ id: toolConnections.id, creator: toolConnections.createdByUserId })
+  const [connection] = await db.select({ id: toolConnections.id })
     .from(toolConnections).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId), eq(toolConnections.connectionPurpose, "ai"))).limit(1);
   if (!connection) throw notFound("AI connection not found");
-  const owner = connection.creator === userId;
-  if (!owner && !(await canManageAiConnections(db, req, companyId)))
-    throw forbidden("Only the connection owner or a connection manager can manage deployments");
+  if (!(await canManageAiConnections(db, req, companyId)))
+    throw forbidden("Only a connection manager can manage deployments");
   return { connection, userId };
 }
 

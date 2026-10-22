@@ -1,6 +1,6 @@
 # Task 5 report
 
-Commit: `24e538d27` (`docs: reconcile task 5 verification`)
+Commit: `aa4f2ab20` (`fix: remove creator bypass from deployment auth`)
 
 ## What changed
 - Added `AiConnectionDeploymentManager` for manager/read-only deployment lists with add, verify, reverify, and remove actions.
@@ -62,6 +62,53 @@ Output:
 ```text
 check-token-gates summary
   Files scanned:                 1264
+  Allowlist entries loaded:      33
+  Allowlisted issues skipped:    106
+
+  Gate 1 (color literals):       CLEAN
+  Gate 2 (arbitrary bracket vals): CLEAN
+  Gate 3 (raw font-size):        CLEAN
+  Gate 4 (legacy hsl(var())):    CLEAN
+
+All gates clean.
+cliplab character in sync
+```
+
+## Round-3 creator-bypass fix
+
+Focused UI smoke after the route auth fix:
+
+```sh
+pnpm exec vitest run ui/src/components/ai-connections/AiProviderSetup.test.tsx ui/src/components/ai-connections/useConnectionModels.test.tsx
+```
+
+```text
+Test Files  2 passed (2)
+Tests       28 passed (28)
+Duration    1.77s
+```
+
+Focused server auth regression:
+
+```sh
+pnpm exec vitest run server/src/__tests__/ai-connections.test.ts -t "blocks a connection creator without manager permission from mutating deployments|authorizes deployment reads and mutations by grant and manager scope"
+```
+
+```text
+Test Files  1 passed (1)
+Tests       2 passed | 116 skipped (118)
+Duration    6.70s
+```
+
+Token gates after the auth fix:
+
+```sh
+pnpm check:token-gates
+```
+
+```text
+check-token-gates summary
+  Files scanned:                 1265
   Allowlist entries loaded:      33
   Allowlisted issues skipped:    106
 
