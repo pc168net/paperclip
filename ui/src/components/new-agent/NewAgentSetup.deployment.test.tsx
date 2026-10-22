@@ -13,7 +13,10 @@ vi.mock("@/lib/router", () => ({
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: vi.fn() }) }));
 vi.mock("@/hooks/useCloudInstance", () => ({ useCloudInstance: () => false }));
 vi.mock("../AgentCharacter", () => ({ AgentCharacter: () => null }));
-vi.mock("../onboarding/onboarding-motion", () => ({ stepMotion: {} }));
+vi.mock("../onboarding/onboarding-motion", async () => {
+  const actual = await vi.importActual<typeof import("../onboarding/onboarding-motion")>("../onboarding/onboarding-motion");
+  return { ...actual, stepMotion: {} };
+});
 vi.mock("../new-agent/AgentBasicsDialog", () => ({ AgentBasicsDialog: () => null, AdapterMark: () => null }));
 vi.mock("@/adapters", () => ({ getUIAdapter: () => ({ buildAdapterConfig: (value: Record<string, unknown>) => value }) }));
 vi.mock("@/adapters/adapter-display-registry", () => ({ getAdapterDisplay: () => ({ label: "OpenAI" }), getAdapterLabels: () => ({}) }));

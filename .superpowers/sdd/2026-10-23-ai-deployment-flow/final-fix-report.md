@@ -28,3 +28,15 @@ Deployment CRUD/verify/delete used `canManageAiConnections()` only, so the conne
 
 ## Notes
 - A full unfiltered `src/__tests__/ai-connections.test.ts` run still has unrelated pre-existing failures, so the deployment-owner path was verified with targeted tests instead.
+
+## 2026-10-23 NewAgentSetup deployment test fix
+Root cause: `ui/src/components/new-agent/NewAgentSetup.deployment.test.tsx` mocked `../onboarding/onboarding-motion` with only `stepMotion`, but `FooterNav` also imports `CTA_WIDTH` and `CTA_LABEL_IN`, which triggered Vitest export errors before the stale/failed assertions could run.
+
+Change: switched that mock to a partial actual-module mock so the test keeps the real named exports and only overrides `stepMotion`.
+
+Verification evidence:
+- `pnpm --filter @paperclipai/ui exec vitest run src/components/new-agent/NewAgentSetup.deployment.test.tsx`
+  - `Test Files  1 passed (1)`
+  - `Tests  2 passed (2)`
+- `pnpm --filter @paperclipai/ui typecheck`
+  - `Storybook map: 284 files, 2731 stories. Structure only; no runtime proof.`
