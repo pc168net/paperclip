@@ -1,6 +1,6 @@
 # Task 5 report
 
-Commit: `ebf082326` (`feat: manage connector deployments in ui`)
+Commit: `24e538d27` (`docs: reconcile task 5 verification`)
 
 ## What changed
 - Added `AiConnectionDeploymentManager` for manager/read-only deployment lists with add, verify, reverify, and remove actions.
@@ -126,6 +126,75 @@ Storybook map: 284 files, 2731 stories. Structure only; no runtime proof.
 ```
 
 Token gates after fixes:
+
+```sh
+pnpm check:token-gates
+```
+
+```text
+check-token-gates summary
+  Files scanned:                 1265
+  Allowlist entries loaded:      33
+  Allowlisted issues skipped:    106
+
+  Gate 1 (color literals):       CLEAN
+  Gate 2 (arbitrary bracket vals): CLEAN
+  Gate 3 (raw font-size):        CLEAN
+  Gate 4 (legacy hsl(var())):    CLEAN
+
+All gates clean.
+cliplab character in sync
+```
+
+## Round-2 sync confirmation
+
+Focused UI bundle after the deployment-name sync fix:
+
+```sh
+pnpm exec vitest run ui/src/components/ai-connections/ManagedAiConnectionDetails.test.tsx ui/src/components/ai-connections/AiConnectionDeploymentManager.test.tsx ui/src/components/ai-connections/AiProviderSetup.test.tsx ui/src/components/ai-connections/useConnectionModels.test.tsx
+```
+
+```text
+Test Files  4 passed (4)
+Tests       32 passed (32)
+Duration    2.68s
+```
+
+Focused server contract test:
+
+```sh
+pnpm exec vitest run server/src/__tests__/ai-connections.test.ts -t "authorizes deployment reads and mutations by grant and manager scope"
+```
+
+```text
+Test Files  1 passed (1)
+Tests       1 passed | 116 skipped (117)
+Duration    7.20s
+```
+
+Typed deployment-name regression:
+
+```sh
+pnpm exec vitest run ui/src/components/ai-connections/AiProviderSetup.test.tsx -t "keeps a typed deployment name while the same draft stays active|clears a stale deployment name when the draft no longer supplies one|uses Azure guardrails instead of catalog fetches or free-form model lists"
+```
+
+```text
+Test Files  1 passed (1)
+Tests       3 passed | 14 skipped (17)
+Duration    1.37s
+```
+
+UI typecheck:
+
+```sh
+pnpm --filter @paperclipai/ui typecheck
+```
+
+```text
+Storybook map: 284 files, 2731 stories. Structure only; no runtime proof.
+```
+
+Token gates:
 
 ```sh
 pnpm check:token-gates
