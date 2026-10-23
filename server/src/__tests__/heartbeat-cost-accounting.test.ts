@@ -35,6 +35,21 @@ describe("heartbeat cost accounting", () => {
     })).toBe("unpriced");
   });
 
+  it("classifies Custom-style reported and token-only receipts", () => {
+    expect(resolveLedgerCostStatus({
+      costUsd: 0.012345678,
+      inputTokens: 100,
+      cachedInputTokens: 80,
+      outputTokens: 20,
+    })).toBe("reported");
+    expect(resolveLedgerCostStatus({
+      costUsd: null,
+      inputTokens: 100,
+      cachedInputTokens: 80,
+      outputTokens: 20,
+    })).toBe("unpriced");
+  });
+
   it("marks reported CLI cost as priced", () => {
     expect(resolveLedgerCostStatus({
       costUsd: 1.25,
