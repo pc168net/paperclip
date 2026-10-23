@@ -257,14 +257,7 @@ import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, getEnvironmentCapabilities } from "@paperclipai/shared";
 import { CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
-import { ONBOARDING_STORAGE_KEY, OnboardingWizard, onboardingCustomHarness } from "./OnboardingWizard";
-
-describe("custom onboarding harness mapping", () => {
-  it("uses the custom runner for both supported gateway protocols", () => {
-    expect(onboardingCustomHarness("responses")).toBe("custom_local");
-    expect(onboardingCustomHarness("chat")).toBe("custom_local");
-  });
-});
+import { ONBOARDING_STORAGE_KEY, OnboardingWizard } from "./OnboardingWizard";
 import { CONNECTED_HOLD_MS } from "./onboarding/onboarding-motion";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2046,9 +2039,15 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
-    it("keeps the custom gateway fields on the custom source path", async () => {
+    it("defers custom gateway setup to the created agent runtime", async () => {
       mockAdapterRegistry.list = [];
-      const { root } = await openStep4({ adapterType: "custom_local" });
+      const { root } = await openStep4({
+        adapterType: "custom_local",
+        customProtocol: "chat",
+        customAuth: "api_key",
+        url: "https://legacy-gateway.example/v1",
+        model: "legacy-model",
+      });
 
       const customTile = [...document.body.querySelectorAll("button[aria-checked]")]
         .find(
@@ -2062,119 +2061,20 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       for (let i = 0; i < 4; i++) await flushReact();
 
-      expect(document.body.textContent).toContain("Base URL");
-      expect(document.body.textContent).toContain("Authentication");
-      expect(document.body.textContent).toContain("API protocol");
-      expect(document.body.textContent).toContain("Discover models");
-      expect(document.body.querySelector('[aria-label="Bearer token"]')).toBeTruthy();
-      expect([...document.body.querySelectorAll("button")].some((button) => button.textContent?.includes("Connect"))).toBe(true);
-
-      await act(async () => root.unmount());
-    });
-
-    it("binds the CEO to the saved personal custom connection without creating another one", async () => {
-      mockAdapterRegistry.list = [];
-      managedApi.list.mockResolvedValue({
-        currentUserId: "user-1",
-        // An existing OpenAI default must not win over the custom gateway grant
-        // created from the credential entered in this flow.
-        connections: [{
-          id: "openai-default",
-          grantId: "openai-default-grant",
-          companyId: "company-new",
-          provider: "openai",
-          method: "api_key",
-          name: "Existing OpenAI default",
-          ownership: "personal",
-          ownerUserId: "user-1",
-          status: "connected",
-          isDefault: true,
-        } as never],
-      });
-      const { root } = await openStep4({ adapterType: "custom_local" });
-      const customTile = [...document.body.querySelectorAll("button[aria-checked]")]
-        .find((tile) => tile.textContent?.includes("Custom"));
-      expect(customTile).toBeTruthy();
-      await act(async () => customTile!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-      for (let i = 0; i < 5; i++) await flushReact();
-
-      await act(async () => {
-        setControlledValue(document.querySelector("#onboarding-custom-base-url") as HTMLInputElement, "https://gateway.example/v1");
-        setControlledValue(document.querySelector("#onboarding-custom-model-manual") as HTMLInputElement, "gpt-4o-mini");
-        setControlledValue(document.querySelector('input[aria-label="Bearer token"]') as HTMLInputElement, "custom-secret");
-      });
-      await flushReact();
-      const connect = [...document.body.querySelectorAll("button")]
-        .find((button) => button.textContent?.trim() === "Connect") as HTMLButtonElement;
-      expect(connect.disabled).toBe(false);
-      await act(async () => connect.click());
-      for (let i = 0; i < 8; i++) await flushReact();
-
-      expect(managedApi.create).toHaveBeenCalledTimes(1);
-      expect(managedApi.create).toHaveBeenCalledWith("company-new", expect.objectContaining({
-        ownership: "personal",
-        routing: expect.objectContaining({ kind: "gateway", protocol: "responses", baseUrl: "https://gateway.example/v1" }),
-      }));
-      const hireBody = (mockAgentsApi.hire.mock.calls.at(-1) as unknown[])[1] as { runtimeConfig: { aiConnection: unknown } };
-      expect(hireBody.runtimeConfig.aiConnection).toEqual({
-        provider: "openai",
-        method: "api_key",
-        mode: "delegated",
-        connectionId: "managed-connection",
-        grantId: "managed-grant",
-      });
-      expect(mockAgentsApi.testEnvironment).toHaveBeenCalledWith("company-new", "custom_local", expect.any(Object));
-      expect((mockAgentsApi.hire.mock.calls.at(-1) as unknown[])[1]).toMatchObject({
-        adapterType: "custom_local",
-        adapterConfig: { provider: "custom", model: "gpt-4o-mini" },
-      });
-      expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
-
-      await act(async () => root.unmount());
-    });
-
-    it.each([
-      ["api_key", "Azure API key (api-key header)", "Enter Azure API key"],
-      ["bearer", "Bearer token", "Enter bearer token"],
-    ] as const)("gates custom discovery until the %s credential is entered and never drafts it", async (auth, label, placeholder) => {
-      mockAdapterRegistry.list = [];
-      const secret = `custom-${auth}-secret`;
-      const { root } = await openStep4({ adapterType: "custom_local", customAuth: auth });
-      const customTile = [...document.body.querySelectorAll("button[aria-checked]")]
-        .find((tile) => tile.textContent?.includes("Custom"));
-      expect(customTile).toBeTruthy();
-      await act(async () => customTile!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-      for (let i = 0; i < 5; i++) await flushReact();
-
-      const keyField = document.body.querySelector(`input[aria-label="${label}"]`) as HTMLInputElement;
-      expect(keyField).toBeTruthy();
-      expect(keyField.type).toBe("password");
-      expect(keyField.placeholder).toBe(placeholder);
-      const discover = [...document.body.querySelectorAll("button")]
-        .find((button) => button.textContent?.includes("Discover models")) as HTMLButtonElement;
-      const connect = [...document.body.querySelectorAll("button")]
-        .find((button) => button.textContent?.trim() === "Connect") as HTMLButtonElement;
-      expect(discover.disabled).toBe(true);
-      expect(connect.disabled).toBe(true);
-
-      await act(async () => {
-        setControlledValue(document.querySelector("#onboarding-custom-base-url") as HTMLInputElement, "https://gateway.example/v1");
-        setControlledValue(document.querySelector("#onboarding-custom-model-manual") as HTMLInputElement, "gpt-4o-mini");
-        setControlledValue(keyField, secret);
-      });
-      await flushReact();
-
-      expect(discover.disabled).toBe(false);
-      expect(connect.disabled).toBe(false);
-      await act(async () => discover.click());
-      await flushReact();
-      expect(managedApi.discoverCustom).toHaveBeenCalledWith("company-new", {
-        baseUrl: "https://gateway.example/v1",
-        auth,
-        apiKey: secret,
-      });
-      expect(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)).not.toContain(secret);
-      expect(document.body.textContent).not.toContain(secret);
+      expect(document.body.textContent).toContain("Configure this agent’s model after it is created in Connectors.");
+      expect(document.body.querySelector("#onboarding-custom-base-url")).toBeNull();
+      expect(document.body.querySelector("#onboarding-custom-auth")).toBeNull();
+      expect(document.body.querySelector("#onboarding-custom-protocol")).toBeNull();
+      expect(document.body.querySelector("#onboarding-custom-model")).toBeNull();
+      expect(document.body.querySelector("#onboarding-custom-model-manual")).toBeNull();
+      expect(document.body.querySelector('input[aria-label="Bearer token"]')).toBeNull();
+      expect([...document.body.querySelectorAll("button")].some((button) => button.textContent?.includes("Discover models"))).toBe(false);
+      expect(managedApi.discoverCustom).not.toHaveBeenCalled();
+      const persistedDraft = JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!);
+      expect(persistedDraft).not.toHaveProperty("customProtocol");
+      expect(persistedDraft).not.toHaveProperty("customAuth");
+      expect(persistedDraft).not.toHaveProperty("url");
+      expect(persistedDraft.model).toBe("");
 
       await act(async () => root.unmount());
     });
