@@ -12,6 +12,20 @@ Prevent a stale recovery action from blocking Paperclip startup or task executio
 - `syncBlockedByIssueIds()` validates the requested blocker set against the live graph and rejects a cycle with HTTP 422.
 - The startup heartbeat recovery awaits that reconciliation without a local containment boundary. A single rejected action therefore rejects startup work and prevents the server from remaining available.
 
+### Root-cause qualification
+
+The original startup stack reaches the healthy-child blocker restoration at
+`server/src/services/recovery/service.ts:3557`; that exact write path is the
+failure boundary this design hardens. A later read-only inspection found that
+the two currently active rows for `TWS-41` and `TWS-36` have
+`native_continuation_requires_reconciliation`, which current code intentionally
+skips before that write. They must remain board-visible until an operator
+supplies explicit execution reconciliation; they are not safe targets for an
+automatic dependency repair. The original triggering action is no longer
+reconstructable from the remaining active rows, so the implementation must add
+a deterministic integration fixture for the failing write path and structured
+evidence whenever it is contained in future.
+
 ## Goals
 
 - Keep server UI/API startup available when one recovery action has an irreconcilable blocker graph.
@@ -52,7 +66,7 @@ Add approach 2 and a periodic scan of all issue relations for cycles/orphans/cro
 2. Wrap only the healthy-child blocker restoration branch in a narrow classifier for the known `422` cycle-conflict error.
 3. On that known conflict:
    - make no dependency graph mutation;
-   - resolve/terminalize the recovery action with a distinct operator-facing outcome such as `manual_attention_required` and a resolution note that identifies `blocker_graph_conflict` without leaking unrelated data;
+   - escalate the existing recovery action to a board-owned, manual-only hold using existing `escalated`/`blocked` vocabulary, a resolution note of `blocker_graph_conflict`, and evidence that identifies the conflict without leaking unrelated data;
    - increment a new contained-conflict result count and retain the source issue ID for structured logs;
    - continue reconciling the remaining actions.
 4. Re-throw unexpected database, authorization, and service failures. Those remain genuine degraded recovery failures and must not be hidden.
@@ -62,17 +76,18 @@ Add approach 2 and a periodic scan of all issue relations for cycles/orphans/cro
 
 - Startup recovery must receive an aggregate result from action reconciliation rather than a rejection for a contained, known graph conflict.
 - Log one structured warning per contained action with action ID, company ID, source issue ID, and safe disposition reason.
-- Periodic reconciliation uses the same service behavior, so the terminal action is not retried and cannot produce a recurring server-wide error.
+- Periodic reconciliation recognizes the manual graph-conflict hold and skips it without retrying the rejected write. The existing escalated recovery card remains visible to the board.
 
 ### Historical data remediation
 
-- Identify active actions with the new conflict disposition through the existing recovery-action query/service surface.
-- For the currently observed actions, use the same service-level terminalization path after confirming the source issue and current relations; do not delete rows with SQL.
+- Identify graph-conflict holds through the existing active recovery-action query/service surface.
+- Do not automatically terminalize the currently observed `TWS-41` / `TWS-36` rows: their native execution cause requires board-supplied execution reconciliation. Do not delete rows with SQL.
 - The operator decides any later task-relationship edit separately. The automatic repair does not guess which relation to remove.
 
 ## Interfaces and Files
 
 - `server/src/services/recovery/service.ts` — classify and contain the known blocker-restoration conflict; return structured aggregate evidence.
+- `server/src/services/issue-recovery-actions.ts` — atomically escalate one active action to the existing board-visible manual hold.
 - `server/src/services/recovery/*.test.ts` — recovery reconciliation regression for stale action/healthy-child conflict and bounded retry behavior.
 - `server/src/index.ts` and its startup tests — prove a contained recovery conflict does not reject server startup, while unexpected recovery failures retain current behavior.
 - `server/src/services/issues.ts` tests — preserve current cycle validator behavior as the graph authority.
@@ -80,7 +95,7 @@ Add approach 2 and a periodic scan of all issue relations for cycles/orphans/cro
 
 ## Verification
 
-- RED/GREEN service test: a source issue whose recovery restoration would create a cycle leaves relations unchanged, records the terminal action disposition, and permits other actions to reconcile.
+- RED/GREEN service test: a source issue whose recovery restoration would create a cycle leaves relations unchanged, records a board-visible escalated action, and permits other actions to reconcile.
 - Startup integration test: the contained action does not prevent `/api/health` startup readiness or periodic scheduling.
 - Regression test: an unexpected `issuesSvc.update()` failure still propagates/logs as degraded recovery rather than being classified as a graph conflict.
 - Existing issue relation cycle tests continue passing.
@@ -89,10 +104,15 @@ Add approach 2 and a periodic scan of all issue relations for cycles/orphans/cro
 ## Risks and Mitigations
 
 - **Misclassifying an unrelated 422:** classify by the typed `HttpError` status and exact cycle-validation message/code at the recovery boundary; test a different 422 as unexpected.
-- **Hiding operator work:** retain the recovery row with explicit outcome, resolution note, and structured log instead of deleting it.
+- **Hiding operator work:** retain an escalated, board-visible recovery row with explicit outcome, resolution note, and structured log instead of deleting it.
 - **Retrying provider work:** no new wake or run is created on graph conflict; the source remains visibly held for manual review.
 - **Over-scoping historical repair:** this design does not mutate issue relations automatically.
 
-## Builder Decisions Still Open
+## Resolved Implementation Vocabulary
 
-- Exact existing recovery-action terminal status/outcome vocabulary to use for manual attention must be selected from the service's current contract after inspection. The implementer should reuse an existing value if it represents this state; add a new value only when no safe existing representation exists.
+- Use the existing `escalated` status and `blocked` outcome. This keeps the
+  recovery card visible to the board without adding schema, shared-contract, or
+  UI enum values.
+- Use `blocker_graph_conflict` as the stable resolution-note and evidence
+  reason. It is a containment marker, not evidence that the source task's work
+  completed.
