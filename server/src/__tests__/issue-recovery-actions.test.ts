@@ -246,6 +246,86 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   }
 
+  it("contains a blocker restoration cycle as a board-visible recovery hold", async () => {
+    const { companyId, coderId, sourceIssueId, prefix } = await seedCompany();
+    const childIssueId = randomUUID();
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, sourceIssueId));
+    await db.insert(issues).values({
+      id: childIssueId,
+      companyId,
+      parentId: sourceIssueId,
+      title: "Healthy delegated child",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: coderId,
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: sourceIssueId,
+      relatedIssueId: childIssueId,
+      type: "blocks",
+    });
+    await seedHeartbeatRun({
+      companyId,
+      agentId: coderId,
+      runId: randomUUID(),
+      issueId: childIssueId,
+    });
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "board",
+      cause: "stranded_assigned_issue",
+      fingerprint: "restore-healthy-child",
+      nextAction: "Restore the healthy child blocker.",
+    });
+    const relation = async (blockerIssueId: string, blockedIssueId: string) => db
+      .select()
+      .from(issueRelations)
+      .where(and(
+        eq(issueRelations.issueId, blockerIssueId),
+        eq(issueRelations.relatedIssueId, blockedIssueId),
+        eq(issueRelations.type, "blocks"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    const activeActionFor = async (issueId: string) => db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.sourceIssueId, issueId),
+        eq(issueRecoveryActions.status, "escalated"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ blockerGraphConflicts: 1, escalated: 1 });
+    expect(await relation(sourceIssueId, childIssueId)).toBeTruthy();
+    expect(await relation(childIssueId, sourceIssueId)).toBeFalsy();
+    expect(await activeActionFor(sourceIssueId)).toMatchObject({
+      id: action.id,
+      status: "escalated",
+      outcome: "blocked",
+      resolutionNote: "blocker_graph_conflict",
+    });
+
+    const secondResult = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(secondResult).toMatchObject({ blockerGraphConflicts: 0, skipped: 1 });
+    expect(await relation(sourceIssueId, childIssueId)).toBeTruthy();
+    expect(await relation(childIssueId, sourceIssueId)).toBeFalsy();
+    expect(await activeActionFor(sourceIssueId)).toMatchObject({
+      id: action.id,
+      status: "escalated",
+      outcome: "blocked",
+      resolutionNote: "blocker_graph_conflict",
+    });
+  });
+
   function createApp(
     actor: any = { type: "board", source: "local_implicit" },
     opts: Parameters<typeof issueRoutes>[2] = {},
