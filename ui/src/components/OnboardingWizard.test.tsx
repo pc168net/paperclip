@@ -2083,6 +2083,10 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
     it("creates an unconfigured custom first agent and opens runtime configuration", async () => {
       mockAdapterRegistry.list = [];
+      mockAgentsApi.hire.mockResolvedValueOnce({
+        agent: { id: "agent-1", urlKey: "custom-chief--agent-1" },
+        approval: null,
+      });
       const { root } = await openStep4({ adapterType: "custom_local" });
       try {
         const customTile = [...document.body.querySelectorAll("button[aria-checked]")]
@@ -2115,7 +2119,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         await act(async () => configure!.click());
 
         expect(mockIssuesApi.create).not.toHaveBeenCalled();
-        expect(mockNavigate).toHaveBeenCalledWith("/agents/agent-1/runtime");
+        expect(mockNavigate).toHaveBeenCalledWith("/agents/custom-chief--agent-1/runtime");
       } finally {
         await act(async () => root.unmount());
       }

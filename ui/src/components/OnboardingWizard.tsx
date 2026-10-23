@@ -729,6 +729,7 @@ function OnboardingWizardInner({
     string | null
   >((saved?.createdCompanyPrefix as string) ?? null);
   const [createdAgentId, setCreatedAgentId] = useState<string | null>((saved?.createdAgentId as string) ?? null);
+  const [createdAgentUrlKey, setCreatedAgentUrlKey] = useState<string | null>(null);
   const [createdCompanyGoalId, setCreatedCompanyGoalId] = useState<string | null>(
     (saved?.createdCompanyGoalId as string) ?? null
   );
@@ -838,6 +839,7 @@ function OnboardingWizardInner({
     setCreatedProjectId(null);
     setCreatedIssueRef(null);
     setCreatedAgentId(null);
+    setCreatedAgentUrlKey(null);
   }
 
   // Sync step and company when onboarding opens with explicit options.
@@ -1714,6 +1716,7 @@ function OnboardingWizardInner({
     setCreatedCompanyId(null);
     setCreatedCompanyPrefix(null);
     setCreatedAgentId(null);
+    setCreatedAgentUrlKey(null);
     setCreatedCompanyGoalId(null);
     setCreatedProjectId(null);
     setCreatedIssueRef(null);
@@ -1852,7 +1855,7 @@ function OnboardingWizardInner({
     setSelectedCompanyId(createdCompanyId, { source: "route_sync" });
     reset();
     closeOnboarding();
-    navigate(`${agentUrl({ id: createdAgentId })}/runtime`);
+    navigate(`${agentUrl({ id: createdAgentId, urlKey: createdAgentUrlKey })}/runtime`);
   }
 
   /**
@@ -2326,6 +2329,7 @@ function OnboardingWizardInner({
       if (existing) {
         if (!isCurrent()) return;
         setCreatedAgentId(existing.id);
+        setCreatedAgentUrlKey(existing.urlKey ?? null);
         setAgentAppearance(resolveAgentAppearance(existing.appearance, existing.id));
         queryClient.invalidateQueries({
           queryKey: queryKeys.agents.list(createdCompanyId)
@@ -2373,6 +2377,7 @@ function OnboardingWizardInner({
 
       if (!isCurrent()) return;
       setCreatedAgentId(agent.id);
+      setCreatedAgentUrlKey(agent.urlKey ?? null);
       // Advance to the Review step — the lead is now online. The user drives
       // strategy + hiring from the planning chat after "Get started".
       setStep(5);
