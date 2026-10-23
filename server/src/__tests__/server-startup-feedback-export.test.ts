@@ -90,6 +90,7 @@ const {
     recoverActiveSessionGoals: vi.fn(async () => ({ scanned: 0, enqueued: 0 })),
     reconcileStrandedAssignedIssues: vi.fn(async () => ({
       assignmentDispatched: 0,
+      blockerGraphConflicts: 0,
       dispatchRequeued: 0,
       continuationRequeued: 0,
       successfulRunHandoffEscalated: 0,
@@ -947,6 +948,40 @@ describe("startServer feedback export wiring", () => {
 
     expect(heartbeatServiceMock.reconcileHotRestartAdoption).toHaveBeenCalledTimes(1);
     expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports contained blocker graph conflicts without blocking startup", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
+    heartbeatServiceMock.reconcileStrandedAssignedIssues.mockResolvedValueOnce({
+      assignmentDispatched: 0,
+      blockerGraphConflicts: 1,
+      dispatchRequeued: 0,
+      continuationRequeued: 0,
+      successfulRunHandoffEscalated: 0,
+      successfulRunHandoffRetried: 0,
+      escalated: 1,
+      skipped: 0,
+      issueIds: ["issue-1"],
+    });
+
+    await expect(startServer()).resolves.toBeDefined();
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ blockerGraphConflicts: 1, escalated: 1, issueIds: ["issue-1"] }),
+      "startup heartbeat recovery changed assigned issue state",
+    );
+  });
+
+  it("closes the bound listener when assigned-issue recovery fails unexpectedly", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
+    heartbeatServiceMock.reconcileStrandedAssignedIssues.mockRejectedValueOnce(
+      new Error("unexpected assigned-issue recovery failure"),
+    );
+
+    await expect(startServer()).rejects.toThrow("unexpected assigned-issue recovery failure");
+
+    expect(fakeServer.listen).toHaveBeenCalledTimes(1);
+    expect(fakeServer.close).toHaveBeenCalledTimes(1);
   });
 
   it("closes the bound listener when native startup recovery fails", async () => {

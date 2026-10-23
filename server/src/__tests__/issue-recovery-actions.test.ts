@@ -39,6 +39,8 @@ import { workspaceOperationService, isNativeWorkspaceFinalizationOperationActive
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { issueService } from "../services/issues.js";
+import * as issueServiceModule from "../services/issues.js";
+import { HttpError } from "../errors.js";
 import { withNativeWorkspaceFinalizationOwnership } from "../services/native-runtime/native-workspace-finalization-ownership.js";
 import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/successful-run-handoff.js";
 
@@ -246,6 +248,181 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   }
 
+  it("contains a blocker restoration cycle as a board-visible recovery hold", async () => {
+    const { companyId, coderId, sourceIssueId, prefix } = await seedCompany();
+    const childIssueId = randomUUID();
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, sourceIssueId));
+    await db.insert(issues).values({
+      id: childIssueId,
+      companyId,
+      parentId: sourceIssueId,
+      title: "Healthy delegated child",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: coderId,
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: sourceIssueId,
+      relatedIssueId: childIssueId,
+      type: "blocks",
+    });
+    await seedHeartbeatRun({
+      companyId,
+      agentId: coderId,
+      runId: randomUUID(),
+      issueId: childIssueId,
+    });
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "board",
+      cause: "stranded_assigned_issue",
+      fingerprint: "restore-healthy-child",
+      nextAction: "Restore the healthy child blocker.",
+    });
+    const relation = async (blockerIssueId: string, blockedIssueId: string) => db
+      .select()
+      .from(issueRelations)
+      .where(and(
+        eq(issueRelations.issueId, blockerIssueId),
+        eq(issueRelations.relatedIssueId, blockedIssueId),
+        eq(issueRelations.type, "blocks"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    const activeActionFor = async (issueId: string) => db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.sourceIssueId, issueId),
+        eq(issueRecoveryActions.status, "escalated"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ blockerGraphConflicts: 1, escalated: 1 });
+    expect(await relation(sourceIssueId, childIssueId)).toBeTruthy();
+    expect(await relation(childIssueId, sourceIssueId)).toBeFalsy();
+    expect(await activeActionFor(sourceIssueId)).toMatchObject({
+      id: action.id,
+      status: "escalated",
+      outcome: "blocked",
+      resolutionNote: "blocker_graph_conflict",
+    });
+
+    const secondResult = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(secondResult).toMatchObject({ blockerGraphConflicts: 0, skipped: 1 });
+    expect(await relation(sourceIssueId, childIssueId)).toBeTruthy();
+    expect(await relation(childIssueId, sourceIssueId)).toBeFalsy();
+    expect(await activeActionFor(sourceIssueId)).toMatchObject({
+      id: action.id,
+      status: "escalated",
+      outcome: "blocked",
+      resolutionNote: "blocker_graph_conflict",
+    });
+  });
+
+  it("does not overwrite an action resolved before blocker-conflict escalation", async () => {
+    const { companyId, sourceIssueId } = await seedCompany();
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "board",
+      cause: "stranded_assigned_issue",
+      fingerprint: "resolved-before-blocker-conflict",
+      nextAction: "Restore the healthy child blocker.",
+    });
+    await issueRecoveryActionService(db).resolveActiveForIssue({
+      companyId,
+      sourceIssueId,
+      actionId: action.id,
+      status: "resolved",
+      outcome: "restored",
+      resolutionNote: "concurrent_resolution",
+    });
+
+    const escalated = await issueRecoveryActionService(db).escalateForBlockerGraphConflict({
+      companyId,
+      sourceIssueId,
+      actionId: action.id,
+      blockedByIssueIds: [randomUUID()],
+    });
+    const [stored] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+
+    expect(escalated).toBeNull();
+    expect(stored).toMatchObject({
+      status: "resolved",
+      outcome: "restored",
+      resolutionNote: "concurrent_resolution",
+    });
+    expect(stored?.evidence).not.toHaveProperty("blockerGraphConflict");
+  });
+
+  it("rethrows a non-cycle 422 from the blocker restoration write without escalation", async () => {
+    const { companyId, coderId, sourceIssueId, prefix } = await seedCompany();
+    const childIssueId = randomUUID();
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, sourceIssueId));
+    await db.insert(issues).values({
+      id: childIssueId,
+      companyId,
+      parentId: sourceIssueId,
+      title: "Healthy delegated child",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: coderId,
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+    });
+    await seedHeartbeatRun({
+      companyId,
+      agentId: coderId,
+      runId: randomUUID(),
+      issueId: childIssueId,
+    });
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "board",
+      cause: "stranded_assigned_issue",
+      fingerprint: "non-cycle-422",
+      nextAction: "Restore the healthy child blocker.",
+    });
+    const realIssueService = issueService(db);
+    const update = vi.fn(async () => {
+      throw new HttpError(422, "Blocked-by issues must belong to the same company");
+    });
+    const issueServiceSpy = vi.spyOn(issueServiceModule, "issueService").mockReturnValue({
+      ...realIssueService,
+      update,
+    });
+
+    try {
+      const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+      await expect(recovery.reconcileStrandedAssignedIssues()).rejects.toThrow(
+        "Blocked-by issues must belong to the same company",
+      );
+    } finally {
+      issueServiceSpy.mockRestore();
+    }
+
+    const [stored] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+    expect(update).toHaveBeenCalledOnce();
+    expect(stored).toMatchObject({
+      status: "active",
+      outcome: null,
+      resolutionNote: null,
+    });
+  });
+
   function createApp(
     actor: any = { type: "board", source: "local_implicit" },
     opts: Parameters<typeof issueRoutes>[2] = {},
@@ -430,6 +607,51 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(second.evidence).toMatchObject({ latestRunId: "run-2" });
     expect(await svc.getActiveForIssue(companyId, sourceIssueId)).toMatchObject({ id: first.id });
     expect(await svc.getActiveForIssue(randomUUID(), sourceIssueId)).toBeNull();
+  });
+
+  it("atomically escalates an active action when its blocker graph conflicts", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const service = issueRecoveryActionService(db);
+    const action = await service.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "stranded_assigned_issue",
+      fingerprint: "blocker-graph-conflict",
+      evidence: { priorEvidence: true },
+      nextAction: "Restore a live execution path.",
+      wakePolicy: { type: "wake_owner" },
+      monitorPolicy: { type: "watch_owner" },
+    });
+    const input = {
+      companyId,
+      sourceIssueId,
+      actionId: action.id,
+      blockedByIssueIds: [randomUUID(), randomUUID()],
+    };
+
+    const updated = await service.escalateForBlockerGraphConflict(input);
+
+    expect(updated).toMatchObject({
+      status: "escalated",
+      ownerType: "board",
+      ownerAgentId: null,
+      ownerUserId: null,
+      outcome: "blocked",
+      resolutionNote: "blocker_graph_conflict",
+      wakePolicy: null,
+      monitorPolicy: null,
+      evidence: expect.objectContaining({
+        priorEvidence: true,
+        blockerGraphConflict: expect.objectContaining({
+          reason: "blocker_graph_conflict",
+          blockedByIssueIds: input.blockedByIssueIds,
+        }),
+      }),
+    });
+    expect(await service.escalateForBlockerGraphConflict(input)).toBeNull();
   });
 
   it("enforces maxAttempts once and removes every automatic recovery path", async () => {

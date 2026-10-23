@@ -148,6 +148,7 @@ import {
   RECOVERY_ORIGIN_KINDS,
   isStrandedIssueRecoveryOriginKind,
 } from "./origins.js";
+import { isBlockingRelationCycleError } from "./blocker-graph-conflict.js";
 import { withRecoveryContext } from "./status-only-context.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
 import {
@@ -3489,6 +3490,7 @@ export function recoveryService(
     const result = {
       requeued: 0,
       escalated: 0,
+      blockerGraphConflicts: 0,
       resolved: 0,
       skipped: 0,
       issueIds: [] as string[],
@@ -3536,6 +3538,14 @@ export function recoveryService(
         continue;
       }
 
+      if (
+        action.status === "escalated" &&
+        action.resolutionNote === "blocker_graph_conflict"
+      ) {
+        result.skipped += 1;
+        continue;
+      }
+
       const [sourceState, healthyChildren, hasNewSourcePath] =
         await Promise.all([
           collectDispositionRepairSourceState(db, { issue }),
@@ -3554,15 +3564,41 @@ export function recoveryService(
             issue.companyId,
             issue.id,
           );
-          await issuesSvc.update(issue.id, {
-            status: "blocked",
-            blockedByIssueIds: [
-              ...new Set([
-                ...blockerIds,
-                ...healthyChildren.map((child) => child.id),
-              ]),
-            ],
-          });
+          const blockedByIssueIds = [
+            ...new Set([
+              ...blockerIds,
+              ...healthyChildren.map((child) => child.id),
+            ]),
+          ];
+          try {
+            await issuesSvc.update(issue.id, {
+              status: "blocked",
+              blockedByIssueIds,
+            });
+          } catch (error) {
+            if (!isBlockingRelationCycleError(error)) throw error;
+            const escalated = await recoveryActionsSvc.escalateForBlockerGraphConflict({
+              companyId: action.companyId,
+              sourceIssueId: action.sourceIssueId,
+              actionId: action.id,
+              blockedByIssueIds,
+            });
+            if (escalated) {
+              result.blockerGraphConflicts += 1;
+              result.escalated += 1;
+              result.issueIds.push(issue.id);
+              logger.warn(
+                {
+                  actionId: action.id,
+                  companyId: action.companyId,
+                  sourceIssueId: action.sourceIssueId,
+                  reason: "blocker_graph_conflict",
+                },
+                "recovery action escalated after blocker graph conflict",
+              );
+            }
+            continue;
+          }
         }
         const resolved = await recoveryActionsSvc.resolveActiveForIssue({
           companyId: action.companyId,
@@ -4459,6 +4495,7 @@ export function recoveryService(
       successfulRunHandoffRetried: 0,
       reviewParticipantRequeued: 0,
       escalated: 0,
+      blockerGraphConflicts: 0,
       waitingOnReviewResolved: 0,
       providerQuotaMonitored: 0,
       recentProgressExempted: 0,
@@ -5658,6 +5695,7 @@ export function recoveryService(
     const activeRecovery = await reconcileActiveRecoveryActions();
     result.continuationRequeued += activeRecovery.requeued;
     result.escalated += activeRecovery.escalated;
+    result.blockerGraphConflicts += activeRecovery.blockerGraphConflicts;
     result.skipped += activeRecovery.skipped;
     result.issueIds.push(...activeRecovery.issueIds);
     result.issueIds = [...new Set(result.issueIds)];
