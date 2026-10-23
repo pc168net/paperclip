@@ -87,17 +87,19 @@ it("uses Azure guardrails instead of catalog fetches or free-form model lists", 
   const root = createRoot(container);
   try {
     await act(async () => root.render(<QueryClientProvider client={client}><AiProviderSetup companyId="company" initialProvider="gateway" customEndpointDraft={{ baseUrl: "https://my-resource.openai.azure.com/v1", auth: "api_key", apiKey: "secret", protocol: "responses", models: [] }} onCancel={() => {}} onComplete={() => {}} /></QueryClientProvider>));
-    expect(container.textContent).toContain("Enter the deployment name shown in Azure Portal. Azure OpenAI model catalogs do not identify this resource’s deployments.");
+    expect(container.textContent).toContain("Paperclip stores the endpoint and credential here; deployment names are managed in Connector details and verified separately.");
+    expect(container.textContent).toContain("Azure OpenAI model catalogs do not identify this resource’s deployments.");
     expect(container.textContent).not.toContain("Fetch models");
     expect(container.textContent).not.toContain("458-catalog");
     expect(container.querySelector('[aria-label="Model / deployment"]')).toBeNull();
+    expect(container.querySelector('input[aria-label="Deployment name"]')).toBeNull();
   } finally {
     await act(async () => root.unmount());
     client.clear();
   }
 });
 
-it("clears a stale deployment name when the draft no longer supplies one", async () => {
+it("does not expose deployment input while reconnecting Azure gateways", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: true, connections: [] });
   client.setQueryData(["agents", "company", "provider-access"], []);
@@ -107,35 +109,26 @@ it("clears a stale deployment name when the draft no longer supplies one", async
   const emptyReconnect: AiManagedConnectionSummary = { ...reconnect, routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://my-resource.openai.azure.com/v1", models: [] } };
   try {
     await act(async () => root.render(<QueryClientProvider client={client}><AiProviderSetup companyId="company" reconnect={reconnect} onCancel={() => {}} onComplete={() => {}} /></QueryClientProvider>));
-    await act(async () => container.querySelector("summary")?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    const deployment = container.querySelector('input[aria-label="Deployment name"]') as HTMLInputElement;
-    expect(deployment.value).toBe("eastus-prod");
+    expect(container.querySelector('input[aria-label="Deployment name"]')).toBeNull();
 
     await act(async () => root.render(<QueryClientProvider client={client}><AiProviderSetup companyId="company" reconnect={emptyReconnect} onCancel={() => {}} onComplete={() => {}} /></QueryClientProvider>));
-    await act(async () => container.querySelector("summary")?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    expect((container.querySelector('input[aria-label="Deployment name"]') as HTMLInputElement).value).toBe("");
+    expect(container.querySelector('input[aria-label="Deployment name"]')).toBeNull();
   } finally {
     await act(async () => root.unmount());
     client.clear();
   }
 });
 
-it("keeps a typed deployment name while the same draft stays active", async () => {
+it("does not expose deployment editing while reconnecting", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: true, connections: [] });
   client.setQueryData(["agents", "company", "provider-access"], []);
   const container = document.createElement("div");
   const root = createRoot(container);
-  const reconnect: AiManagedConnectionSummary = { id: "connection", grantId: "grant", companyId: "company", provider: "openai", method: "api_key", name: "Azure connector", ownership: "shared", ownerUserId: "owner", isDefault: false, status: "needs_attention", routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://my-resource.openai.azure.com/v1", models: [{ id: "eastus-prod" }] } };
+  const reconnect: AiManagedConnectionSummary = { id: "connection", grantId: "grant", companyId: "company", provider: "openai", method: "api_key", name: "Azure connector", ownership: "shared", ownerUserId: "owner", isDefault: false, status: "needs_attention", routing: { kind: "gateway", protocol: "responses", auth: "none", baseUrl: "https://my-resource.openai.azure.com/v1", models: [{ id: "eastus-prod" }] } };
   try {
     await act(async () => root.render(<QueryClientProvider client={client}><AiProviderSetup companyId="company" reconnect={reconnect} onCancel={() => {}} onComplete={() => {}} /></QueryClientProvider>));
-    await act(async () => container.querySelector("summary")?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    const deployment = container.querySelector('input[aria-label="Deployment name"]') as HTMLInputElement;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(deployment, "custom-prod");
-      deployment.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    expect((container.querySelector('input[aria-label="Deployment name"]') as HTMLInputElement).value).toBe("custom-prod");
+    expect(container.querySelector('input[aria-label="Deployment name"]')).toBeNull();
   } finally {
     await act(async () => root.unmount());
     client.clear();

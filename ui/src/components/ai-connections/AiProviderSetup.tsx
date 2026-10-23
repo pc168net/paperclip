@@ -119,11 +119,8 @@ export function AiProviderSetup({
   const [region, setRegion] = useState(
     reconnect?.routing?.region ?? "us-east-1",
   );
-  const [models, setModels] = useState(
-    customEndpointDraft?.models.join(", ") ?? reconnect?.routing?.models.map((m) => m.id).join(", ") ?? "",
-  );
-  const [deploymentName, setDeploymentName] = useState(
-    customEndpointDraft?.models[0] ?? reconnect?.routing?.models[0]?.id ?? "",
+  const [legacyModels, setLegacyModels] = useState(
+    customEndpointDraft?.models ?? reconnect?.routing?.models.map((model) => model.id) ?? [],
   );
   const [apiKey, setApiKey] = useState(customEndpointDraft?.apiKey ?? "");
   const deploymentSyncKey = customEndpointDraft
@@ -201,18 +198,16 @@ export function AiProviderSetup({
     });
   };
   useEffect(() => {
-    if (provider !== "gateway" && provider !== "local") {
-      setDeploymentName("");
+    if (customEndpointDraft) {
+      setLegacyModels(customEndpointDraft.models);
       return;
     }
-    const nextDeploymentName = customEndpointDraft
-      ? customEndpointDraft.models[0] ?? ""
-      : reconnect?.routing?.models[0]?.id ?? "";
-    setDeploymentName((current) => (current === nextDeploymentName ? current : nextDeploymentName));
-    if (customEndpointDraft) {
-      setModels(customEndpointDraft.models.join(", "));
+    if (reconnect?.routing) {
+      setLegacyModels(reconnect.routing.models.map((model) => model.id));
+      return;
     }
-  }, [customEndpointDraft, reconnect?.routing, provider, deploymentSyncKey]);
+    setLegacyModels([]);
+  }, [customEndpointDraft, reconnect?.routing, deploymentSyncKey]);
   const save = useMutation({
     mutationFn: () => {
       const routing = reconnect && !editingExisting
@@ -226,13 +221,7 @@ export function AiProviderSetup({
             : provider === "gateway" || provider === "local"
               ? { baseUrl }
               : {}),
-          models: provider === "gateway" || provider === "local"
-            ? (deploymentName.trim() ? [{ id: deploymentName.trim() }] : [])
-            : models
-              .split(",")
-              .map((id) => id.trim())
-              .filter(Boolean)
-              .map((id) => ({ id })),
+          models: legacyModels.map((id) => ({ id })),
         });
       return aiConnectionsApi.create(
         companyId,
@@ -286,28 +275,9 @@ export function AiProviderSetup({
       }}
     />
   );
-  const modelSettings = (
-    <label className="block space-y-2 text-xs text-muted-foreground">
-      {provider === "gateway" || provider === "local" ? "Deployment name" : "Model IDs (comma separated)"}
-      <Input
-        aria-label={provider === "gateway" || provider === "local" ? "Deployment name" : "Model IDs"}
-        value={provider === "gateway" || provider === "local" ? deploymentName : models}
-        onChange={(e) => provider === "gateway" || provider === "local" ? setDeploymentName(e.target.value) : setModels(e.target.value)}
-        disabled={Boolean(reconnect && !editingExisting)}
-      />
-      <span className="block">
-        {provider === "gateway" || provider === "local"
-          ? (isAzureOpenAiGateway
-            ? "Enter the deployment name shown in Azure Portal. Azure OpenAI model catalogs do not identify this resource’s deployments."
-            : "Enter the deployment name used by this connector.")
-          : "Use the provider’s model ID or your gateway’s alias. Separate multiple models with commas. Changes are available to Agent setup after saving."}
-      </span>
-    </label>
-  );
   const accessDefaults = !reconnect ? (
     <ConnectionAccessDefaults
       companyId={companyId}
-      extra={advanced ? modelSettings : undefined}
       agents={agents.data ?? []}
       sentence={connectionDefaultSummarySentence({ grantKind: ownership === "shared" ? "organization" : "user", authKind: auth === "none" ? "none" : "api_key", installChoice: allAgents ? "all" : "specific", installCount: agentIds.size })}
       capabilities={{ canCreateOrganizationGrant: canManageConnections, canSetCompanyInstall: canManageConnections }}
@@ -397,7 +367,7 @@ export function AiProviderSetup({
                   disabled={Boolean(reconnect && !editingExisting)}
                 />
                 {provider === "gateway" && isAzureOpenAiGateway && (
-                  <p className="text-xs text-muted-foreground">Enter the deployment name shown in Azure Portal. Azure OpenAI model catalogs do not identify this resource’s deployments.</p>
+                  <p className="text-xs text-muted-foreground">Azure OpenAI model catalogs do not identify this resource’s deployments. Add deployment names in Connector details, then verify them by inference probe.</p>
                 )}
               </label>
               <label className="block space-y-2 text-xs text-muted-foreground">
@@ -478,9 +448,8 @@ export function AiProviderSetup({
               </label>
             )
           }
-          {reconnect && <details><summary className="cursor-pointer text-sm text-muted-foreground">Model settings</summary>{modelSettings}</details>}
           <p className="text-xs text-muted-foreground">
-            Paperclip stores the endpoint and credential here; deployment names are verified separately.
+            Paperclip stores the endpoint and credential here; deployment names are managed in Connector details and verified separately.
           </p>
           {save.error && (
             <p role="alert" className="text-sm text-destructive">
@@ -504,8 +473,7 @@ export function AiProviderSetup({
               disabled={
                 save.isPending || accounts.isPending || accounts.isError ||
                 (!reconnect && ownership === "shared" && !allAgents && agentIds.size === 0) ||
-                (auth !== "none" && !apiKey.trim()) ||
-                ((provider === "gateway" || provider === "local") && !deploymentName.trim())
+                (auth !== "none" && !apiKey.trim())
               }
             >
               {save.isPending

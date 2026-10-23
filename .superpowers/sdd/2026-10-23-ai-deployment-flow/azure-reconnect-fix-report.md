@@ -48,3 +48,48 @@ Result:
 sh: cargo: command not found
 ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @paperclipai/paperclip-runner@0.0.0 build
 ```
+
+## Current UI fix evidence
+
+### Focused AiProviderSetup tests
+Command:
+```sh
+pnpm vitest run ui/src/components/ai-connections/AiProviderSetup.test.tsx
+```
+Result:
+```text
+Test Files  1 passed (1)
+Tests       17 passed (17)
+```
+
+### Relevant AI-connection UI tests
+Command:
+```sh
+pnpm vitest run ui/src/components/ai-connections/*.test.tsx
+```
+Result:
+```text
+Test Files  9 passed (9)
+Tests       64 passed (64)
+```
+
+### UI typecheck
+Command:
+```sh
+pnpm --filter @paperclipai/ui typecheck >/dev/null 2>&1 && echo "ui typecheck ok"
+```
+Result:
+```text
+ui typecheck ok
+```
+
+### Token gates
+Command:
+```sh
+pnpm check:token-gates
+```
+Result:
+```text
+All gates clean.
+cliplab character in sync
+```
