@@ -22,17 +22,6 @@ function modelListFromPayload(payload: unknown): unknown[] | undefined {
   return Array.isArray(value.data) ? value.data : Array.isArray(value.models) ? value.models : undefined;
 }
 
-function modelIdsFromPayload(payload: unknown): Set<string> | undefined {
-  const rawModels = modelListFromPayload(payload);
-  if (!rawModels) return undefined;
-  return new Set(rawModels.flatMap((entry) => {
-    if (typeof entry === "string") return entry.trim() ? [entry.trim()] : [];
-    if (typeof entry !== "object" || entry === null || typeof (entry as { id?: unknown }).id !== "string") return [];
-    const id = (entry as { id: string }).id.trim();
-    return id ? [id] : [];
-  }));
-}
-
 /** Discover models and non-consuming protocol support for a custom gateway. */
 export async function discoverAiGateway(
   key: string,
@@ -104,6 +93,7 @@ export async function validateAiApiKey(
   request: typeof fetch = fetch,
   routing?: AiProviderRouting,
 ) {
+  if (routing?.kind === "gateway" && new URL(routing.baseUrl ?? "").hostname.endsWith(".openai.azure.com")) return;
   const endpoints = {
     anthropic: "https://api.anthropic.com/v1/models?limit=1",
     openai: "https://api.openai.com/v1/models",
@@ -130,17 +120,6 @@ export async function validateAiApiKey(
   } catch (error) {
     throw unprocessable(custom ? "Base URL is invalid or unreachable." : "Could not verify the account. Try again.", { code: custom ? isTimeout(error) ? "ai_connection_timeout" : "ai_connection_base_url_invalid" : "ai_connection_verification_failed" });
   }
-  let advertisedModels: Set<string> | undefined;
-  if (custom && routing?.models.length) {
-    try {
-      // Preserve validation's existing behavior for a JSON response that does
-      // not contain a model list: configured models are not considered advertised.
-      advertisedModels = modelIdsFromPayload(await response.clone().json()) ?? new Set();
-    } catch {
-      // A successful authentication response without a JSON model list is still
-      // useful for gateways that intentionally hide model discovery.
-    }
-  }
   await response.body?.cancel();
   if (!response.ok)
     throw unprocessable(
@@ -153,6 +132,4 @@ export async function validateAiApiKey(
             : custom ? "The endpoint rejected the connection test." : "The provider could not verify this account. Try again.",
       { code: response.status === 401 || response.status === 403 ? "ai_connection_api_key_rejected" : response.status === 404 ? "ai_connection_base_url_invalid" : response.status === 429 ? "ai_connection_rate_limited" : "ai_connection_verification_failed" },
     );
-  if (advertisedModels && routing?.models.some((model) => !advertisedModels!.has(model.id)))
-    throw unprocessable("Model or deployment does not exist at this endpoint.", { code: "ai_connection_model_not_found" });
 }

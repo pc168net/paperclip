@@ -41,11 +41,18 @@ describe("validateAiApiKey custom gateways", () => {
     });
   });
 
-  it("rejects a configured model that the gateway does not advertise", async () => {
+  it("does not reject an Azure-style deployment omitted from the /models catalog", async () => {
     const request = vi.fn(async () => new Response(JSON.stringify({ data: [{ id: "other-model" }] }), { status: 200 }));
-    await expect(validateAiApiKey("openai", "fixture-key", request, gateway())).rejects.toMatchObject({
-      details: { code: "ai_connection_model_not_found" },
-    });
+    await expect(validateAiApiKey("openai", "fixture-key", request, gateway())).resolves.toBeUndefined();
+  });
+
+  it("does not use Azure's global /models catalog when saving a connection", async () => {
+    const request = vi.fn(async () => new Response(null, { status: 401 }));
+    await expect(validateAiApiKey("openai", "fixture-key", request, {
+      ...gateway(),
+      baseUrl: "https://twsoft-claw.openai.azure.com/openai/v1",
+    })).resolves.toBeUndefined();
+    expect(request).not.toHaveBeenCalled();
   });
 
   it.each([
