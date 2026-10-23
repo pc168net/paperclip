@@ -432,6 +432,51 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(await svc.getActiveForIssue(randomUUID(), sourceIssueId)).toBeNull();
   });
 
+  it("atomically escalates an active action when its blocker graph conflicts", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const service = issueRecoveryActionService(db);
+    const action = await service.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "stranded_assigned_issue",
+      fingerprint: "blocker-graph-conflict",
+      evidence: { priorEvidence: true },
+      nextAction: "Restore a live execution path.",
+      wakePolicy: { type: "wake_owner" },
+      monitorPolicy: { type: "watch_owner" },
+    });
+    const input = {
+      companyId,
+      sourceIssueId,
+      actionId: action.id,
+      blockedByIssueIds: [randomUUID(), randomUUID()],
+    };
+
+    const updated = await service.escalateForBlockerGraphConflict(input);
+
+    expect(updated).toMatchObject({
+      status: "escalated",
+      ownerType: "board",
+      ownerAgentId: null,
+      ownerUserId: null,
+      outcome: "blocked",
+      resolutionNote: "blocker_graph_conflict",
+      wakePolicy: null,
+      monitorPolicy: null,
+      evidence: expect.objectContaining({
+        priorEvidence: true,
+        blockerGraphConflict: expect.objectContaining({
+          reason: "blocker_graph_conflict",
+          blockedByIssueIds: input.blockedByIssueIds,
+        }),
+      }),
+    });
+    expect(await service.escalateForBlockerGraphConflict(input)).toBeNull();
+  });
+
   it("enforces maxAttempts once and removes every automatic recovery path", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     const svc = issueRecoveryActionService(db);

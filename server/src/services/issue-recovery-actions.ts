@@ -78,6 +78,13 @@ export type ResolveIssueRecoveryActionInput = {
   resolutionNote?: string | null;
 };
 
+export type EscalateForBlockerGraphConflictInput = {
+  companyId: string;
+  sourceIssueId: string;
+  actionId: string;
+  blockedByIssueIds: string[];
+};
+
 function toReadModel(row: IssueRecoveryActionRow): IssueRecoveryAction {
   return {
     id: row.id,
@@ -580,7 +587,44 @@ export function issueRecoveryActionService(db: Db) {
     return updated ? toReadModel(updated) : null;
   }
 
+  async function escalateForBlockerGraphConflict(
+    input: EscalateForBlockerGraphConflictInput,
+  ): Promise<IssueRecoveryAction | null> {
+    const now = new Date();
+    const conflictEvidence = JSON.stringify({
+      blockerGraphConflict: {
+        reason: "blocker_graph_conflict",
+        blockedByIssueIds: input.blockedByIssueIds,
+        detectedAt: now.toISOString(),
+      },
+    });
+    const [updated] = await db
+      .update(issueRecoveryActions)
+      .set({
+        status: "escalated",
+        ownerType: "board",
+        ownerAgentId: null,
+        ownerUserId: null,
+        outcome: "blocked",
+        resolutionNote: "blocker_graph_conflict",
+        wakePolicy: null,
+        monitorPolicy: null,
+        evidence: sql<Record<string, unknown>>`coalesce(${issueRecoveryActions.evidence}, '{}'::jsonb) || ${conflictEvidence}::jsonb`,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(issueRecoveryActions.companyId, input.companyId),
+        eq(issueRecoveryActions.sourceIssueId, input.sourceIssueId),
+        eq(issueRecoveryActions.id, input.actionId),
+        eq(issueRecoveryActions.status, "active"),
+      ))
+      .returning();
+
+    return updated ? toReadModel(updated) : null;
+  }
+
   return {
+    escalateForBlockerGraphConflict,
     getActiveForIssue,
     listActiveForIssues,
     resolveActiveForIssue,
