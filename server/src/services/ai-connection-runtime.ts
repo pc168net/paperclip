@@ -273,7 +273,13 @@ export async function prepareManagedAiRuntime(
       );
     const runtimeModel = selection.deployment?.modelId ?? selectedModel;
     const credentialRef = selection.grant.credentialSecretRefs.find((ref) => ref.configPath === "ai.credential");
-    const routing = aiConnectionMetadataSchema.parse(selection.connection.config.ai).routing;
+    const connectionRouting = aiConnectionMetadataSchema.parse(selection.connection.config.ai).routing;
+    // A deployment probe verifies one protocol against this endpoint. Existing
+    // Connector rows can retain an older route protocol, so execution must use
+    // the selected deployment's verified protocol rather than that stale value.
+    const routing = selection.deployment && connectionRouting
+      ? { ...connectionRouting, protocol: selection.deployment.protocol }
+      : connectionRouting;
     const noAuth = routing?.auth === "none";
     if (!noAuth && !credentialRef) throw unprocessable("The selected AI credential is unavailable");
     const readFreshness = async () => {

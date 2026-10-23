@@ -15,6 +15,16 @@ function isTimeout(error: unknown): boolean {
   return error instanceof Error && (error.name === "TimeoutError" || /timed?\s*out|timeout/i.test(error.message));
 }
 
+export function isAzureOpenAiGateway(routing?: AiProviderRouting): boolean {
+  if (routing?.kind !== "gateway") return false;
+  try {
+    const hostname = new URL(routing.baseUrl ?? "").hostname;
+    return hostname.endsWith(".openai.azure.com") || hostname.endsWith(".services.ai.azure.com");
+  } catch {
+    return false;
+  }
+}
+
 /** Read the two OpenAI-compatible model-list envelopes without trusting payload shape. */
 function modelListFromPayload(payload: unknown): unknown[] | undefined {
   if (typeof payload !== "object" || payload === null) return undefined;
@@ -29,6 +39,7 @@ export async function discoverAiGateway(
   request: typeof fetch = fetch,
 ): Promise<AiGatewayDiscovery> {
   if (routing.kind !== "gateway") throw unprocessable("Custom discovery requires a gateway endpoint.", { code: "ai_connection_base_url_invalid" });
+  if (isAzureOpenAiGateway(routing)) throw unprocessable("Azure OpenAI model catalogs are not deployments. Add and verify a deployment instead.", { code: "ai_connection_models_unsupported" });
   const baseUrl = (routing.baseUrl ?? "").replace(/\/+$/, "");
   let response: Response;
   try {
@@ -93,7 +104,7 @@ export async function validateAiApiKey(
   request: typeof fetch = fetch,
   routing?: AiProviderRouting,
 ) {
-  if (routing?.kind === "gateway" && new URL(routing.baseUrl ?? "").hostname.endsWith(".openai.azure.com")) return;
+  if (isAzureOpenAiGateway(routing)) return;
   const endpoints = {
     anthropic: "https://api.anthropic.com/v1/models?limit=1",
     openai: "https://api.openai.com/v1/models",

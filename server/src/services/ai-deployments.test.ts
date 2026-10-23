@@ -54,6 +54,18 @@ describe("verifyAiDeployment", () => {
     expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ model: "chat-model", messages: [{ role: "user", content: "ping" }], max_tokens: 1 });
   });
 
+  it("retries Azure v1 probes with bearer API-key authentication", async () => {
+    const calls: Array<{ init?: RequestInit }> = [];
+    const request = (async (_url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ init });
+      return calls.length === 1 ? new Response(null, { status: 401 }) : new Response(null, { status: 200 });
+    }) as typeof fetch;
+
+    await expect(verifyAiDeployment({ ...routing, baseUrl: "https://resource.openai.azure.com/openai/v1" }, "stored-secret", { modelId: "azure-deployment", protocol: "chat" }, request)).resolves.toEqual({ ok: true });
+    expect(new Headers(calls[0]?.init?.headers).get("api-key")).toBe("stored-secret");
+    expect(new Headers(calls[1]?.init?.headers).get("authorization")).toBe("Bearer stored-secret");
+  });
+
   it("classifies timeout and protocol failures without storing provider bodies", async () => {
     await expect(verifyAiDeployment(routing, "stored-secret", { modelId: "azure-deployment", protocol: "responses" }, (async () => { throw Object.assign(new Error("Timeout"), { name: "TimeoutError" }); }) as typeof fetch)).resolves.toEqual({ ok: false, error: "The verification probe timed out." });
     await expect(verifyAiDeployment(routing, "stored-secret", { modelId: "azure-deployment", protocol: "responses" }, (async () => { throw new TypeError("network protocol error"); }) as typeof fetch)).resolves.toEqual({ ok: false, error: "The endpoint could not be reached." });

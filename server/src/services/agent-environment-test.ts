@@ -469,7 +469,9 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
     const result = await probeManagedEnvironment(adapterType, context, binding);
     // A provider rejection invalidates the tested credential generation. A
     // missing CLI, unavailable environment, or other runtime error does not.
-    if (result.status === "fail" && result.checks.some(check =>
+    const managedRouting = (managed.config as { managedAiRouting?: unknown }).managedAiRouting;
+    const deploymentBound = typeof (managed.attribution as { deploymentId?: unknown }).deploymentId === "string";
+    if (!deploymentBound && !managedRouting && result.status === "fail" && result.checks.some(check =>
       check.code === ADAPTER_AUTH_MISSING_CHECK_CODE || /_hello_probe_auth_required$/.test(check.code)
         || check.code === "ai_connection_api_key_rejected",
     )) {

@@ -307,6 +307,16 @@ async function readSourceCodexAuth(sourceAuth: string): Promise<Buffer | null> {
   }
 }
 
+function isManagedAzureApiKeyHeader(value: unknown): boolean {
+  return Boolean(
+    value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && Object.keys(value).length === 1
+    && (value as Record<string, unknown>)['api-key'] === "PAPERCLIP_AI_PROVIDER_KEY",
+  );
+}
+
 /** Copy only Paperclip's value-free provider projection, never host tools or hooks. */
 async function managedCodexProviderConfig(sourceHome?: string | null): Promise<string> {
   if (!sourceHome?.trim()) return "";
@@ -317,9 +327,12 @@ async function managedCodexProviderConfig(sourceHome?: string | null): Promise<s
   if (parsed.model_provider !== "paperclip") return "";
   const providers = parsed.model_providers as Record<string, unknown> | undefined;
   const provider = providers?.paperclip as Record<string, unknown> | undefined;
+  const azureApiKeyHeader = provider && isManagedAzureApiKeyHeader(provider.env_http_headers);
   if (!provider || typeof provider.base_url !== "string" || provider.wire_api !== "responses"
     || provider.requires_openai_auth !== false
-    || (provider.env_key !== undefined && provider.env_key !== "PAPERCLIP_AI_PROVIDER_KEY")) {
+    || (provider.env_key !== undefined && provider.env_key !== "PAPERCLIP_AI_PROVIDER_KEY")
+    || (provider.env_http_headers !== undefined && !azureApiKeyHeader)
+    || (provider.env_key !== undefined && azureApiKeyHeader)) {
     throw new Error("Invalid managed Codex provider configuration");
   }
   const url = new URL(provider.base_url);
@@ -327,7 +340,12 @@ async function managedCodexProviderConfig(sourceHome?: string | null): Promise<s
     || (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))) {
     throw new Error("Invalid managed Codex provider URL");
   }
-  return `model_provider = "paperclip"\n[model_providers.paperclip]\nname = "Paperclip connection"\nbase_url = ${JSON.stringify(provider.base_url)}\nwire_api = "responses"\nrequires_openai_auth = false\n${provider.env_key ? 'env_key = "PAPERCLIP_AI_PROVIDER_KEY"\n' : ""}`;
+  const auth = provider.env_key
+    ? 'env_key = "PAPERCLIP_AI_PROVIDER_KEY"\n'
+    : azureApiKeyHeader
+      ? 'env_http_headers = { "api-key" = "PAPERCLIP_AI_PROVIDER_KEY" }\n'
+      : "";
+  return `model_provider = "paperclip"\n[model_providers.paperclip]\nname = "Paperclip connection"\nbase_url = ${JSON.stringify(provider.base_url)}\nwire_api = "responses"\nrequires_openai_auth = false\n${auth}`;
 }
 
 export async function prepareIsolatedCodexHome(input: {

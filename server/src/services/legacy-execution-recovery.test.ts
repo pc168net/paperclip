@@ -20,6 +20,15 @@ it("settles only a successful done disposition", () => {
   }
 });
 
+it("does not hold a legacy run when the provider rejects its request before execution", () => {
+  expect(legacyExecutionNeedsReconciliation({
+    runtimeMode: "legacy",
+    status: "failed",
+    errorCode: "custom_request_rejected",
+    resultJson: {},
+  })).toBe(false);
+});
+
 it.each(["workspace_git_scan_timeout", "workspace_git_scan_saturated"])("does not invent unknown provider actions after exhausted %s bootstrap retries", (errorCode) => {
   const run = { runtimeMode: "legacy", status: "failed", errorCode, scheduledRetryAttempt: 2,
     resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } };

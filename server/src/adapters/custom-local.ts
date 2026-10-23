@@ -208,7 +208,7 @@ export async function executeCustom(ctx: AdapterExecutionContext): Promise<Adapt
       const message = typeof parsed.error === "object" && parsed.error && typeof (parsed.error as Record<string, unknown>).message === "string"
         ? (parsed.error as Record<string, unknown>).message as string
         : `Custom provider request failed with HTTP ${response.status}.`;
-      return { exitCode: 1, signal: null, timedOut: false, errorCode: response.status === 401 || response.status === 403 ? "custom_auth_failed" : response.status === 404 ? "custom_model_not_found" : response.status === 429 ? "custom_provider_rate_limited" : "custom_provider_error", errorMessage: message };
+      return { exitCode: 1, signal: null, timedOut: false, errorCode: response.status === 400 || response.status === 422 ? "custom_request_rejected" : response.status === 401 || response.status === 403 ? "custom_auth_failed" : response.status === 404 ? "custom_model_not_found" : response.status === 429 ? "custom_provider_rate_limited" : "custom_provider_error", errorMessage: message };
     }
       const responseId = typeof parsed.id === "string" ? parsed.id : previousResponseId;
       const calls = isResponses

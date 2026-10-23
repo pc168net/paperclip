@@ -20,6 +20,7 @@ it("reconnects an older OpenRouter account without adding routing metadata", asy
   const container = document.createElement("div");
   const root = createRoot(container);
   const onComplete = vi.fn();
+  const invalidateQueries = vi.spyOn(client, "invalidateQueries");
   const account = { id: "connection", grantId: "grant", companyId: "company", provider: "openrouter", method: "api_key", name: "Existing OpenRouter", ownership: "personal", ownerUserId: "owner", isDefault: true, status: "needs_attention" } as const;
   try {
     await act(async () => root.render(<QueryClientProvider client={client}><AiProviderSetup companyId="company" reconnect={account} onCancel={() => {}} onComplete={onComplete} /></QueryClientProvider>));
@@ -27,6 +28,7 @@ it("reconnects an older OpenRouter account without adding routing metadata", asy
     expect(credentialProps).toMatchObject({ connectionId: account.id, provider: "openrouter", initialMethod: "api_key", fixedMethod: true });
     credentialProps!.onComplete({ connectionId: account.id, grantId: account.grantId, method: "api_key" });
     expect(onComplete).toHaveBeenCalledWith({ provider: "openrouter", method: "api_key", mode: "delegated", connectionId: account.id, grantId: account.grantId });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["ai-deployments", "company", account.id] });
   } finally {
     await act(async () => root.unmount());
     client.clear();

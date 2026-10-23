@@ -38,6 +38,9 @@ export function legacyExecutionNeedsReconciliation(
     return false;
   // A fresh model turn cannot repair or verify unrestored files.
   if (run.resultJson?.workspaceRestoreFailure === "restore_unsafe_archive" || hasRequiredWorkspaceRecovery(run.resultJson)) return true;
+  // A custom provider rejected the request before it could execute a model
+  // turn or invoke a tool, so a corrected configuration can safely retry it.
+  if (run.errorCode === "custom_request_rejected") return false;
   // A fresh conversation turn lets the agent decide what remains. The retry
   // scheduler, not an action-outcome hold, owns the automatic attempt limit.
   if (hasConversationContinuationPolicy(run.resultJson)) return false;

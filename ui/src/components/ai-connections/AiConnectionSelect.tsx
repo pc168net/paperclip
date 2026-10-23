@@ -54,12 +54,13 @@ export function AiConnectionSelect({
   const personal = connectedOnly ? undefined : personalAiDefault(connections, requirement, currentUserId);
   /** Routed endpoints are represented by their verified deployment, not their
    * provider catalog. Plain provider accounts retain their existing choice. */
-  const choices: Array<{ id: string; connection: AiConnectionSummary; deployment?: AiDeploymentSummary }> = connections.flatMap((connection) => {
+  const choices: Array<{ id: string; connection: AiConnectionSummary; deployments?: AiDeploymentSummary[] }> = connections.flatMap((connection) => {
     const requiresDeployment = connection.routing && ["gateway", "local"].includes(connection.routing.kind);
     if (!requiresDeployment) return connectedOnly ? [] : [{ id: connection.id, connection }];
-    return (connection.deployments ?? [])
+    if (connection.status !== "connected") return [];
+    const verifiedDeployments = (connection.deployments ?? [])
       .filter((deployment) => deployment.status === "verified")
-      .map((deployment) => ({ id: deployment.id, connection, deployment }));
+    return verifiedDeployments.length ? [{ id: connection.id, connection, deployments: verifiedDeployments }] : [];
   });
   const selected =
     connectedOnly && value?.mode === "responsible_user"
@@ -70,10 +71,10 @@ export function AiConnectionSelect({
           (c) => c.id === value?.connectionId && c.grantId === value?.grantId,
         );
   const selectedChoice = value?.mode !== "responsible_user"
-    ? choices.find((choice) => choice.connection.id === value?.connectionId && choice.connection.grantId === value?.grantId &&
-      (!value.deploymentId || choice.deployment?.id === value.deploymentId))
+    ? choices.find((choice) => choice.connection.id === value?.connectionId && choice.connection.grantId === value?.grantId)
     : undefined;
   const selectedDeploymentId = value && value.mode !== "responsible_user" ? value.deploymentId : undefined;
+  const currentDeploymentId = value && value.mode !== "responsible_user" ? value.deploymentId : undefined;
   const compatible = choices
     .filter(
       ({ connection: c }) =>
@@ -120,7 +121,8 @@ export function AiConnectionSelect({
       });
     const choice = compatible.find((candidate) => candidate.id === id);
     if (!choice) return;
-    const { connection, deployment } = choice;
+    const { connection, deployments: availableDeployments } = choice;
+    const deployment = availableDeployments?.find((item) => item.id === currentDeploymentId) ?? availableDeployments?.[0];
     if (aiConnectionProblem(connection)) {
       onManageConnection?.(connection);
       return;
@@ -143,7 +145,7 @@ export function AiConnectionSelect({
         value={
           value?.mode === "responsible_user"
             ? "responsible_user"
-            : (selectedDeploymentId ?? value?.connectionId ?? "")
+             : (value?.connectionId ?? "")
         }
         onValueChange={change}
         disabled={readOnly || loading || Boolean(error)}
@@ -155,7 +157,7 @@ export function AiConnectionSelect({
             }
           >
             {selected
-              ? <ConnectionLabel connection={selected} label={value?.mode === "responsible_user" ? "Responsible user’s default" : selectedChoice?.deployment ? `${selected.name} · ${selectedChoice.deployment.modelId}` : undefined} />
+               ? <ConnectionLabel connection={selected} label={value?.mode === "responsible_user" ? "Responsible user’s default" : undefined} />
               : value?.mode === "responsible_user"
                 ? "Responsible user’s default"
                 : value ? "Unavailable connection" : undefined}
@@ -167,12 +169,12 @@ export function AiConnectionSelect({
               <ConnectionLabel connection={selected} label={`${selected.name} · Incompatible`} />
             </SelectItem>
           )}
-          {compatible.map(({ id, connection, deployment }) => (
+           {compatible.map(({ id, connection }) => (
             <SelectItem
               key={id}
               value={id}
             >
-              <ConnectionLabel connection={connection} label={`${connection.name}${deployment ? ` · ${deployment.modelId}` : ""}${connection.status !== "connected" ? " · Reconnect" : ""}`} />
+               <ConnectionLabel connection={connection} label={`${connection.name}${connection.status !== "connected" ? " · Reconnect" : ""}`} />
             </SelectItem>
           ))}
           {!connectedOnly && (canUseDefault || value?.mode === "responsible_user") && (

@@ -918,7 +918,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const modelProvider = adapterType === "opencode_local" && aiConnectionBindingSchema.safeParse(
     (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection,
   ).data?.provider === "openrouter" ? "openrouter" : runnerProvider;
-  const connectionModels = useConnectionModels(isExternalBotRunner ? null : selectedCompanyId, isCreate ? undefined : aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data, aiRoutingHarness(adapterType, runnerProvider, eff("adapterConfig", "acpxAgent", config.acpxAgent)));
+  const runtimeAiBinding = isCreate ? undefined : aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data;
+  const connectionModels = useConnectionModels(isExternalBotRunner ? null : selectedCompanyId, runtimeAiBinding, aiRoutingHarness(adapterType, runnerProvider, eff("adapterConfig", "acpxAgent", config.acpxAgent)));
+  const verifiedDeploymentBound = Boolean(
+    runtimeAiBinding &&
+    runtimeAiBinding.mode !== "responsible_user" &&
+    runtimeAiBinding.deploymentId &&
+    connectionModels?.models.length === 1,
+  );
   // Fetch adapter models for the effective provider, including unsaved changes.
   const modelAdapterType = isCodexHarness ? harnessType : adapterType;
   const modelQueryKey = selectedCompanyId
@@ -1770,7 +1777,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           )}
 
           {renderAdapterFields("adapter")}
-          {isLocal && (<>
+           {isLocal && (<>
+             {verifiedDeploymentBound && (
+               <p className="text-sm text-muted-foreground">
+                 Verified deployment: {connectionModels?.models[0]?.label ?? connectionModels?.models[0]?.id}
+               </p>
+             )}
+             {!verifiedDeploymentBound && <>
               <ModelDropdown
                 models={models}
                 loadingModels={connectionModels?.isLoading ?? fetchingModels}
@@ -1826,6 +1839,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       : "Failed to load adapter models.")}
                 </p>
               )}
+             </>}
               {adapterType === "paperclip_runner" && !isCreate && (
                 <Field
                   label="Rate-limit fallback model (optional)"
