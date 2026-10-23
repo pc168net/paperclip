@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { isNotNull } from "drizzle-orm";
 import request from "supertest";
 import { expect, it } from "vitest";
-import { activityLog, issueComments, issueReadStates, issues } from "@paperclipai/db";
+import { activityLog, agents, issueComments, issueReadStates, issues } from "@paperclipai/db";
 import { isAgentCreatedIssue } from "@paperclipai/shared";
 import { issueRoutes } from "../routes/issues.js";
 import { issueService } from "../services/issues.js";
@@ -11,8 +12,70 @@ describeEmbeddedPostgres("issue creation visibility", () => {
   const ctx = useEmbeddedPostgres("paperclip-creation-visibility-", {
     resetEach: async (db) => {
       await db.delete(activityLog);
+      await db.delete(issues).where(isNotNull(issues.parentId));
+      await db.delete(issues);
+      await db.delete(agents);
       await resetCompanyIssueFixtures(db);
     },
+  });
+
+  it("rejects API task assignment to an unbound custom agent", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Custom assignment eligibility");
+    const agentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Unconfigured custom agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "custom_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const response = await request(routeApp(ctx.db, actor, issueRoutes))
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Must not queue without a gateway", assigneeAgentId: agentId });
+
+    expect(response.status).toBe(409);
+    expect(response.body.details).toMatchObject({
+      code: "agent_not_assignable",
+      reason: "custom_deployment_unverified",
+      assigneeAgentId: agentId,
+    });
+
+    const unavailableBindingAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: unavailableBindingAgentId,
+      companyId,
+      name: "Custom agent with unavailable deployment",
+      role: "engineer",
+      status: "idle",
+      adapterType: "custom_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        aiConnection: {
+          mode: "shared",
+          provider: "openai",
+          method: "api_key",
+          connectionId: randomUUID(),
+          grantId: randomUUID(),
+          deploymentId: randomUUID(),
+        },
+      },
+      permissions: {},
+    });
+    const unavailable = await request(routeApp(ctx.db, actor, issueRoutes))
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Must not queue an unavailable gateway", assigneeAgentId: unavailableBindingAgentId });
+
+    expect(unavailable.status).toBe(409);
+    expect(unavailable.body.details).toMatchObject({
+      code: "agent_not_assignable",
+      reason: "custom_deployment_unverified",
+      assigneeAgentId: unavailableBindingAgentId,
+    });
   });
 
   it("filters ordinary and compact searches before pagination without changing API defaults", async () => {
