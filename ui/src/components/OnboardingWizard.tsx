@@ -2267,7 +2267,7 @@ function OnboardingWizardInner({
           }
         : baseAdapterConfig;
 
-      if (isLocalAdapter) {
+      if (isLocalAdapter && adapterType !== "custom_local") {
         // A cached result is reusable only when it tested the same
         // configuration the hire below sends, and only when it does not
         // block the hire — see blocksAgentCreate. With the "Test now" card
