@@ -22,10 +22,15 @@ vi.mock("@/adapters", () => ({ getUIAdapter: () => ({ buildAdapterConfig: (value
 vi.mock("@/adapters/adapter-display-registry", () => ({ getAdapterDisplay: () => ({ label: "OpenAI" }), getAdapterLabels: () => ({}) }));
 vi.mock("../ai-connections/AiConnectionField", () => ({
   AiConnectionField: ({ onChange }: { onChange: (binding: unknown) => void }) => (
-    <button type="button" onClick={() => onChange({ provider: "openai", method: "api_key", mode: "shared", connectionId: "00000000-0000-4000-8000-000000000021", grantId: "00000000-0000-4000-8000-000000000022", deploymentId: "00000000-0000-4000-8000-000000000023" })}>
-      Select stale deployment
-    </button>
-    ),
+    <>
+      <button type="button" onClick={() => onChange({ provider: "openai", method: "api_key", mode: "shared", connectionId: "00000000-0000-4000-8000-000000000021", grantId: "00000000-0000-4000-8000-000000000022", deploymentId: "00000000-0000-4000-8000-000000000023" })}>
+        Select stale deployment
+      </button>
+      <button type="button" onClick={() => onChange({ provider: "openai", method: "api_key", mode: "shared", connectionId: "00000000-0000-4000-8000-000000000021", grantId: "00000000-0000-4000-8000-000000000022", deploymentId: "00000000-0000-4000-8000-000000000025" })}>
+        Select verified deployment
+      </button>
+    </>
+  ),
 }));
 
 const api = vi.hoisted(() => ({
@@ -142,4 +147,68 @@ it.each(["stale", "failed"] as const)("shows a verification-needed state for %s 
 
   expect(container.textContent).toContain("This deployment is unavailable or needs verification.");
   expect(container.textContent).not.toContain("Verified deployment");
+});
+
+it("persists the verified Connector deployment binding when setup finishes", async () => {
+  api.listConnections.mockResolvedValueOnce({
+    currentUserId: "user-1",
+    canManageConnections: true,
+    connections: [{
+      id: "00000000-0000-4000-8000-000000000021",
+      grantId: "00000000-0000-4000-8000-000000000022",
+      companyId: "company-1",
+      provider: "openai",
+      method: "api_key",
+      name: "Company OpenAI",
+      ownership: "shared",
+      isDefault: false,
+      status: "connected",
+      routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://example.com/v1", models: [] },
+      deployments: [{
+        id: "00000000-0000-4000-8000-000000000025",
+        companyId: "company-1",
+        connectionId: "00000000-0000-4000-8000-000000000021",
+        modelId: "azure-verified",
+        displayName: "Azure verified deployment",
+        protocol: "responses",
+        status: "verified",
+        verifiedCredentialEpoch: 1,
+        lastError: null,
+        verifiedAt: "2026-10-23T00:00:00.000Z",
+        createdByUserId: "user-1",
+      }],
+    }],
+  });
+  api.testEnvironment.mockResolvedValueOnce({
+    adapterType: "codex_local",
+    status: "pass",
+    checks: [{ code: "openai_hello_probe_passed", level: "info", message: "Verified deployment responded." }],
+    testedAt: "2026-10-23T00:00:00.000Z",
+  });
+  api.hire.mockResolvedValueOnce({ agent: { id: "agent-1", name: "Atlas", status: "idle" }, approval: null });
+
+  await act(async () => {
+    root.render(<QueryClientProvider client={client}><NewAgentSetup /></QueryClientProvider>);
+  });
+  await settle();
+
+  await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Select verified deployment")?.click());
+  await settle();
+  await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Use connection")?.click());
+  await settle();
+  await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Finish setup")?.click());
+  await settle();
+
+  expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({
+    runtimeConfig: expect.objectContaining({
+      aiConnection: {
+        provider: "openai",
+        method: "api_key",
+        mode: "shared",
+        connectionId: "00000000-0000-4000-8000-000000000021",
+        grantId: "00000000-0000-4000-8000-000000000022",
+        deploymentId: "00000000-0000-4000-8000-000000000025",
+      },
+    }),
+  }));
 });
