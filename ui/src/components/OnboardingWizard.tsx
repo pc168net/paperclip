@@ -1698,11 +1698,6 @@ function OnboardingWizardInner({
     setArgs("");
     setUrl("");
     setApiKey("");
-    setCustomProtocol("responses");
-    setCustomAuth("bearer");
-    setCustomDiscovery(null);
-    setCustomDiscoveryError(null);
-    setCustomDiscoveryLoading(false);
     setSelectedSavedKey(null);
     apiKeySecretRef.current = null;
     managedSubscriptionRef.current = null;

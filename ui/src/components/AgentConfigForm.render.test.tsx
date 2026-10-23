@@ -3729,10 +3729,13 @@ describe("AgentConfigForm custom Runtime", () => {
     try {
       const result = await renderForm([], { adapterType: "custom_local" });
       roots.push(result.root);
+      await clickByText(result.container, "Choose a managed connection");
       await flushUntil(() => Boolean(result.container.querySelector('[role="combobox"][aria-label="Connection"]')));
 
       const trigger = result.container.querySelector<HTMLElement>('[role="combobox"][aria-label="Connection"]')!;
-      await act(async () => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+      await act(async () => {
+        trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+      });
       await flushUntil(() => Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).some(option => option.textContent?.includes("Connect an account")));
       const connect = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find(option => option.textContent?.includes("Connect an account"))!;
       await clickElement(connect);

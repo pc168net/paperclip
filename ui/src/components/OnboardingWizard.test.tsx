@@ -72,7 +72,7 @@ const mockAgentsApi = vi.hoisted(() => ({
       testedAt: new Date().toISOString(),
     }),
   ),
-  hire: vi.fn(async () => ({ agent: { id: "agent-1" }, approval: null })),
+  hire: vi.fn(async (): Promise<{ agent: { id: string; urlKey?: string }; approval: null }> => ({ agent: { id: "agent-1" }, approval: null })),
   // The hire step lists the company's agents first and adopts one that already
   // carries the typed name on the same source, so a wizard that reopens on the
   // agent step cannot hire "Ada 2". Empty by default: the company is new.
@@ -2090,7 +2090,10 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       const { root } = await openStep4({ adapterType: "custom_local" });
       try {
         const customTile = [...document.body.querySelectorAll("button[aria-checked]")]
-          .find((tile) => tile.textContent?.includes("Custom"));
+          .find(
+            (tile): tile is HTMLButtonElement =>
+              tile instanceof HTMLButtonElement && tile.textContent?.includes("Custom") === true,
+          );
         expect(customTile).toBeTruthy();
         await act(async () => customTile!.click());
         await act(async () => {
