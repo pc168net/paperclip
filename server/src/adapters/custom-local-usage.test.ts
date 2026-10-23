@@ -62,6 +62,8 @@ describe("parseCustomProviderUsage", () => {
     ["NaN string", "NaN"],
     ["infinite number", Infinity],
     ["malformed string", "0.1e2"],
+    ["oversized number", 1_000_000_000_000_000],
+    ["oversized string", "1000000000000000"],
   ])("preserves usage without cost fields when cost is %s", (_description, cost) => {
     const result = parseCustomProviderUsage({
       ...(cost === undefined ? {} : { cost }),

@@ -1,4 +1,5 @@
 import type { AdapterExecutionResult, UsageSummary } from "@paperclipai/adapter-utils";
+import { usdToUnits } from "@paperclipai/shared";
 
 type CustomProviderUsage = UsageSummary & { totalTokens: number };
 
@@ -15,12 +16,19 @@ function record(value: unknown): Record<string, unknown> | undefined {
 }
 
 function parseCost(value: unknown): { costUsd: number; costUsdExact: string } | undefined {
+  let cost: { costUsd: number; costUsdExact: string } | undefined;
   if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
-    return { costUsd: value, costUsdExact: String(value) };
+    cost = { costUsd: value, costUsdExact: String(value) };
+  } else if (typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value)) {
+    const costUsd = Number(value);
+    if (Number.isFinite(costUsd)) cost = { costUsd, costUsdExact: value };
   }
-  if (typeof value !== "string" || !/^\d+(?:\.\d+)?$/.test(value)) return undefined;
-  const costUsd = Number(value);
-  return Number.isFinite(costUsd) ? { costUsd, costUsdExact: value } : undefined;
+  if (!cost) return undefined;
+  try {
+    return usdToUnits(cost.costUsdExact) >= 0n ? cost : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function parseCustomProviderUsage(body: Record<string, unknown>): CustomProviderUsageResult {
