@@ -86,7 +86,7 @@ import {
   PopoverTrigger
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { cn } from "../lib/utils";
+import { agentUrl, cn } from "../lib/utils";
 import {
   extractModelName,
   extractProviderIdWithFallback
@@ -1844,6 +1844,17 @@ function OnboardingWizardInner({
     }
   }
 
+  function handleConfigureCustomAgentRuntime() {
+    if (!createdCompanyId || !createdAgentId) {
+      setError(INCOMPLETE_ONBOARDING_STATE_MESSAGE);
+      return;
+    }
+    setSelectedCompanyId(createdCompanyId, { source: "route_sync" });
+    reset();
+    closeOnboarding();
+    navigate(`${agentUrl({ id: createdAgentId })}/runtime`);
+  }
+
   /**
    * Store the typed key as the customer's own user secret, and report whether it
    * is in place.
@@ -2462,7 +2473,10 @@ function OnboardingWizardInner({
         !connectStepLoggingIn
       )
         handleConnectStepPrimary();
-      else if (step === 5) handleLaunchToDashboard();
+      else if (step === 5) {
+        if (adapterType === "custom_local") handleConfigureCustomAgentRuntime();
+        else void handleLaunchToDashboard();
+      }
     }
   }
 
@@ -2668,7 +2682,7 @@ function OnboardingWizardInner({
                           payoff, not a flourish along it. The sequence itself
                           is the studio's export; see OnboardingCharacter. */}
                       <div className="relative size-(--sz-160px)">
-                        <OnboardingCharacter appearance={agentAppearance} awake={step === 5} className="size-full" />
+                          <OnboardingCharacter appearance={agentAppearance} awake={step === 5 && adapterType !== "custom_local"} className="size-full" />
                       </div>
                       <AgentPreview agentName={agentName} agentRole="" />
                     </motion.div>
@@ -2687,7 +2701,9 @@ function OnboardingWizardInner({
                               ? "Create your first agent"
                               : step === 4
                                 ? "Connect a model"
-                                : "Let's get started..."}
+                                : adapterType === "custom_local"
+                                  ? "Configure your agent's model"
+                                  : "Let's get started..."}
                         </motion.span>
                       }
                     />
@@ -2710,7 +2726,9 @@ function OnboardingWizardInner({
                         <motion.span key={step} {...titleSwapMotion} className="inline-block">
                           {step === 4
                             ? "Paperclip works with your subscription or API keys."
-                            : `${agentName.trim() || "Your first agent"} is ready to work!`}
+                            : adapterType === "custom_local"
+                              ? `${agentName.trim() || "Your first agent"} needs a verified model connection before it can work.`
+                              : `${agentName.trim() || "Your first agent"} is ready to work!`}
                         </motion.span>
                       </p>
                     </motion.div>
@@ -3243,7 +3261,9 @@ function OnboardingWizardInner({
                     step === 1
                       ? "Continue"
                       : step === 5
-                        ? "Get started"
+                        ? adapterType === "custom_local"
+                          ? "Configure model"
+                          : "Get started"
                         : step === 4
                           ? connectCta.label
                           : "Next"
@@ -3280,7 +3300,8 @@ function OnboardingWizardInner({
                     // Cmd+Enter has to do the same thing. See
                     // `handleConnectStepPrimary`.
                     else if (step === 4) handleConnectStepPrimary();
-                    else handleLaunchToDashboard();
+                    else if (adapterType === "custom_local") handleConfigureCustomAgentRuntime();
+                    else void handleLaunchToDashboard();
                   }}
                 />
               )}

@@ -173,10 +173,11 @@ const mockAdapterRegistry = vi.hoisted(() => ({
 }));
 
 const mockRouterState = vi.hoisted(() => ({ pathname: "/" }));
+const mockNavigate = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/router", () => ({
   useLocation: () => ({ pathname: mockRouterState.pathname, search: "", hash: "", state: null }),
-  useNavigate: () => vi.fn(),
+  useNavigate: () => mockNavigate,
   useParams: () => ({}),
 }));
 vi.mock("../context/DialogContext", () => ({
@@ -258,7 +259,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, getEnvironmentCapabilities } from "@paperclipai/shared";
 import { CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
 import { ONBOARDING_STORAGE_KEY, OnboardingWizard } from "./OnboardingWizard";
-import { CONNECTED_HOLD_MS } from "./onboarding/onboarding-motion";
+import { CONNECTED_HOLD_MS, SOURCE_COLLAPSE_MS } from "./onboarding/onboarding-motion";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -361,6 +362,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockSecretsApi.removeUserSecretDefinition.mockResolvedValue({ ok: true });
     window.localStorage.clear();
     mockRouterState.pathname = "/";
+    mockNavigate.mockReset();
     mockDialog.onboardingOpen = true;
     mockDialog.onboardingOptions = {};
     mockDialog.onboardingRouteDismissed = false;
@@ -2077,6 +2079,46 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       expect(persistedDraft.model).toBe("");
 
       await act(async () => root.unmount());
+    });
+
+    it("creates an unconfigured custom first agent and opens runtime configuration", async () => {
+      mockAdapterRegistry.list = [];
+      const { root } = await openStep4({ adapterType: "custom_local" });
+      try {
+        const customTile = [...document.body.querySelectorAll("button[aria-checked]")]
+          .find((tile) => tile.textContent?.includes("Custom"));
+        expect(customTile).toBeTruthy();
+        await act(async () => customTile!.click());
+        await act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, SOURCE_COLLAPSE_MS + 10));
+        });
+        for (let i = 0; i < 4; i++) await flushReact();
+
+        const connect = [...document.body.querySelectorAll("button")]
+          .find((button) => button.textContent?.trim() === "Connect");
+        expect(connect).toBeTruthy();
+        expect(connect!.disabled).toBe(false);
+        await act(async () => connect!.click());
+        for (let i = 0; i < 8; i++) await flushReact();
+
+        expect(mockAgentsApi.hire).toHaveBeenCalledWith("company-new", expect.objectContaining({
+          adapterType: "custom_local",
+          adapterConfig: expect.not.objectContaining({ managedAiRouting: expect.anything() }),
+          runtimeConfig: expect.not.objectContaining({ aiConnection: expect.anything() }),
+        }));
+        expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
+        expect(document.body.textContent).toContain("needs a verified model connection before it can work.");
+        expect(document.body.textContent).not.toContain("is ready to work!");
+        const configure = [...document.body.querySelectorAll("button")]
+          .find((button) => button.textContent?.trim() === "Configure model");
+        expect(configure).toBeTruthy();
+        await act(async () => configure!.click());
+
+        expect(mockIssuesApi.create).not.toHaveBeenCalled();
+        expect(mockNavigate).toHaveBeenCalledWith("/agents/agent-1/runtime");
+      } finally {
+        await act(async () => root.unmount());
+      }
     });
 
     it("will not advance on a saved adapter the step no longer offers", async () => {
