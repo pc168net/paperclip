@@ -3698,6 +3698,53 @@ describe("AgentConfigForm edit-mode Claude OAuth binding", () => {
 
 });
 
+describe("AgentConfigForm custom Runtime", () => {
+  let roots: Root[] = [];
+
+  beforeEach(() => {
+    mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockAgentsApi.detectModel.mockResolvedValue(null);
+    mockAgentsApi.list.mockResolvedValue([]);
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
+    mockSecretsApi.list.mockResolvedValue([]);
+    mockSecretsApi.listProposals.mockResolvedValue([]);
+  });
+
+  afterEach(async () => {
+    for (const root of roots) await act(async () => root.unmount());
+    roots = [];
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  it("opens Custom endpoint setup when an unconfigured custom Runtime connects", async () => {
+    const listConnections = vi.spyOn(aiConnectionsApi, "list").mockResolvedValue({
+      currentUserId: "operator",
+      canManageConnections: true,
+      connections: [],
+    });
+    try {
+      const result = await renderForm([], { adapterType: "custom_local" });
+      roots.push(result.root);
+      await flushUntil(() => Boolean(result.container.querySelector('[role="combobox"][aria-label="Connection"]')));
+
+      const trigger = result.container.querySelector<HTMLElement>('[role="combobox"][aria-label="Connection"]')!;
+      await act(async () => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+      await flushUntil(() => Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).some(option => option.textContent?.includes("Connect an account")));
+      const connect = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find(option => option.textContent?.includes("Connect an account"))!;
+      await clickElement(connect);
+
+      await flushUntil(() => document.body.textContent?.includes("Custom endpoint") ?? false);
+      expect(document.body.textContent).toContain("Custom endpoint");
+    } finally {
+      listConnections.mockRestore();
+    }
+  });
+});
+
 describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
   let roots: Root[] = [];
 
