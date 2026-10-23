@@ -189,6 +189,7 @@ export function AiProviderSetup({
     method?: "api_key" | "subscription";
   }) => {
     void client.invalidateQueries({ queryKey: ["ai-connections", companyId] });
+    void client.invalidateQueries({ queryKey: ["ai-deployments", companyId, result.connectionId] });
     void client.invalidateQueries({ queryKey: ["tools"] });
     onComplete({
       provider: nativeProvider,

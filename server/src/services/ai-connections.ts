@@ -666,8 +666,12 @@ export function aiConnectionService(db: Db) {
         input.provider
     )
       throw unprocessable("Reconnect cannot change providers");
-    if (reconnect && !sameRoutingEndpoint((reconnect.connection.config.ai as AiConnectionMetadata).routing, routing))
-      throw unprocessable("Reconnect must retain this connection’s routing. Create another connection to change its destination.");
+    const routingChanged = Boolean(
+      reconnect && !sameRoutingEndpoint(
+        (reconnect.connection.config.ai as AiConnectionMetadata).routing,
+        routing,
+      ),
+    );
     if (
       reconnect &&
       ((reconnect.connection.config.ai as AiConnectionMetadata).method !==
@@ -935,8 +939,13 @@ export function aiConnectionService(db: Db) {
         .select()
         .from(toolConnections)
         .where(eq(toolConnections.id, id));
-      if (reconnect && credentialChanged)
-        await markAiDeploymentsStale(tx as unknown as Db, companyId, id, reconnect.connection.credentialEpoch);
+      if (reconnect && (credentialChanged || routingChanged))
+        await markAiDeploymentsStale(
+          tx as unknown as Db,
+          companyId,
+          id,
+          credentialChanged ? reconnect.connection.credentialEpoch : undefined,
+        );
       await syncConnectionCredentialBindings(tx, savedConnection, refs);
       if (input.ownership === "personal" && !routing) {
         await tx
@@ -1107,6 +1116,15 @@ export function aiConnectionService(db: Db) {
         if (!connection) return;
         const metadata = aiConnectionMetadataSchema.safeParse(connection.config.ai);
         if (!metadata.success || metadata.data.provider !== attribution.provider || metadata.data.method !== attribution.method) return;
+        if (metadata.data.routing && ["gateway", "local"].includes(metadata.data.routing.kind)) {
+          const [verifiedDeployment] = await tx.select({ id: aiDeployments.id }).from(aiDeployments).where(and(
+            eq(aiDeployments.companyId, input.companyId),
+            eq(aiDeployments.connectionId, connection.id),
+            eq(aiDeployments.status, "verified"),
+            eq(aiDeployments.verifiedCredentialEpoch, connection.credentialEpoch),
+          )).limit(1);
+          if (verifiedDeployment) return;
+        }
         const ref = grant.credentialSecretRefs.find((candidate) => candidate.configPath === "ai.credential");
         if (!ref) return;
         await tx.select({ id: companySecrets.id }).from(companySecrets).where(and(

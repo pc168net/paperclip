@@ -126,6 +126,12 @@ export function AiConnectionField({
   const method: AiAuthMethod = (value && value.mode !== "router" && value.mode !== "responsible_user" ? value.method : undefined)
     ?? accounts.data?.connections.find((account) => account.provider === provider && account.isDefault)?.method
     ?? (provider === "openrouter" || provider === "google" ? "api_key" : "subscription");
+  const selectedConnection = value && value.mode !== "responsible_user" && value.mode !== "router"
+    ? accounts.data?.connections.find((account) => account.id === value.connectionId && account.grantId === value.grantId)
+    : undefined;
+  const deploymentBinding = value && value.mode !== "responsible_user" && value.mode !== "router" ? value : undefined;
+  const deploymentOnly = connectedOnly || Boolean(selectedConnection?.routing && ["gateway", "local"].includes(selectedConnection.routing.kind));
+  const verifiedDeployments = selectedConnection?.deployments?.filter((deployment) => deployment.status === "verified") ?? [];
   const compatiblePools = agentId ? accounts.data?.pools?.filter(pool => pool.enabled && pool.members.some(member => isAiConnectionCompatible(member.binding, routerAdapterType ?? adapterType, member.profile.model, member.profile.provider, member.profile.acpxAgent))) ?? [] : [];
   if (!provider) return null;
   if (legacy && !value && !adopting)
@@ -170,11 +176,27 @@ export function AiConnectionField({
           changeBinding(aiConnectionBindingSchema.parse(binding))
         }
         onConnect={() => openConnection()}
-        onReconnect={!connectedOnly && (!value || value.mode === "responsible_user") && personalDefault && personalDefault.status !== "connected" ? () => openConnection(personalDefault) : undefined}
-        onManageConnection={connectedOnly ? undefined : connection => openConnection({ ...connection, isDefault: connection.isDefault ?? false })}
+        onReconnect={!deploymentOnly && (!value || value.mode === "responsible_user") && personalDefault && personalDefault.status !== "connected" ? () => openConnection(personalDefault) : undefined}
+        onManageConnection={deploymentOnly ? undefined : connection => openConnection({ ...connection, isDefault: connection.isDefault ?? false })}
         onRetry={() => void accounts.refetch()}
-        connectedOnly={connectedOnly}
+        connectedOnly={deploymentOnly}
       />}
+      {deploymentOnly && selectedConnection && verifiedDeployments.length > 0 && deploymentBinding && (
+        <label className="block space-y-1 text-sm">
+          Verified deployment
+          <select
+            className="block w-full rounded-md border bg-background px-3 py-2"
+            aria-label="Verified deployment"
+            value={deploymentBinding.deploymentId ?? verifiedDeployments[0]!.id}
+            onChange={(event) => onChange({ ...deploymentBinding, deploymentId: event.target.value })}
+            disabled={readOnly}
+          >
+            {verifiedDeployments.map((deployment) => (
+              <option key={deployment.id} value={deployment.id}>{deployment.modelId}</option>
+            ))}
+          </select>
+        </label>
+      )}
       <Dialog
         open={Boolean(pendingAdoption)}
         onOpenChange={(open) => {

@@ -233,7 +233,7 @@ describeEmbeddedPostgres("managed AI deployment resolution", () => {
     }
   });
 
-  it("passes a resolved deployment model through managed runtime preparation", async () => {
+  it("uses a verified deployment protocol over a stale connection route during managed runtime preparation", async () => {
     database = await startEmbeddedPostgresTestDatabase("paperclip-ai-connections-service-");
     try {
       const db = createDb(database.connectionString);
@@ -241,13 +241,14 @@ describeEmbeddedPostgres("managed AI deployment resolution", () => {
       await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: "PCL" });
       await db.insert(companyMemberships).values({ companyId, principalId: "alice", principalType: "user", status: "active", membershipRole: "member" });
       const service = aiConnectionService(db);
+      const staleChatRouting = { ...routing, protocol: "chat" as const };
       const created = await service.save(companyId, "alice", {
         provider: "openai",
         method: "api_key",
         ownership: "shared",
         name: "Managed custom",
         apiKey: "stored-secret",
-        routing,
+        routing: staleChatRouting,
         agentIds: [],
         allAgents: true,
       }, "stored-secret");
@@ -283,7 +284,7 @@ describeEmbeddedPostgres("managed AI deployment resolution", () => {
         config: {
           model: "gpt-5.6-luna",
           provider: "custom",
-          managedAiRouting: routing,
+          managedAiRouting: staleChatRouting,
           env: { PAPERCLIP_AI_PROVIDER_KEY: "stored-secret" },
         },
       });
@@ -297,6 +298,7 @@ describeEmbeddedPostgres("managed AI deployment resolution", () => {
       });
       expect(runtime.config).toMatchObject({
         model: "azure-deployment",
+        managedAiRouting: expect.objectContaining({ protocol: "responses" }),
         managedAiConnection: expect.objectContaining({ deploymentId, modelId: "azure-deployment", protocol: "responses" }),
       });
     } finally {

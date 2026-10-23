@@ -6,7 +6,6 @@ import type {
 import { aiProviderRoutingSchema, type AiProviderRouting } from "@paperclipai/shared";
 import { parseObject } from "@paperclipai/adapter-utils/server-utils";
 import { unprocessable } from "../errors.js";
-import { discoverAiGateway } from "../services/ai-api-key-test.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -37,10 +36,13 @@ export async function testCustomEnvironment(
   const env = parseObject(config.env);
   const credential = route.auth === "none" ? "" : typeof env.PAPERCLIP_AI_PROVIDER_KEY === "string" ? env.PAPERCLIP_AI_PROVIDER_KEY : "";
   try {
-    const discovery = await discoverAiGateway(credential, route);
+    // Connection setup owns /models discovery. Repeating it here makes an
+    // already-selected connection fail on gateways whose catalog endpoint is
+    // intermittent or differs from their inference route. The real request
+    // below is the authoritative model and credential verification.
     const selectedModel = typeof config.model === "string" && config.model.trim() ? config.model.trim() : route.models[0]?.id;
-    if (selectedModel && !discovery.models.some((model) => model.id === selectedModel)) {
-      throw unprocessable("Model or deployment does not exist at this endpoint.", { code: "ai_connection_model_not_found" });
+    if (!selectedModel) {
+      throw unprocessable("This connection has no configured model. Reconnect it in Connectors and choose a model or deployment.", { code: "ai_connection_model_not_found" });
     }
     // OPTIONS is commonly disabled by Azure-compatible gateways. Verify the
     // selected protocol with a harmless request instead of treating an OPTIONS
@@ -56,8 +58,19 @@ export async function testCustomEnvironment(
         ? { model: selectedModel, input: "ping", max_output_tokens: 16 }
         : { model: selectedModel, messages: [{ role: "user", content: "ping" }], max_tokens: 1 }),
     });
-    await protocolResponse.body?.cancel();
+    const responseText = await protocolResponse.text();
     if ([401, 403, 404].includes(protocolResponse.status)) {
+      let providerMessage = "";
+      try {
+        const payload = JSON.parse(responseText) as { error?: { message?: unknown } };
+        providerMessage = typeof payload.error?.message === "string" ? payload.error.message : "";
+      } catch { /* The status-based diagnostic below is sufficient. */ }
+      if (protocolResponse.status === 401 || protocolResponse.status === 403) {
+        throw unprocessable("API key is invalid for this endpoint.", { code: "ai_connection_api_key_rejected" });
+      }
+      if (/\b(?:model|deployment)\b.{0,80}\b(?:not found|does not exist|unavailable)\b|\b(?:not found|does not exist|unavailable)\b.{0,80}\b(?:model|deployment)\b/i.test(providerMessage)) {
+        throw unprocessable("Model or deployment does not exist at this endpoint.", { code: "ai_connection_model_not_found" });
+      }
       throw unprocessable(`The endpoint does not support ${route.protocol === "responses" ? "the OpenAI Responses protocol" : "Chat Completions"}.`, { code: "ai_connection_protocol_unsupported" });
     }
     checks.push({ code: "custom_endpoint_reachable", level: "info", message: "Custom endpoint and credentials were verified." });

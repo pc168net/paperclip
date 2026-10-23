@@ -424,6 +424,104 @@ describe("managed AI connections", () => {
       expect(await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, ref.secretId))).toHaveLength(2);
     } finally { request.mockRestore(); await oldRun.cleanup(); await nextRun?.cleanup(); await journal.clear(); }
   });
+  it("does not disable a verified custom deployment after an adapter authentication failure", async () => {
+    const userId = "verified-deployment-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const account = await service.save(companyId, userId, {
+      provider: "openai", method: "api_key", ownership: "shared", name: "Verified Azure",
+      apiKey: "fixture-key", agentIds: [], allAgents: true,
+      routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://resource.services.ai.azure.com/openai/v1", models: [] },
+    }, "fixture-key");
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, account.connectionId));
+    const [deployment] = await db.insert(aiDeployments).values({
+      companyId, connectionId: account.connectionId, modelId: "azure-prod", protocol: "responses", status: "verified",
+      verifiedCredentialEpoch: connection!.credentialEpoch, verifiedAt: new Date(), createdByUserId: userId,
+    }).returning();
+    const binding = { provider: "openai" as const, method: "api_key" as const, mode: "shared" as const, connectionId: account.connectionId, grantId: account.grantId, deploymentId: deployment!.id };
+    const runtime = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: userId, adapterType: "codex_local", binding, config: {} });
+    try {
+      await service.markAuthenticationFailed({ companyId, agentId, runStartedAt: new Date(), attribution: { ...runtime.attribution, identity: runtime.identity } });
+      const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId));
+      const [savedConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, account.connectionId));
+      expect(grant?.status).toBe("active");
+      expect(savedConnection?.healthStatus).toBe("ok");
+    } finally {
+      await runtime.cleanup();
+    }
+  });
+
+  it("saves a verified custom deployment binding without a harness hello probe", async () => {
+    const { agentRoutes } = await import("../routes/agents.js");
+    const { requireServerAdapter } = await import("../adapters/index.js");
+    const owner = "verified-deployment-save-owner";
+    const id = randomUUID();
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    await db.insert(agents).values({
+      id,
+      companyId,
+      name: "Verified deployment save",
+      adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex", model: "azure-prod" },
+    });
+    const account = await service.save(companyId, owner, {
+      provider: "openai", method: "api_key", ownership: "shared", name: "Verified Azure save",
+      apiKey: "fixture-key", agentIds: [], allAgents: true,
+      routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://resource.services.ai.azure.com/openai/v1", models: [] },
+    }, "fixture-key");
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, account.connectionId));
+    const [deployment] = await db.insert(aiDeployments).values({
+      companyId,
+      connectionId: account.connectionId,
+      modelId: "azure-prod",
+      protocol: "responses",
+      status: "verified",
+      verifiedCredentialEpoch: connection!.credentialEpoch,
+      verifiedAt: new Date(),
+      createdByUserId: owner,
+    }).returning();
+    const probe = vi.spyOn(requireServerAdapter("paperclip_runner"), "testEnvironment")
+      .mockResolvedValue({
+        adapterType: "paperclip_runner",
+        status: "fail",
+        testedAt: new Date().toISOString(),
+        checks: [{ code: "codex_hello_probe_auth_required", level: "error", message: "fixture failure" }],
+      });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "local_implicit", userId: owner, companyIds: [companyId] };
+      next();
+    });
+    app.use("/api", agentRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+      res.status(error.status ?? 500).json({ error: error.message });
+    });
+    try {
+      const response = await request(app).patch(`/api/agents/${id}`).send({
+        runtimeConfig: {
+          aiConnection: {
+            provider: "openai",
+            method: "api_key",
+            mode: "shared",
+            connectionId: account.connectionId,
+            grantId: account.grantId,
+            deploymentId: deployment!.id,
+          },
+        },
+      });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect((await db.select().from(agents).where(eq(agents.id, id)))[0]!.runtimeConfig.aiConnection).toEqual({
+        provider: "openai",
+        method: "api_key",
+        mode: "shared",
+        connectionId: account.connectionId,
+        grantId: account.grantId,
+        deploymentId: deployment!.id,
+      });
+    } finally {
+      probe.mockRestore();
+    }
+  });
 
   it.each(["rollback", "lost_commit_reply"] as const)("automatically saves one exchanged token across %s", async (failure) => {
     const owner = `quota-once-${failure}`;
@@ -1707,8 +1805,18 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       apiKey: "owner-secret",
       agentIds: [],
       allAgents: true,
-      routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://owner.example/v1", models: [{ id: "owner-deployment" }] },
-    }, "owner-secret");
+       routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://owner.example/v1", models: [{ id: "owner-deployment" }] },
+     }, "owner-secret");
+    const [verifiedDeployment] = await db.insert(aiDeployments).values({
+      companyId: reconnectCompanyId,
+      connectionId: account.connectionId,
+      modelId: "owner-deployment",
+      protocol: "responses",
+      status: "verified",
+      verifiedCredentialEpoch: 1,
+      verifiedAt: new Date(),
+      createdByUserId: owner,
+    }).returning();
     const result = await service.save(reconnectCompanyId, manager, {
       provider: "openai",
       method: "api_key",
@@ -1718,9 +1826,13 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       agentIds: [],
       allAgents: true,
       connectionId: account.connectionId,
-      routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://owner.example/v1", models: [{ id: "owner-deployment" }] },
+       routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://twsoft-claw.services.ai.azure.com/openai/v1", models: [] },
     }, "manager-secret");
-    expect(result).toMatchObject({ connectionId: account.connectionId, grantId: account.grantId });
+     expect(result).toMatchObject({ connectionId: account.connectionId, grantId: account.grantId });
+     const [savedConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, account.connectionId));
+    expect(savedConnection?.config).toMatchObject({ ai: { routing: { baseUrl: "https://twsoft-claw.services.ai.azure.com/openai/v1" } } });
+    const [staledDeployment] = await db.select().from(aiDeployments).where(eq(aiDeployments.id, verifiedDeployment!.id));
+    expect(staledDeployment).toMatchObject({ status: "stale", verifiedAt: null });
     const selected = await service.select({ companyId: reconnectCompanyId, agentId: reconnectAgentId, userId: owner, adapterType: "codex_local", binding: { provider: "openai", method: "api_key", mode: "delegated", ...result } });
     expect(await service.credential(selected)).toBe("manager-secret");
   });

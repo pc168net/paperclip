@@ -195,6 +195,29 @@ command = "untrusted-command"
     await expect(stat(join(target, "auth.json"))).rejects.toThrow();
   });
 
+  it("preserves the managed Azure api-key header for an isolated Codex session", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-routing-azure-home-"));
+    roots.push(root);
+    const source = join(root, "source");
+    const target = join(root, "isolated");
+    await mkdir(source);
+    await writeFile(join(source, "config.toml"), `model_provider = "paperclip"
+[model_providers.paperclip]
+name = "Selected Azure connection"
+base_url = "https://resource.services.ai.azure.com/openai/v1"
+wire_api = "responses"
+requires_openai_auth = false
+env_http_headers = { "api-key" = "PAPERCLIP_AI_PROVIDER_KEY" }
+`);
+
+    await prepareIsolatedCodexHome({ context: null, codexHome: target, sourceCodexHome: source });
+
+    const config = await readFile(join(target, "config.toml"), "utf8");
+    expect(config).toContain('base_url = "https://resource.services.ai.azure.com/openai/v1"');
+    expect(config).toContain('env_http_headers = { "api-key" = "PAPERCLIP_AI_PROVIDER_KEY" }');
+    await expect(stat(join(target, "auth.json"))).rejects.toThrow();
+  });
+
   it("rejects repeated assignments without changing the current assignment", async () => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-runtime-repeat-"));
     roots.push(root);

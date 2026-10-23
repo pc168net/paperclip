@@ -6,6 +6,7 @@ const reasons = [
   "ai_connection_missing",
   "ai_connection_incompatible",
   "ai_connection_unavailable",
+  "ai_connection_deployment_missing",
   "ai_connection_credential_not_shared",
 ] as const;
 type AiConnectionConfigurationReason = typeof reasons[number];

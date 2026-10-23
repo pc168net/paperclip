@@ -51,7 +51,7 @@ afterEach(async () => {
   container.remove();
 });
 
-async function mount(connections: AiManagedConnectionSummary[], value?: Parameters<typeof AiConnectionSelect>[0]["value"]) {
+async function mount(connections: AiManagedConnectionSummary[], value?: Parameters<typeof AiConnectionSelect>[0]["value"], connectedOnly = true) {
   await act(async () => {
     root.render(
       <QueryClientProvider client={client}>
@@ -63,7 +63,7 @@ async function mount(connections: AiManagedConnectionSummary[], value?: Paramete
           agentId="agent-1"
           agentName="Nova"
           adapterType="codex_local"
-          connectedOnly
+          connectedOnly={connectedOnly}
           onChange={onChange}
           onConnect={vi.fn()}
         />
@@ -72,6 +72,27 @@ async function mount(connections: AiManagedConnectionSummary[], value?: Paramete
   });
   await settle();
 }
+
+it("hides unhealthy custom connectors from agent model choices", async () => {
+  const verified = {
+    id: "deployment-verified",
+    companyId: "company-1",
+    connectionId: "needs-attention",
+    modelId: "azure-prod",
+    displayName: "Azure Prod",
+    protocol: "responses" as const,
+    status: "verified" as const,
+    verifiedCredentialEpoch: 1,
+    lastError: null,
+    verifiedAt: null,
+    createdByUserId: null,
+  };
+  await mount([connection({ id: "needs-attention", name: "Needs Attention", status: "needs_attention", deployments: [verified] })], undefined, false);
+  openSelect();
+  await settle();
+  expect(Array.from(document.querySelectorAll('[role="option"]')).some((node) => node.textContent?.includes("Needs Attention"))).toBe(false);
+  expect(container.textContent).not.toContain("Reconnect");
+});
 
 function openSelect() {
   const trigger = container.querySelector('[role="combobox"][aria-label="Connection"]') as HTMLElement;
@@ -109,24 +130,13 @@ it("shows only verified same-company deployments and omits plain/default options
 
   const options = Array.from(document.querySelectorAll('[role="option"]')).map((node) => node.textContent ?? "");
   expect(options).toHaveLength(1);
-  expect(options.some((text) => text.includes("Company OpenAI") && text.includes("azure-prod"))).toBe(true);
+  expect(options).toEqual(["Company OpenAI"]);
   expect(options.some((text) => text.includes("azure-stale"))).toBe(false);
   expect(options.some((text) => text.includes("Plain AI"))).toBe(false);
   expect(options.some((text) => text.includes("Other Company"))).toBe(false);
   expect(container.textContent).not.toContain("Responsible user’s default");
 
-  const choice = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find((node) => node.textContent?.includes("azure-prod"));
-  expect(choice).toBeTruthy();
-  act(() => choice!.click());
-
-  expect(onChange).toHaveBeenCalledWith({
-    provider: "openai",
-    method: "api_key",
-    mode: "shared",
-    connectionId: "connection-1",
-    grantId: "grant-1",
-    deploymentId: "deployment-verified",
-  });
+  expect(onChange).not.toHaveBeenCalled();
 });
 
 it("rejects stale and failed deployments in connected-only mode", async () => {
@@ -174,19 +184,8 @@ it("keeps a legacy shared binding usable before a deployment is chosen", async (
   await settle();
 
   const options = Array.from(document.querySelectorAll('[role="option"]')).map((node) => node.textContent ?? "");
-  expect(options).toEqual([expect.stringContaining("azure-prod")]);
-  const choice = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find((node) => node.textContent?.includes("azure-prod"));
-  expect(choice).toBeTruthy();
-  act(() => choice!.click());
-
-  expect(onChange).toHaveBeenCalledWith({
-    provider: "openai",
-    method: "api_key",
-    mode: "shared",
-    connectionId: "connection-1",
-    grantId: "grant-1",
-    deploymentId: "deployment-verified",
-  });
+  expect(options).toEqual(["Company OpenAI"]);
+  expect(onChange).not.toHaveBeenCalled();
 });
 
 it("shows the verified deployment guidance when none are available", async () => {

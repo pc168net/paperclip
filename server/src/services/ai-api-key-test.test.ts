@@ -55,6 +55,15 @@ describe("validateAiApiKey custom gateways", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  it("does not use the Azure services endpoint as a model catalog", async () => {
+    const request = vi.fn(async () => new Response(null, { status: 401 }));
+    await expect(validateAiApiKey("openai", "fixture-key", request, {
+      ...gateway(),
+      baseUrl: "https://twsoft-claw.services.ai.azure.com/openai/v1",
+    })).resolves.toBeUndefined();
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it.each([
     [{ models: [{ id: "gpt-test", label: "Test model" }] }, "object models"],
     [{ models: ["gpt-test"] }, "string models"],

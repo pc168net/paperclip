@@ -56,6 +56,21 @@ describe("custom HTTP adapter", () => {
     vi.unstubAllGlobals();
   });
 
+  it("classifies a rejected provider request as safe to retry", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      error: { message: "Unsupported parameter: 'max_tokens'" },
+    }), { status: 400 })));
+
+    const result = await executeCustom(context("chat"));
+
+    expect(result).toMatchObject({
+      exitCode: 1,
+      errorCode: "custom_request_rejected",
+      errorMessage: "Unsupported parameter: 'max_tokens'",
+    });
+    vi.unstubAllGlobals();
+  });
+
   it("uses the resolved deployment model instead of the first catalog entry", async () => {
     const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
       expect(JSON.parse(String(init.body))).toMatchObject({ model: "azure-deployment" });

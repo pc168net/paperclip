@@ -1,4 +1,4 @@
-import { discoverAiGateway, validateAiApiKey } from "../services/ai-api-key-test.js";
+import { discoverAiGateway, isAzureOpenAiGateway, validateAiApiKey } from "../services/ai-api-key-test.js";
 export { validateAiApiKey } from "../services/ai-api-key-test.js";
 import { supportsLocalAiLogin } from "../services/local-ai-login-policy.js";
 import { localAiLoginService } from "../services/local-ai-login.js";
@@ -421,7 +421,7 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
       if (!routingResult.success)
         throw unprocessable("Base URL is invalid.", { code: "ai_connection_base_url_invalid" });
       const routing = routingResult.data;
-      if (new URL(routing.baseUrl ?? "").hostname.endsWith(".openai.azure.com"))
+      if (isAzureOpenAiGateway(routing))
         throw unprocessable("Azure OpenAI model catalogs are not deployments. Save the connection, then add and verify its deployment.", { code: "ai_connection_models_unsupported" });
       if (routing.auth !== "none" && !input.apiKey?.trim()) throw unprocessable("Enter an API key before discovering models.", { code: "ai_connection_api_key_rejected" });
       res.setHeader("Cache-Control", "no-store");
@@ -458,6 +458,9 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
     const [saved] = await db.update(aiDeployments).set({ status: result.ok ? "verified" : "failed", lastError: result.ok ? null : result.error.slice(0, 1024), verifiedAt: result.ok ? new Date() : null, verifiedCredentialEpoch: resolved.connection.credentialEpoch, updatedAt: new Date() })
       .where(and(eq(aiDeployments.companyId, companyId), eq(aiDeployments.connectionId, connectionId), eq(aiDeployments.id, deploymentId))).returning();
     if (!saved) throw notFound("AI deployment not found");
+    if (result.ok)
+      await db.update(toolConnections).set({ status: "active", enabled: true, healthStatus: "ok", healthMessage: null, updatedAt: new Date() })
+        .where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId)));
     await logActivity(db, { companyId, actorType: "user", actorId: userId, action: "ai_deployment.verified", entityType: "ai_deployment", entityId: deploymentId, details: { connectionId, status: saved!.status } });
     res.json(deploymentSummary(saved!));
   });
@@ -484,7 +487,7 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
       );
       if (!account?.routing || account.routing.kind !== "gateway") throw notFound("Custom AI connection not found");
       try {
-        if (new URL(account.routing.baseUrl ?? "").hostname.endsWith(".openai.azure.com"))
+        if (isAzureOpenAiGateway(account.routing))
           throw unprocessable("Azure OpenAI model catalogs are not deployments. Add and verify a deployment instead.", { code: "ai_connection_models_unsupported" });
       } catch (error) {
         if (error instanceof Error && "status" in error) throw error;

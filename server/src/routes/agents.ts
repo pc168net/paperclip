@@ -3067,7 +3067,11 @@ export function agentRoutes(
       throw error;
     });
     if (!selection) return undefined;
-    if (test) {
+    // Deployment verification already proved this connection's selected endpoint,
+    // credential, model, and protocol. Save still validates company access,
+    // grant, health, and credential epoch above, but a harness-specific hello
+    // probe must remain an explicit diagnostic rather than block this binding.
+    if (test && !selection.deployment) {
       const testEnvironmentId = await resolveAdapterTestEnvironmentId(companyId, environmentId);
       if (testEnvironmentId) await assertAdapterTestEnvironmentForCompany(companyId, testEnvironmentId);
       const target = await resolveAdapterTestExecutionContext({ companyId, adapterType, environmentId: testEnvironmentId });
