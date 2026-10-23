@@ -111,6 +111,9 @@ export function AiConnectionDeploymentManager({
                 <p className="text-xs text-muted-foreground">
                   {deployment.protocol === "responses" ? "Responses" : "Chat Completions"} · {deployment.status === "verified" ? "Verified" : deployment.status === "stale" ? "Stale" : "Failed"}
                 </p>
+                {deployment.status !== "verified" && deployment.lastError ? (
+                  <p className="break-words text-xs text-destructive">{deployment.lastError}</p>
+                ) : null}
               </div>
               {canManage ? (
                 <div className="flex flex-wrap gap-2">

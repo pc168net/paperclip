@@ -172,6 +172,8 @@ it("shows a read-only verified list with no secret fields or actions", async () 
     expect(container.textContent).not.toContain("Deployment name");
     expect(container.textContent).not.toContain("Verify");
     expect(container.textContent).not.toContain("Remove");
+    expect(container.textContent).not.toContain("azure-failed");
+    expect(container.textContent).not.toContain("Denied");
     expect(container.textContent).not.toContain("Azure OpenAI model catalogs do not identify this resource’s deployments.");
   } finally {
     await unmount();
@@ -195,6 +197,66 @@ it("shows empty and error states for deployment loading", async () => {
     await mount();
     expect(container.textContent).toContain("Could not load deployments.");
     expect(container.textContent).toContain("Retry");
+  } finally {
+    await unmount();
+  }
+});
+
+it("shows the filtered verification error for a failed deployment", async () => {
+  const { container, mount, unmount } = render(
+    <AiConnectionDeploymentManager
+      companyId="company"
+      connectionId="connection"
+      grantId="grant"
+      canManage
+      deployments={[{
+        id: "failed",
+        companyId: "company",
+        connectionId: "connection",
+        modelId: "azure-failed",
+        displayName: null,
+        protocol: "chat",
+        status: "failed",
+        verifiedCredentialEpoch: 1,
+        lastError: "The stored credential was rejected.",
+        verifiedAt: null,
+        createdByUserId: "board",
+      }]}
+    />,
+  );
+  try {
+    await mount();
+    expect(container.textContent).toContain("The stored credential was rejected.");
+  } finally {
+    await unmount();
+  }
+});
+
+it("shows the filtered verification error for a stale deployment", async () => {
+  const { container, mount, unmount } = render(
+    <AiConnectionDeploymentManager
+      companyId="company"
+      connectionId="connection"
+      grantId="grant"
+      canManage
+      deployments={[{
+        id: "stale",
+        companyId: "company",
+        connectionId: "connection",
+        modelId: "azure-stale",
+        displayName: null,
+        protocol: "responses",
+        status: "stale",
+        verifiedCredentialEpoch: 1,
+        lastError: "The stored credential was rejected.",
+        verifiedAt: null,
+        createdByUserId: "board",
+      }]}
+    />,
+  );
+  try {
+    await mount();
+    expect(container.textContent).toContain("The stored credential was rejected.");
   } finally {
     await unmount();
   }
