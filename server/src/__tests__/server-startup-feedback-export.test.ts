@@ -972,6 +972,18 @@ describe("startServer feedback export wiring", () => {
     );
   });
 
+  it("closes the bound listener when assigned-issue recovery fails unexpectedly", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
+    heartbeatServiceMock.reconcileStrandedAssignedIssues.mockRejectedValueOnce(
+      new Error("unexpected assigned-issue recovery failure"),
+    );
+
+    await expect(startServer()).rejects.toThrow("unexpected assigned-issue recovery failure");
+
+    expect(fakeServer.listen).toHaveBeenCalledTimes(1);
+    expect(fakeServer.close).toHaveBeenCalledTimes(1);
+  });
+
   it("closes the bound listener when native startup recovery fails", async () => {
     loadConfigMock.mockReturnValue(buildTestConfig({
       heartbeatSchedulerEnabled: true,

@@ -30,7 +30,7 @@ evidence whenever it is contained in future.
 
 - Keep server UI/API startup available when one recovery action has an irreconcilable blocker graph.
 - Never bypass blocker-cycle validation or mutate graph state after validation fails.
-- Persist a terminal, inspectable outcome for the specific recovery action so periodic recovery does not retry it forever.
+- Persist an automatic-retry-terminal, board-visible manual hold for the specific recovery action so periodic recovery does not retry it forever.
 - Preserve company isolation and existing execution-reconciliation holds.
 - Provide explicit operator evidence identifying the action, source issue, and safe reason it needs manual attention.
 - Repair the existing affected action(s) through the normal recovery-action service, not direct database edits.
@@ -50,7 +50,7 @@ Catch every startup recovery error in `server/src/index.ts` and log it. This kee
 
 ### 2. Recovery-scoped conflict disposition (chosen)
 
-In `reconcileActiveRecoveryActions()`, isolate the specific blocker-state restoration. When `issuesSvc.update()` returns the known graph-conflict validation error, preserve the issue and relations, terminalize that action through the recovery-action service with a distinct outcome/resolution note, and continue processing other actions. Make the startup scheduler treat the aggregate reconciliation as successful when all individual conflicts are contained. Add public-path regression coverage for both startup and periodic recovery.
+In `reconcileActiveRecoveryActions()`, isolate the specific blocker-state restoration. When `issuesSvc.update()` returns the known graph-conflict validation error, preserve the issue and relations, move that action to a board-visible manual hold through the recovery-action service with a distinct outcome/resolution note, and continue processing other actions. Make the startup scheduler treat the aggregate reconciliation as successful when all individual conflicts are contained. Add public-path regression coverage for both startup and periodic recovery.
 
 This keeps dependency validation authoritative, bounds retries, and makes operator attention explicit without treating a data conflict as a server-wide failure.
 
@@ -81,7 +81,7 @@ Add approach 2 and a periodic scan of all issue relations for cycles/orphans/cro
 ### Historical data remediation
 
 - Identify graph-conflict holds through the existing active recovery-action query/service surface.
-- Do not automatically terminalize the currently observed `TWS-41` / `TWS-36` rows: their native execution cause requires board-supplied execution reconciliation. Do not delete rows with SQL.
+- Do not automatically move the currently observed `TWS-41` / `TWS-36` rows to a board-visible manual hold: their native execution cause requires board-supplied execution reconciliation. Do not delete rows with SQL.
 - The operator decides any later task-relationship edit separately. The automatic repair does not guess which relation to remove.
 
 ## Interfaces and Files
@@ -91,7 +91,7 @@ Add approach 2 and a periodic scan of all issue relations for cycles/orphans/cro
 - `server/src/services/recovery/*.test.ts` — recovery reconciliation regression for stale action/healthy-child conflict and bounded retry behavior.
 - `server/src/index.ts` and its startup tests — prove a contained recovery conflict does not reject server startup, while unexpected recovery failures retain current behavior.
 - `server/src/services/issues.ts` tests — preserve current cycle validator behavior as the graph authority.
-- Existing recovery-action service/schema — reuse terminal status/outcome fields; no schema migration unless inspection proves its existing enum/contract cannot represent the chosen terminal outcome.
+- Existing recovery-action service/schema — reuse the existing escalated/blocked status and outcome fields; no schema migration unless inspection proves its existing enum/contract cannot represent the chosen manual hold.
 
 ## Verification
 
@@ -99,7 +99,7 @@ Add approach 2 and a periodic scan of all issue relations for cycles/orphans/cro
 - Startup integration test: the contained action does not prevent `/api/health` startup readiness or periodic scheduling.
 - Regression test: an unexpected `issuesSvc.update()` failure still propagates/logs as degraded recovery rather than being classified as a graph conflict.
 - Existing issue relation cycle tests continue passing.
-- Live local verification: start the default instance without recovery suppression, confirm health is ready, confirm the action is terminalized once, and confirm task scheduling is enabled.
+- Live local verification: start the default instance without recovery suppression, confirm health is ready, confirm the action is moved to its automatic-retry-terminal board-visible manual hold once, and confirm task scheduling is enabled.
 
 ## Risks and Mitigations
 

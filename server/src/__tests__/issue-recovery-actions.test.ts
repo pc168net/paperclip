@@ -39,6 +39,8 @@ import { workspaceOperationService, isNativeWorkspaceFinalizationOperationActive
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { issueService } from "../services/issues.js";
+import * as issueServiceModule from "../services/issues.js";
+import { HttpError } from "../errors.js";
 import { withNativeWorkspaceFinalizationOwnership } from "../services/native-runtime/native-workspace-finalization-ownership.js";
 import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/successful-run-handoff.js";
 
@@ -323,6 +325,101 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       status: "escalated",
       outcome: "blocked",
       resolutionNote: "blocker_graph_conflict",
+    });
+  });
+
+  it("does not overwrite an action resolved before blocker-conflict escalation", async () => {
+    const { companyId, sourceIssueId } = await seedCompany();
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "board",
+      cause: "stranded_assigned_issue",
+      fingerprint: "resolved-before-blocker-conflict",
+      nextAction: "Restore the healthy child blocker.",
+    });
+    await issueRecoveryActionService(db).resolveActiveForIssue({
+      companyId,
+      sourceIssueId,
+      actionId: action.id,
+      status: "resolved",
+      outcome: "restored",
+      resolutionNote: "concurrent_resolution",
+    });
+
+    const escalated = await issueRecoveryActionService(db).escalateForBlockerGraphConflict({
+      companyId,
+      sourceIssueId,
+      actionId: action.id,
+      blockedByIssueIds: [randomUUID()],
+    });
+    const [stored] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+
+    expect(escalated).toBeNull();
+    expect(stored).toMatchObject({
+      status: "resolved",
+      outcome: "restored",
+      resolutionNote: "concurrent_resolution",
+    });
+    expect(stored?.evidence).not.toHaveProperty("blockerGraphConflict");
+  });
+
+  it("rethrows a non-cycle 422 from the blocker restoration write without escalation", async () => {
+    const { companyId, coderId, sourceIssueId, prefix } = await seedCompany();
+    const childIssueId = randomUUID();
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, sourceIssueId));
+    await db.insert(issues).values({
+      id: childIssueId,
+      companyId,
+      parentId: sourceIssueId,
+      title: "Healthy delegated child",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: coderId,
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+    });
+    await seedHeartbeatRun({
+      companyId,
+      agentId: coderId,
+      runId: randomUUID(),
+      issueId: childIssueId,
+    });
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "board",
+      cause: "stranded_assigned_issue",
+      fingerprint: "non-cycle-422",
+      nextAction: "Restore the healthy child blocker.",
+    });
+    const realIssueService = issueService(db);
+    const update = vi.fn(async () => {
+      throw new HttpError(422, "Blocked-by issues must belong to the same company");
+    });
+    const issueServiceSpy = vi.spyOn(issueServiceModule, "issueService").mockReturnValue({
+      ...realIssueService,
+      update,
+    });
+
+    try {
+      const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+      await expect(recovery.reconcileStrandedAssignedIssues()).rejects.toThrow(
+        "Blocked-by issues must belong to the same company",
+      );
+    } finally {
+      issueServiceSpy.mockRestore();
+    }
+
+    const [stored] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+    expect(update).toHaveBeenCalledOnce();
+    expect(stored).toMatchObject({
+      status: "active",
+      outcome: null,
+      resolutionNote: null,
     });
   });
 
