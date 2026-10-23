@@ -6,6 +6,7 @@ import {
   buildCompanyUserProfileMap,
   buildIssueMentionOptions,
   buildMarkdownMentionOptions,
+  isAgentTaskTarget,
 } from "./company-members";
 
 const activeMember = (overrides: Partial<CompanyMember>): CompanyMember => ({
@@ -81,6 +82,50 @@ describe("company-members helpers", () => {
       { id: "agent:agent-1", name: "CodexCoder", kind: "agent", agentId: "agent-1", agentIcon: "code" },
       { id: "project:project-1", name: "Paperclip App", kind: "project", projectId: "project-1", projectColor: "#336699" },
     ]);
+  });
+
+  it("excludes custom agents without a deployment binding from task targets", () => {
+    expect(isAgentTaskTarget({
+      status: "idle",
+      adapterType: "custom_local",
+      runtimeConfig: {},
+    })).toBe(false);
+
+    expect(isAgentTaskTarget({
+      status: "idle",
+      adapterType: "custom_local",
+      runtimeConfig: {
+        aiConnection: {
+          mode: "shared",
+          provider: "openai",
+          method: "api_key",
+          connectionId: "11111111-1111-4111-8111-111111111111",
+          grantId: "22222222-2222-4222-8222-222222222222",
+          deploymentId: "33333333-3333-4333-8333-333333333333",
+        },
+      },
+    })).toBe(true);
+
+    expect(isAgentTaskTarget({
+      status: "idle",
+      adapterType: "custom_local",
+      runtimeConfig: {
+        aiConnection: {
+          mode: "shared",
+          provider: "openai",
+          method: "api_key",
+          connectionId: "not-a-uuid",
+          grantId: "not-a-uuid",
+          deploymentId: "not-a-uuid",
+        },
+      },
+    })).toBe(false);
+
+    expect(isAgentTaskTarget({
+      status: "idle",
+      adapterType: "codex_local",
+      runtimeConfig: {},
+    })).toBe(true);
   });
 
   it("builds issue mention options with identifier + title search text", () => {

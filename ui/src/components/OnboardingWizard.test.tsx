@@ -72,7 +72,7 @@ const mockAgentsApi = vi.hoisted(() => ({
       testedAt: new Date().toISOString(),
     }),
   ),
-  hire: vi.fn(async () => ({ agent: { id: "agent-1" }, approval: null })),
+  hire: vi.fn(async (): Promise<{ agent: { id: string; urlKey?: string }; approval: null }> => ({ agent: { id: "agent-1" }, approval: null })),
   // The hire step lists the company's agents first and adopts one that already
   // carries the typed name on the same source, so a wizard that reopens on the
   // agent step cannot hire "Ada 2". Empty by default: the company is new.
@@ -173,10 +173,11 @@ const mockAdapterRegistry = vi.hoisted(() => ({
 }));
 
 const mockRouterState = vi.hoisted(() => ({ pathname: "/" }));
+const mockNavigate = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/router", () => ({
   useLocation: () => ({ pathname: mockRouterState.pathname, search: "", hash: "", state: null }),
-  useNavigate: () => vi.fn(),
+  useNavigate: () => mockNavigate,
   useParams: () => ({}),
 }));
 vi.mock("../context/DialogContext", () => ({
@@ -257,15 +258,8 @@ import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, getEnvironmentCapabilities } from "@paperclipai/shared";
 import { CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
-import { ONBOARDING_STORAGE_KEY, OnboardingWizard, onboardingCustomHarness } from "./OnboardingWizard";
-
-describe("custom onboarding harness mapping", () => {
-  it("uses the custom runner for both supported gateway protocols", () => {
-    expect(onboardingCustomHarness("responses")).toBe("custom_local");
-    expect(onboardingCustomHarness("chat")).toBe("custom_local");
-  });
-});
-import { CONNECTED_HOLD_MS } from "./onboarding/onboarding-motion";
+import { ONBOARDING_STORAGE_KEY, OnboardingWizard } from "./OnboardingWizard";
+import { CONNECTED_HOLD_MS, SOURCE_COLLAPSE_MS } from "./onboarding/onboarding-motion";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -368,6 +362,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockSecretsApi.removeUserSecretDefinition.mockResolvedValue({ ok: true });
     window.localStorage.clear();
     mockRouterState.pathname = "/";
+    mockNavigate.mockReset();
     mockDialog.onboardingOpen = true;
     mockDialog.onboardingOptions = {};
     mockDialog.onboardingRouteDismissed = false;
@@ -2046,9 +2041,15 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
-    it("keeps the custom gateway fields on the custom source path", async () => {
+    it("defers custom gateway setup to the created agent runtime", async () => {
       mockAdapterRegistry.list = [];
-      const { root } = await openStep4({ adapterType: "custom_local" });
+      const { root } = await openStep4({
+        adapterType: "custom_local",
+        customProtocol: "chat",
+        customAuth: "api_key",
+        url: "https://legacy-gateway.example/v1",
+        model: "legacy-model",
+      });
 
       const customTile = [...document.body.querySelectorAll("button[aria-checked]")]
         .find(
@@ -2062,121 +2063,69 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       for (let i = 0; i < 4; i++) await flushReact();
 
-      expect(document.body.textContent).toContain("Base URL");
-      expect(document.body.textContent).toContain("Authentication");
-      expect(document.body.textContent).toContain("API protocol");
-      expect(document.body.textContent).toContain("Discover models");
-      expect(document.body.querySelector('[aria-label="Bearer token"]')).toBeTruthy();
-      expect([...document.body.querySelectorAll("button")].some((button) => button.textContent?.includes("Connect"))).toBe(true);
+      expect(document.body.textContent).toContain("Configure this agent’s model after it is created in Connectors.");
+      expect(document.body.querySelector("#onboarding-custom-base-url")).toBeNull();
+      expect(document.body.querySelector("#onboarding-custom-auth")).toBeNull();
+      expect(document.body.querySelector("#onboarding-custom-protocol")).toBeNull();
+      expect(document.body.querySelector("#onboarding-custom-model")).toBeNull();
+      expect(document.body.querySelector("#onboarding-custom-model-manual")).toBeNull();
+      expect(document.body.querySelector('input[aria-label="Bearer token"]')).toBeNull();
+      expect([...document.body.querySelectorAll("button")].some((button) => button.textContent?.includes("Discover models"))).toBe(false);
+      expect(managedApi.discoverCustom).not.toHaveBeenCalled();
+      const persistedDraft = JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!);
+      expect(persistedDraft).not.toHaveProperty("customProtocol");
+      expect(persistedDraft).not.toHaveProperty("customAuth");
+      expect(persistedDraft).not.toHaveProperty("url");
+      expect(persistedDraft.model).toBe("");
 
       await act(async () => root.unmount());
     });
 
-    it("binds the CEO to the saved personal custom connection without creating another one", async () => {
+    it("creates an unconfigured custom first agent and opens runtime configuration", async () => {
       mockAdapterRegistry.list = [];
-      managedApi.list.mockResolvedValue({
-        currentUserId: "user-1",
-        // An existing OpenAI default must not win over the custom gateway grant
-        // created from the credential entered in this flow.
-        connections: [{
-          id: "openai-default",
-          grantId: "openai-default-grant",
-          companyId: "company-new",
-          provider: "openai",
-          method: "api_key",
-          name: "Existing OpenAI default",
-          ownership: "personal",
-          ownerUserId: "user-1",
-          status: "connected",
-          isDefault: true,
-        } as never],
+      mockAgentsApi.hire.mockResolvedValueOnce({
+        agent: { id: "agent-1", urlKey: "custom-chief--agent-1" },
+        approval: null,
       });
       const { root } = await openStep4({ adapterType: "custom_local" });
-      const customTile = [...document.body.querySelectorAll("button[aria-checked]")]
-        .find((tile) => tile.textContent?.includes("Custom"));
-      expect(customTile).toBeTruthy();
-      await act(async () => customTile!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-      for (let i = 0; i < 5; i++) await flushReact();
+      try {
+        const customTile = [...document.body.querySelectorAll("button[aria-checked]")]
+          .find(
+            (tile): tile is HTMLButtonElement =>
+              tile instanceof HTMLButtonElement && tile.textContent?.includes("Custom") === true,
+          );
+        expect(customTile).toBeTruthy();
+        await act(async () => customTile!.click());
+        await act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, SOURCE_COLLAPSE_MS + 10));
+        });
+        for (let i = 0; i < 4; i++) await flushReact();
 
-      await act(async () => {
-        setControlledValue(document.querySelector("#onboarding-custom-base-url") as HTMLInputElement, "https://gateway.example/v1");
-        setControlledValue(document.querySelector("#onboarding-custom-model-manual") as HTMLInputElement, "gpt-4o-mini");
-        setControlledValue(document.querySelector('input[aria-label="Bearer token"]') as HTMLInputElement, "custom-secret");
-      });
-      await flushReact();
-      const connect = [...document.body.querySelectorAll("button")]
-        .find((button) => button.textContent?.trim() === "Connect") as HTMLButtonElement;
-      expect(connect.disabled).toBe(false);
-      await act(async () => connect.click());
-      for (let i = 0; i < 8; i++) await flushReact();
+        const connect = [...document.body.querySelectorAll("button")]
+          .find((button) => button.textContent?.trim() === "Connect");
+        expect(connect).toBeTruthy();
+        expect(connect!.disabled).toBe(false);
+        await act(async () => connect!.click());
+        for (let i = 0; i < 8; i++) await flushReact();
 
-      expect(managedApi.create).toHaveBeenCalledTimes(1);
-      expect(managedApi.create).toHaveBeenCalledWith("company-new", expect.objectContaining({
-        ownership: "personal",
-        routing: expect.objectContaining({ kind: "gateway", protocol: "responses", baseUrl: "https://gateway.example/v1" }),
-      }));
-      const hireBody = (mockAgentsApi.hire.mock.calls.at(-1) as unknown[])[1] as { runtimeConfig: { aiConnection: unknown } };
-      expect(hireBody.runtimeConfig.aiConnection).toEqual({
-        provider: "openai",
-        method: "api_key",
-        mode: "delegated",
-        connectionId: "managed-connection",
-        grantId: "managed-grant",
-      });
-      expect(mockAgentsApi.testEnvironment).toHaveBeenCalledWith("company-new", "custom_local", expect.any(Object));
-      expect((mockAgentsApi.hire.mock.calls.at(-1) as unknown[])[1]).toMatchObject({
-        adapterType: "custom_local",
-        adapterConfig: { provider: "custom", model: "gpt-4o-mini" },
-      });
-      expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+        expect(mockAgentsApi.hire).toHaveBeenCalledWith("company-new", expect.objectContaining({
+          adapterType: "custom_local",
+          adapterConfig: expect.not.objectContaining({ managedAiRouting: expect.anything() }),
+          runtimeConfig: expect.not.objectContaining({ aiConnection: expect.anything() }),
+        }));
+        expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
+        expect(document.body.textContent).toContain("needs a verified model connection before it can work.");
+        expect(document.body.textContent).not.toContain("is ready to work!");
+        const configure = [...document.body.querySelectorAll("button")]
+          .find((button) => button.textContent?.trim() === "Configure model");
+        expect(configure).toBeTruthy();
+        await act(async () => configure!.click());
 
-      await act(async () => root.unmount());
-    });
-
-    it.each([
-      ["api_key", "Azure API key (api-key header)", "Enter Azure API key"],
-      ["bearer", "Bearer token", "Enter bearer token"],
-    ] as const)("gates custom discovery until the %s credential is entered and never drafts it", async (auth, label, placeholder) => {
-      mockAdapterRegistry.list = [];
-      const secret = `custom-${auth}-secret`;
-      const { root } = await openStep4({ adapterType: "custom_local", customAuth: auth });
-      const customTile = [...document.body.querySelectorAll("button[aria-checked]")]
-        .find((tile) => tile.textContent?.includes("Custom"));
-      expect(customTile).toBeTruthy();
-      await act(async () => customTile!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-      for (let i = 0; i < 5; i++) await flushReact();
-
-      const keyField = document.body.querySelector(`input[aria-label="${label}"]`) as HTMLInputElement;
-      expect(keyField).toBeTruthy();
-      expect(keyField.type).toBe("password");
-      expect(keyField.placeholder).toBe(placeholder);
-      const discover = [...document.body.querySelectorAll("button")]
-        .find((button) => button.textContent?.includes("Discover models")) as HTMLButtonElement;
-      const connect = [...document.body.querySelectorAll("button")]
-        .find((button) => button.textContent?.trim() === "Connect") as HTMLButtonElement;
-      expect(discover.disabled).toBe(true);
-      expect(connect.disabled).toBe(true);
-
-      await act(async () => {
-        setControlledValue(document.querySelector("#onboarding-custom-base-url") as HTMLInputElement, "https://gateway.example/v1");
-        setControlledValue(document.querySelector("#onboarding-custom-model-manual") as HTMLInputElement, "gpt-4o-mini");
-        setControlledValue(keyField, secret);
-      });
-      await flushReact();
-
-      expect(discover.disabled).toBe(false);
-      expect(connect.disabled).toBe(false);
-      await act(async () => discover.click());
-      await flushReact();
-      expect(managedApi.discoverCustom).toHaveBeenCalledWith("company-new", {
-        baseUrl: "https://gateway.example/v1",
-        auth,
-        apiKey: secret,
-      });
-      expect(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)).not.toContain(secret);
-      expect(document.body.textContent).not.toContain(secret);
-
-      await act(async () => root.unmount());
+        expect(mockIssuesApi.create).not.toHaveBeenCalled();
+        expect(mockNavigate).toHaveBeenCalledWith("/agents/custom-chief--agent-1/runtime");
+      } finally {
+        await act(async () => root.unmount());
+      }
     });
 
     it("will not advance on a saved adapter the step no longer offers", async () => {

@@ -1,7 +1,7 @@
 import type { CompanyMember, CompanyUserDirectoryEntry } from "@/api/access";
 import type { InlineEntityOption } from "@/components/InlineEntitySelector";
 import type { MentionOption } from "@/components/MarkdownEditor";
-import type { Agent, Issue, Project } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, type Agent, type Issue, type Project } from "@paperclipai/shared";
 
 export interface CompanyUserProfile {
   label: string;
@@ -85,11 +85,23 @@ export function buildCompanyUserMentionOptions(
 }
 
 export function isAgentTaskTarget(
-  agent: Pick<Agent, "status"> & Partial<Pick<Agent, "orgChainHealth" | "appearance">>,
+  agent: Pick<Agent, "status"> & Partial<Pick<Agent, "adapterType" | "runtimeConfig" | "orgChainHealth" | "appearance">>,
 ): boolean {
+  const customBinding =
+    agent.adapterType === "custom_local" &&
+    typeof agent.runtimeConfig === "object" &&
+    agent.runtimeConfig !== null
+      ? (agent.runtimeConfig as Record<string, unknown>).aiConnection
+      : null;
+  const hasCustomDeploymentBinding =
+    (() => {
+      const binding = aiConnectionBindingSchema.safeParse(customBinding);
+      return binding.success && binding.data.mode !== "responsible_user" && Boolean(binding.data.deploymentId);
+    })();
   return (
     agent.status !== "terminated" &&
     agent.status !== "pending_approval" &&
+    (agent.adapterType !== "custom_local" || hasCustomDeploymentBinding) &&
     agent.orgChainHealth?.status !== "invalid_org_chain"
   );
 }
