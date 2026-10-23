@@ -13,6 +13,7 @@ import {
   selectPaperclipPromptSections,
 } from "@paperclipai/adapter-utils/server-utils";
 import { testCustomEnvironment } from "./custom-local-test.js";
+import { parseCustomProviderUsage } from "./custom-local-usage.js";
 
 const sessionCodec: AdapterSessionCodec = {
   deserialize(raw) {
@@ -98,17 +99,6 @@ function responseText(body: Record<string, unknown>): string {
   if (!message || typeof message !== "object") return "";
   const content = (message as Record<string, unknown>).content;
   return typeof content === "string" ? content : "";
-}
-
-function usage(body: Record<string, unknown>) {
-  const value = body.usage;
-  if (!value || typeof value !== "object") return undefined;
-  const record = value as Record<string, unknown>;
-  const input = Number(record.input_tokens ?? record.prompt_tokens ?? 0);
-  const output = Number(record.output_tokens ?? record.completion_tokens ?? 0);
-  return Number.isFinite(input) && Number.isFinite(output)
-    ? { inputTokens: input, outputTokens: output, totalTokens: input + output }
-    : undefined;
 }
 
 type McpTool = { name: string; description?: string; inputSchema?: Record<string, unknown>; server: string };
@@ -216,8 +206,9 @@ export async function executeCustom(ctx: AdapterExecutionContext): Promise<Adapt
         : (() => { const message = Array.isArray(parsed.choices) && parsed.choices[0] && typeof parsed.choices[0] === "object" ? (parsed.choices[0] as Record<string, unknown>).message : null; return message && typeof message === "object" && Array.isArray((message as Record<string, unknown>).tool_calls) ? (message as Record<string, unknown>).tool_calls as Array<Record<string, unknown>> : []; })();
       if (calls.length === 0) {
         const text = responseText(parsed);
+        const parsedUsage = parseCustomProviderUsage(parsed);
         await ctx.onLog("stdout", `${text || "[custom] provider completed without text output."}\n`);
-        return { exitCode: 0, signal: null, timedOut: false, summary: text, resultJson: parsed, sessionParams: responseId ? { responseId } : session, sessionDisplayId: responseId, model, provider: "custom", biller: "custom", usage: usage(parsed), usageBasis: "per_run" };
+        return { exitCode: 0, signal: null, timedOut: false, summary: text, resultJson: parsed, sessionParams: responseId ? { responseId } : session, sessionDisplayId: responseId, model, provider: "custom", biller: "custom", usageBasis: "per_run", ...parsedUsage };
       }
       const outputs: Array<Record<string, unknown>> = [];
       for (const call of calls) {

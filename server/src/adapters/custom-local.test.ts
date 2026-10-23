@@ -56,6 +56,31 @@ describe("custom HTTP adapter", () => {
     vi.unstubAllGlobals();
   });
 
+  it("forwards provider-reported Responses cost without deriving a price from tokens", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      id: "resp-cost-1",
+      output: [{ content: [{ text: "done" }] }],
+      usage: {
+        input_tokens: 100,
+        output_tokens: 20,
+        input_tokens_details: { cached_tokens: 80 },
+        cost: "0.012345678",
+      },
+    }), { status: 200 })));
+
+    const result = await executeCustom(context("responses"));
+
+    expect(result).toMatchObject({
+      exitCode: 0,
+      usage: { inputTokens: 100, cachedInputTokens: 80, outputTokens: 20, totalTokens: 120 },
+      costUsd: 0.012345678,
+      costUsdExact: "0.012345678",
+      costStatus: "reported",
+      pricingProvenance: { source: "provider_reported", version: "custom-openai-compatible/v1", evidence: "provider_cost" },
+    });
+    vi.unstubAllGlobals();
+  });
+
   it("classifies a rejected provider request as safe to retry", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
       error: { message: "Unsupported parameter: 'max_tokens'" },
