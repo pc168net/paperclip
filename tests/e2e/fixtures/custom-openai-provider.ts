@@ -4,7 +4,7 @@ import { listenOnFetchAllowedPort } from "../fetch-allowed-port";
 type RequestRecord = { method: string; path: string };
 
 export type CustomOpenAiProviderFixtureOptions = {
-  responseMode?: "default" | "reported_cost";
+  responseMode?: "default" | "reported_cost" | "token_only";
 };
 
 /**
@@ -36,6 +36,16 @@ export async function startCustomOpenAiProviderFixture(options: CustomOpenAiProv
               cost: "0.012345678",
             },
           }
+        : options.responseMode === "token_only"
+          ? {
+              id: "fixture-token-response",
+              output: [{ content: [{ text: "done" }] }],
+              usage: {
+                input_tokens: 7,
+                output_tokens: 3,
+                input_tokens_details: { cached_tokens: 2 },
+              },
+            }
         : { id: "fixture-response", output: [] }));
       return;
     }
