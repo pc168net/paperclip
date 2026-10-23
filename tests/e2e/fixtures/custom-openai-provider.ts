@@ -3,11 +3,15 @@ import { listenOnFetchAllowedPort } from "../fetch-allowed-port";
 
 type RequestRecord = { method: string; path: string };
 
+export type CustomOpenAiProviderFixtureOptions = {
+  responseMode?: "default" | "reported_cost";
+};
+
 /**
  * A deliberately narrow OpenAI-compatible endpoint for browser journeys. The
  * Paperclip server reaches it directly; it retains no credential or body data.
  */
-export async function startCustomOpenAiProviderFixture() {
+export async function startCustomOpenAiProviderFixture(options: CustomOpenAiProviderFixtureOptions = {}) {
   const requests: RequestRecord[] = [];
   const server: Server = createServer((request, response) => {
     const method = request.method ?? "GET";
@@ -21,7 +25,18 @@ export async function startCustomOpenAiProviderFixture() {
     }
     if (method === "POST" && path === "/v1/responses") {
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ id: "fixture-response", output: [] }));
+      response.end(JSON.stringify(options.responseMode === "reported_cost"
+        ? {
+            id: "fixture-cost-response",
+            output: [{ content: [{ text: "done" }] }],
+            usage: {
+              input_tokens: 100,
+              output_tokens: 20,
+              input_tokens_details: { cached_tokens: 80 },
+              cost: "0.012345678",
+            },
+          }
+        : { id: "fixture-response", output: [] }));
       return;
     }
 
