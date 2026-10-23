@@ -11,6 +11,21 @@ function headers(credential: string, auth: AiProviderRouting["auth"]): HeadersIn
   };
 }
 
+function headersWithAuth(credential: string, auth: AiProviderRouting["auth"]): HeadersInit {
+  return {
+    "content-type": "application/json",
+    ...(auth === "api_key" ? { "api-key": credential } : auth === "bearer" ? { Authorization: `Bearer ${credential}` } : {}),
+  };
+}
+
+function isAzureOpenAiGateway(routing: AiProviderRouting): boolean {
+  try {
+    return routing.kind === "gateway" && new URL(routing.baseUrl ?? "").hostname.endsWith(".openai.azure.com");
+  } catch {
+    return false;
+  }
+}
+
 function messageForStatus(status: number) {
   if (status === 401 || status === 403) return "The stored credential was rejected.";
   if (status === 404) return "The deployment or API path was not found.";
@@ -39,21 +54,32 @@ export async function verifyAiDeployment(
   const body = deployment.protocol === "responses"
     ? { model: deployment.modelId, input: "ping", max_output_tokens: 16 }
     : { model: deployment.modelId, messages: [{ role: "user", content: "ping" }], max_tokens: 1 };
-  let response: Response;
+  const url = `${baseUrl}/${path}`;
+  const azureFallback = isAzureOpenAiGateway(routing) && routing.auth === "api_key";
+
+  const probe = async (auth: AiProviderRouting["auth"]): Promise<Response> => request(url, {
+    method: "POST",
+    redirect: "error",
+    signal: AbortSignal.timeout(20_000),
+    headers: headersWithAuth(credential, auth),
+    body: JSON.stringify(body),
+  });
+
   try {
-    response = await request(`${baseUrl}/${path}`, {
-      method: "POST",
-      redirect: "error",
-      signal: AbortSignal.timeout(20_000),
-      headers: headers(credential, routing.auth),
-      body: JSON.stringify(body),
-    });
+    const response = await probe(azureFallback ? "api_key" : routing.auth);
+    await response.body?.cancel();
+    if (response.ok) return { ok: true };
+    if (!azureFallback || (response.status !== 401 && response.status !== 403)) {
+      return { ok: false, error: messageForStatus(response.status) };
+    }
+
+    const retry = await probe("bearer");
+    await retry.body?.cancel();
+    return retry.ok ? { ok: true } : { ok: false, error: messageForStatus(retry.status) };
   } catch (error) {
     const timedOut = error instanceof Error && (error.name === "TimeoutError" || /timed?\s*out|timeout/i.test(error.message));
     return { ok: false, error: timedOut ? "The verification probe timed out." : "The endpoint could not be reached." };
   }
-  await response.body?.cancel();
-  return response.ok ? { ok: true } : { ok: false, error: messageForStatus(response.status) };
 }
 
 export async function markAiDeploymentsStale(db: Db, companyId: string, connectionId: string, previousEpoch?: number): Promise<void> {
