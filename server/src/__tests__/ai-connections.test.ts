@@ -1687,6 +1687,77 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(network).not.toHaveBeenCalled();
     } finally { network.mockRestore(); }
   });
+  it("allows a connection manager to reconnect another user’s AI connection", async () => {
+    const reconnectCompanyId = randomUUID();
+    const reconnectAgentId = randomUUID();
+    const owner = "reconnect-owner";
+    const manager = "reconnect-manager";
+    await db.insert(companies).values({ id: reconnectCompanyId, name: "Reconnect auth", issuePrefix: "RCA" });
+    await db.insert(agents).values({ id: reconnectAgentId, companyId: reconnectCompanyId, name: "Reconnect agent", adapterType: "claude_local" });
+    await db.insert(companyMemberships).values([
+      { companyId: reconnectCompanyId, principalType: "user", principalId: owner, status: "active", membershipRole: "member" },
+      { companyId: reconnectCompanyId, principalType: "user", principalId: manager, status: "active", membershipRole: "member" },
+    ]);
+    await db.insert(principalPermissionGrants).values({ companyId: reconnectCompanyId, principalType: "user", principalId: manager, permissionKey: "tools:manage_connections" });
+    const account = await service.save(reconnectCompanyId, owner, {
+      provider: "openai",
+      method: "api_key",
+      ownership: "personal",
+      name: "Owner gateway",
+      apiKey: "owner-secret",
+      agentIds: [],
+      allAgents: true,
+      routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://owner.example/v1", models: [{ id: "owner-deployment" }] },
+    }, "owner-secret");
+    const result = await service.save(reconnectCompanyId, manager, {
+      provider: "openai",
+      method: "api_key",
+      ownership: "personal",
+      name: "Owner gateway",
+      apiKey: "manager-secret",
+      agentIds: [],
+      allAgents: true,
+      connectionId: account.connectionId,
+      routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://owner.example/v1", models: [{ id: "owner-deployment" }] },
+    }, "manager-secret");
+    expect(result).toMatchObject({ connectionId: account.connectionId, grantId: account.grantId });
+    const selected = await service.select({ companyId: reconnectCompanyId, agentId: reconnectAgentId, userId: owner, adapterType: "codex_local", binding: { provider: "openai", method: "api_key", mode: "delegated", ...result } });
+    expect(await service.credential(selected)).toBe("manager-secret");
+  });
+
+  it("rejects a reconnect from a non-owner without connection management rights", async () => {
+    const reconnectCompanyId = randomUUID();
+    const reconnectAgentId = randomUUID();
+    const owner = "reconnect-deny-owner";
+    const outsider = "reconnect-deny-outsider";
+    await db.insert(companies).values({ id: reconnectCompanyId, name: "Reconnect deny auth", issuePrefix: "RCD" });
+    await db.insert(agents).values({ id: reconnectAgentId, companyId: reconnectCompanyId, name: "Reconnect deny agent", adapterType: "claude_local" });
+    await db.insert(companyMemberships).values([
+      { companyId: reconnectCompanyId, principalType: "user", principalId: owner, status: "active", membershipRole: "member" },
+      { companyId: reconnectCompanyId, principalType: "user", principalId: outsider, status: "active", membershipRole: "member" },
+    ]);
+    const account = await service.save(reconnectCompanyId, owner, {
+      provider: "openai",
+      method: "api_key",
+      ownership: "personal",
+      name: "Denied gateway",
+      apiKey: "owner-secret",
+      agentIds: [],
+      allAgents: true,
+      routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://owner.example/v1", models: [{ id: "owner-deployment" }] },
+    }, "owner-secret");
+    await expect(service.save(reconnectCompanyId, outsider, {
+      provider: "openai",
+      method: "api_key",
+      ownership: "personal",
+      name: "Denied gateway",
+      apiKey: "outsider-secret",
+      agentIds: [],
+      allAgents: true,
+      connectionId: account.connectionId,
+      routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://owner.example/v1", models: [{ id: "owner-deployment" }] },
+    }, "outsider-secret")).rejects.toThrow("Only the account owner can reconnect it");
+  });
   it("validates custom gateway api-key connections before saving them", async () => {
     const app = express();
     app.use(express.json());

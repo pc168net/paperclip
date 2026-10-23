@@ -169,7 +169,7 @@ export async function assertAiConnectionCreateAccess(
         ),
       )
       .limit(1);
-    if (!grant || (grant.owner ?? grant.creator) !== userId)
+    if (!grant || (!await canManageAiConnections(db, req, companyId) && (grant.owner ?? grant.creator) !== userId))
       throw forbidden(
         "Only the account owner can reconnect this AI connection",
       );

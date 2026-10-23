@@ -43,6 +43,7 @@ import { forbidden, notFound, unprocessable } from "../errors.js";
 import { aiConnectionConfigurationFailure, aiConnectionCredentialNotSharedFailure } from "./ai-connection-configuration-failure.js";
 import { quotaCredentialRecovery, quotaCredentialHash } from "./quota-credential-recovery.js";
 import { logger } from "../middleware/logger.js";
+import { accessService } from "./access.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
 import { probeAiConnectionUsage } from "./ai-connection-usage.js";
@@ -99,6 +100,29 @@ export function aiConnectionService(db: Db) {
           eq(toolConnections.connectionPurpose, "ai"),
         ),
       );
+  }
+  async function activeMembershipRole(companyId: string, userId: string | null) {
+    if (!userId) return null;
+    const [membership] = await db
+      .select({ membershipRole: companyMemberships.membershipRole })
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, userId),
+          eq(companyMemberships.status, "active"),
+        ),
+      )
+      .limit(1);
+    return membership?.membershipRole ?? null;
+  }
+  async function canReconnectAiConnection(companyId: string, userId: string | null) {
+    if (!userId) return false;
+    const role = await activeMembershipRole(companyId, userId);
+    if (!role || role === "viewer") return false;
+    if (role === "owner" || role === "admin") return true;
+    return accessService(db).hasPermission(companyId, "user", userId, "tools:manage_connections");
   }
   async function list(
     companyId: string,
@@ -629,9 +653,11 @@ export function aiConnectionService(db: Db) {
     }
     if (
       reconnect &&
-      (reconnect.grant.createdByUserId !== userId ||
-        (reconnect.grant.kind === "user" &&
-          reconnect.grant.subjectUserId !== userId))
+      !(
+        reconnect.grant.createdByUserId === userId ||
+        (reconnect.grant.kind === "user" && reconnect.grant.subjectUserId === userId) ||
+        await canReconnectAiConnection(companyId, userId)
+      )
     )
       throw forbidden("Only the account owner can reconnect it");
     if (
