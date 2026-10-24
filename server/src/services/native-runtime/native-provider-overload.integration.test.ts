@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, companies, completionContracts, createDb, environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, statusDecisionEffects, statusDecisions } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, companies, completionContracts, createDb, environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, statusDecisionEffects, statusDecisions } from "@paperclipai/db";
 import type { ControlPlanePort, NativeExecutionInputV1, PrpEvent, PrpTerminalState } from "@paperclipai/paperclip-runner";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { CONTROL_PLANE_CONFORMANCE_RESULT } from "../../vendor/paperclip-runner/testing.js";
@@ -179,6 +179,39 @@ describe("durable native provider capacity retry", () => {
       expect(successors).toHaveLength(1);
       const retry = successors[0]!;
       expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: failure + 1, scheduledRetryReason: "native_provider_rate_limited", error: NATIVE_PROVIDER_RATE_LIMITED_MESSAGE, errorCode: "native_provider_rate_limited" });
+      expect(retry.contextSnapshot).toMatchObject({
+        retryReason: "native_provider_rate_limited",
+        wakeReason: "native_provider_rate_limited",
+        executionRetryAccounting: { version: 1, failureRetries: failure + 1, maxTurnContinuations: 0 },
+      });
+      expect(retry.contextSnapshot?.rateLimitRecovery).not.toHaveProperty("model");
+      expect(retry.contextSnapshot?.rateLimitRecovery).not.toHaveProperty("originalModel");
+      expect(retry.contextSnapshot?.rateLimitRecovery).not.toHaveProperty("fallbackModel");
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.runId, retry.id));
+      expect(wake).toMatchObject({
+        reason: "native_provider_rate_limited",
+        payload: {
+          retryReason: "native_provider_rate_limited",
+          wakeReason: "native_provider_rate_limited",
+          executionRetryAccounting: { version: 1, failureRetries: failure + 1, maxTurnContinuations: 0 },
+        },
+      });
+      const activities = await db.select().from(activityLog).where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.runId, runId),
+        eq(activityLog.action, "heartbeat.rate_limit_retry_scheduled"),
+      ));
+      expect(activities).toMatchObject([{
+        details: {
+          cause: "native_provider_rate_limited",
+          message: NATIVE_PROVIDER_RATE_LIMITED_MESSAGE,
+          category: "provider_capacity",
+          retryCount: failure + 1,
+        },
+      }]);
+      expect(activities[0]?.details).not.toHaveProperty("model");
+      expect(activities[0]?.details).not.toHaveProperty("originalModel");
+      expect(activities[0]?.details).not.toHaveProperty("fallbackModel");
       const delay = failure === 0 ? 5 * 60_000 : 15 * 60_000;
       expect(retry.scheduledRetryAt!.getTime() - before).toBeGreaterThanOrEqual(delay);
       expect(retry.scheduledRetryAt!.getTime() - Date.now()).toBeLessThanOrEqual(delay);
