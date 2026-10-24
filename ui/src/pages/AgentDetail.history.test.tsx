@@ -127,6 +127,33 @@ it.each([
 it.each([
   ["streamlined", RunsTab],
   ["production", ProductionRunsTab],
+] as const)("retains Failure details and result JSON for an ordinary timed-out %s run", async (_variant, Tab) => {
+  const run = {
+    id: "ordinary-timed-out-run", companyId: "company-1", agentId: "agent-1", status: "timed_out", invocationSource: "automation",
+    createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", usageJson: null,
+    resultJson: { summary: "ordinary adapter timeout summary", diagnostic: "ordinary timeout result" }, contextSnapshot: null,
+    exitCode: 124, error: "ordinary adapter timeout", errorCode: "adapter_timed_out", logRef: null,
+    startedAt: null, finishedAt: "2026-01-01T00:01:00Z", retryOfRunId: null,
+  } as unknown as HeartbeatRun;
+  get.mockResolvedValue(run);
+  events.mockResolvedValue([{ id: "event-1", createdAt: "2026-01-01T00:01:00Z", stream: "system", chunk: "run timed out" }]);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  const element = document.createElement("div"); document.body.append(element);
+  const root = createRoot(element);
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter><PanelProvider><ToastProvider>
+      <Tab runs={[run]} companyId="company-1" agentId="agent-1" agentRouteId="agent-1" selectedRunId="ordinary-timed-out-run" adapterType="codex_local" adapterConfig={{}} />
+    </ToastProvider></PanelProvider></MemoryRouter></QueryClientProvider>));
+    await vi.waitFor(async () => { await act(async () => {}); expect(element.textContent).toContain("Failure details"); });
+    expect(element.textContent).toContain("ordinary adapter timeout");
+    expect(element.textContent).toContain("adapter result JSON");
+    expect(element.textContent).toContain("ordinary timeout result");
+  } finally { await act(async () => root.unmount()); client.clear(); element.remove(); }
+});
+
+it.each([
+  ["streamlined", RunsTab],
+  ["production", ProductionRunsTab],
 ] as const)("hides provider result summaries and failure details for a rate-limited %s run", async (_variant, Tab) => {
   const run = {
     id: "rate-limited-failed-run", companyId: "company-1", agentId: "agent-1", status: "failed", invocationSource: "automation",
