@@ -25,6 +25,10 @@ export type AgentRoleProfile = {
   revision: AgentRoleProfileRevision;
 };
 
+export type ArchivedAgentRoleProfile = Omit<AgentRoleProfile, "revision"> & {
+  archivedAt: string | Date | null;
+};
+
 export const agentRoleProfilesApi = {
   list: (companyId: string) =>
     api.get<AgentRoleProfile[]>(`/companies/${encodeURIComponent(companyId)}/agent-role-profiles`),
@@ -36,7 +40,7 @@ export const agentRoleProfilesApi = {
       payload,
     ),
   archive: (companyId: string, profileId: string) =>
-    api.post<AgentRoleProfile>(
+    api.post<ArchivedAgentRoleProfile>(
       `/companies/${encodeURIComponent(companyId)}/agent-role-profiles/${encodeURIComponent(profileId)}/archive`,
       {},
     ),

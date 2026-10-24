@@ -102,6 +102,9 @@ describe("RoleProfiles", () => {
 
     expect(container.textContent).toContain("CEO");
     expect(container.textContent).toContain("Existing CEO behavior remains unchanged");
+    expect(container.textContent).toContain("AGENTS.md");
+    expect(container.textContent).not.toContain("CEO instructions");
+    expect(container.querySelector("pre")).toBeNull();
     expect([...container.querySelectorAll("input, textarea")]).toHaveLength(0);
 
     const researcher = [...container.querySelectorAll("button")].find(
@@ -116,5 +119,43 @@ describe("RoleProfiles", () => {
     expect((container.querySelector('input[aria-label="Profile name"]') as HTMLInputElement | null)?.value).toBe("Researcher");
     expect([...container.querySelectorAll('input[aria-label="Managed file path"]')].map((input) => (input as HTMLInputElement).value)).toEqual(["AGENTS.md", "SOUL.md"]);
     expect(container.textContent).toContain("Revision 1");
+  });
+
+  it("shows a contextual loading state while revision history is loading", async () => {
+    mockAgentRoleProfilesApi.revisions.mockImplementation((_companyId: string, profileId: string) =>
+      profileId === "system-ceo" ? Promise.resolve([]) : new Promise(() => {}),
+    );
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    flushSync(() => {
+      root!.render(<QueryClientProvider client={queryClient}><RoleProfiles /></QueryClientProvider>);
+    });
+    await flushQueries();
+
+    const researcher = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Researcher"));
+    await act(async () => researcher!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flushQueries();
+
+    expect(container.textContent).toContain("Loading revision history…");
+    expect(container.textContent).not.toContain("Revision history unavailable.");
+  });
+
+  it("explains when revision history cannot be loaded", async () => {
+    mockAgentRoleProfilesApi.revisions.mockImplementation((_companyId: string, profileId: string) =>
+      profileId === "system-ceo" ? Promise.resolve([]) : Promise.reject(new Error("history unavailable")),
+    );
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    flushSync(() => {
+      root!.render(<QueryClientProvider client={queryClient}><RoleProfiles /></QueryClientProvider>);
+    });
+    await flushQueries();
+
+    const researcher = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Researcher"));
+    await act(async () => researcher!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flushQueries();
+
+    expect(container.textContent).toContain("Revision history unavailable.");
+    expect(container.textContent).not.toContain("Loading revision history…");
   });
 });
