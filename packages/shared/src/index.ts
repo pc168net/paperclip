@@ -2,6 +2,22 @@ export * from "./slack-app-manifest.js";
 export { composioAppSetupSchema, composioAppsRefreshSchema, composioAppsSyncSchema, composioAppAccountSchema, type ComposioAppSetupInput, type ComposioAppSetupResult, type ComposioAppAccountInput, type ComposioAppAccount, type ComposioAppSnapshot, type ComposioAppSyncState, type ComposioAppsResponse } from "./composio-app-setup.js";
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
+  AGENT_ROLE_PROFILE_KINDS,
+  agentRoleProfileKindSchema,
+  agentRoleProfileManagedFilesSchema,
+  createAgentRoleProfileSchema,
+  updateAgentRoleProfileSchema,
+  applyAgentRoleProfileSchema,
+  restoreAgentRoleProfileSchema,
+  type AgentRoleProfileKind,
+  type AgentRoleProfileManagedFiles,
+  type CreateAgentRoleProfile,
+  type UpdateAgentRoleProfile,
+  type ApplyAgentRoleProfile,
+  type RestoreAgentRoleProfile,
+} from "./validators/agent-role-profiles.js";
+
+export {
   RUNNER_GOAL_MAX_OBJECTIVE_CHARS,
   runnerGoalAvailabilitySchema,
   runnerGoalCapabilityActionSchema,
