@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { AGENT_ROLE_LABELS, AGENT_ROLES, isUuidLike, type CreateAgentRoleProfile, type UpdateAgentRoleProfile } from "@paperclipai/shared";
-import { activityLog, agentRoleProfileRevisions, agentRoleProfiles, type Db } from "@paperclipai/db";
+import { activityLog, agentRoleProfileAdoptions, agentRoleProfileRevisions, agentRoleProfiles, type Db } from "@paperclipai/db";
 import { and, desc, eq, isNull, max } from "drizzle-orm";
 import { badRequest, conflict, forbidden, notFound } from "../errors.js";
 import { isUniqueViolation } from "../db-errors.js";
@@ -171,6 +171,58 @@ export function agentRoleProfileService(db: Db) {
     return { ...revision, number: revision.revisionNumber };
   }
 
+  async function resolveAdoptionRevision(companyId: string, profileId: string, revisionId?: string, options?: { includeArchived?: boolean }) {
+    if (profileId === SYSTEM_CEO_PROFILE_ID) throw forbidden("The CEO Role Profile cannot be applied to an agent");
+    assertProfileId(profileId);
+    const [profile] = await db.select().from(agentRoleProfiles).where(and(
+      eq(agentRoleProfiles.companyId, companyId),
+      eq(agentRoleProfiles.id, profileId),
+      ...(options?.includeArchived ? [] : [isNull(agentRoleProfiles.archivedAt)]),
+    ));
+    if (!profile) throw notFound("Role Profile not found");
+    const revision = revisionId
+      ? await getRevision(companyId, profileId, revisionId)
+      : await latestRevision(companyId, profileId);
+    return { profile, revision };
+  }
+
+  async function getAdoption(companyId: string, agentId: string) {
+    const [adoption] = await db.select().from(agentRoleProfileAdoptions).where(and(
+      eq(agentRoleProfileAdoptions.companyId, companyId),
+      eq(agentRoleProfileAdoptions.agentId, agentId),
+    ));
+    if (!adoption) return null;
+    const [profile] = await db.select().from(agentRoleProfiles).where(and(
+      eq(agentRoleProfiles.companyId, companyId), eq(agentRoleProfiles.id, adoption.profileId),
+    ));
+    const [revision] = await db.select().from(agentRoleProfileRevisions).where(and(
+      eq(agentRoleProfileRevisions.companyId, companyId), eq(agentRoleProfileRevisions.id, adoption.appliedRevisionId),
+    ));
+    if (!profile || !revision) throw notFound("Role Profile adoption not found");
+    return { ...adoption, profile: { id: profile.id, name: profile.name, key: profile.key }, revision: publicRevision(revision) };
+  }
+
+  async function recordAdoption(input: {
+    companyId: string; agentId: string; profileId: string; revisionId: string; managedPaths: string[];
+    actor: BoardActor; action: "agent_role_profile.applied" | "agent_role_profile.restored";
+  }) {
+    const managedPaths = [...new Set(input.managedPaths.map(instructionPath))].sort();
+    await db.transaction(async (tx) => {
+      await tx.insert(agentRoleProfileAdoptions).values({
+        companyId: input.companyId, agentId: input.agentId, profileId: input.profileId,
+        appliedRevisionId: input.revisionId, managedPaths,
+      }).onConflictDoUpdate({
+        target: [agentRoleProfileAdoptions.companyId, agentRoleProfileAdoptions.agentId],
+        set: { profileId: input.profileId, appliedRevisionId: input.revisionId, managedPaths, updatedAt: new Date() },
+      });
+      await tx.insert(activityLog).values({
+        companyId: input.companyId, actorType: "user", actorId: input.actor.userId ?? "board",
+        action: input.action, entityType: "agent", entityId: input.agentId,
+        details: { profileId: input.profileId, revisionId: input.revisionId, managedPaths },
+      });
+    });
+  }
+
   async function archive(companyId: string, profileId: string, actor: BoardActor) {
     if (profileId === SYSTEM_CEO_PROFILE_ID) throw forbidden("The CEO Role Profile is read-only");
     assertProfileId(profileId);
@@ -184,5 +236,5 @@ export function agentRoleProfileService(db: Db) {
     });
   }
 
-  return { ensureSeededProfiles, list, create, update, archive, listRevisions, getRevision, latestRevision };
+  return { ensureSeededProfiles, list, create, update, archive, listRevisions, getRevision, latestRevision, resolveAdoptionRevision, getAdoption, recordAdoption };
 }

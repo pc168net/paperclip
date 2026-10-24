@@ -34,6 +34,7 @@ export const applyAgentRoleProfileSchema = z.object({
 }).strict();
 export const restoreAgentRoleProfileSchema = z.object({
   roleProfileRevisionId: z.string().uuid().optional(),
+  confirm: z.literal(true),
 }).strict();
 
 export type AgentRoleProfileKind = z.infer<typeof agentRoleProfileKindSchema>;
