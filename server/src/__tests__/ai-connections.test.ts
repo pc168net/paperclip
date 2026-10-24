@@ -15,7 +15,7 @@ import { mkdtemp, realpath, rm, access, readFile, writeFile, stat, mkdir } from 
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, activityLog, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants, aiDeployments } from "@paperclipai/db";
+import { createDb, activityLog, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, toolCatalogEntries, toolProfileBindings, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants, aiDeployments } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
@@ -2115,6 +2115,13 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
         binding: { mode: "shared", provider: "openai", method: "api_key", connectionId: organizationAccount.connectionId, grantId: organizationAccount.grantId, deploymentId: organizationDeployment.id },
       })).rejects.toMatchObject({ status: 403, message: "This credential is not shared with the responsible user" });
 
+      // The reader fixtures create user grants on this same connection. Remove
+      // them before reconnecting so the explicit connection ID resolves its
+      // organization grant deterministically.
+      await db.delete(connectionGrants).where(and(
+        eq(connectionGrants.connectionId, account.connectionId),
+        eq(connectionGrants.kind, "user"),
+      ));
       const rotated = await service.save(deploymentCompanyId, manager, {
         provider: "openai",
         method: "api_key",
@@ -2133,7 +2140,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       const [rotatedFailed] = await db.select().from(aiDeployments).where(eq(aiDeployments.modelId, "failed-model"));
       expect(rotatedVerified?.status).toBe("stale");
       expect(rotatedFailed?.status).toBe("failed");
-      expect((await request(app).get(base).set("x-test-user", reader)).body).toEqual([]);
+      expect((await request(app).get(base).set("x-test-user", reader)).status).toBe(404);
       await expect(service.select({
         companyId: deploymentCompanyId,
         agentId: randomUUID(),
@@ -2489,6 +2496,99 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       delivery.mockRestore(); providerRequest.mockRestore(); probe.mockRestore(); runtime.mockRestore(); resolveTarget.mockRestore();
       await settings.update({ defaultEnvironmentId: previous.defaultEnvironmentId });
     }
+  });
+
+  it("rolls back non-AI install access activity when inline intent resolution fails", async () => {
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId, name: "Tool intent agent", adapterType: "claude_local" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Atomic tool access", status: "in_progress", assigneeAgentId: agentId });
+    const [application] = await db.insert(toolApplications).values({
+      companyId,
+      applicationKey: `app-gallery:sentry`,
+      name: "Sentry",
+      type: "mcp_http",
+      status: "active",
+      metadata: { sourceTemplateKey: "sentry" },
+    }).onConflictDoUpdate({
+      target: [toolApplications.companyId, toolApplications.applicationKey],
+      set: { name: "Sentry" },
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId,
+      applicationId: application!.id,
+      name: "Atomic Sentry",
+      uid: `atomic-sentry-${randomUUID()}`,
+      transport: "mcp_remote",
+      credentialPolicy: "shared",
+      status: "active",
+      enabled: true,
+      healthStatus: "ok",
+      config: { sourceTemplateKey: "sentry", url: "https://sentry.example.test/mcp" },
+      transportConfig: { sourceTemplateKey: "sentry", url: "https://sentry.example.test/mcp" },
+    }).returning();
+    await db.insert(connectionGrants).values({ companyId, connectionId: connection!.id, kind: "organization", status: "active", credentialSecretRefs: [] });
+    const [catalogEntry] = await db.insert(toolCatalogEntries).values({
+      companyId,
+      applicationId: application!.id,
+      connectionId: connection!.id,
+      entryKind: "tool",
+      name: "Read Sentry issues",
+      toolName: "sentry-read",
+      versionHash: "atomic-sentry-v1",
+      status: "active",
+      riskLevel: "read",
+      inputSchema: { type: "object" },
+    }).returning();
+    await expect(db.transaction(async (tx) => {
+      await toolAccessService(db).putConnectionInstalls(connection!.id, {
+        installs: [{ targetType: "agent", targetId: agentId }],
+      }, { actorType: "user", actorId: "alice" }, tx);
+      throw new Error("rollback the supplied transaction");
+    })).rejects.toThrow("rollback the supplied transaction");
+    expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connection!.id))).toEqual([]);
+    expect(await db.select().from(toolProfileBindings).where(and(eq(toolProfileBindings.companyId, companyId), eq(toolProfileBindings.targetId, agentId)))).toEqual([]);
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, connection!.id), eq(activityLog.action, "tool_connection.install_access_extended")))).toEqual([]);
+    const [interaction] = await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId,
+      kind: "connection_intent",
+      status: "pending",
+      addresseeUserId: "alice",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      payload: {
+        version: 1,
+        serviceSlug: "sentry",
+        serviceName: "Sentry",
+        requestingAgentId: agentId,
+        requestingAgentName: "Tool intent agent",
+        phase: "requested",
+        accessRequest: {
+          connectionId: connection!.id,
+          connectionName: connection!.name,
+          tools: [{
+            catalogEntryId: catalogEntry!.id,
+            toolName: catalogEntry!.toolName,
+            versionHash: catalogEntry!.versionHash,
+            permission: "allowed",
+          }],
+        },
+      },
+    }).returning();
+    await db.execute(sql.raw(`CREATE FUNCTION reject_atomic_tool_intent() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id = '${interaction!.id}'::uuid THEN RAISE EXCEPTION 'injected resolution failure'; END IF; RETURN NEW; END $$`));
+    await db.execute(sql.raw("CREATE TRIGGER reject_atomic_tool_intent BEFORE UPDATE ON issue_thread_interactions FOR EACH ROW EXECUTE FUNCTION reject_atomic_tool_intent()"));
+    try {
+      await expect(connectionIntentService(db).complete(interaction!.id, connection!.id, "alice", { canManageOrganizationGrant: true })).rejects.toThrow("issue_thread_interactions");
+      expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connection!.id))).toEqual([]);
+      expect(await db.select().from(toolProfileBindings).where(and(eq(toolProfileBindings.companyId, companyId), eq(toolProfileBindings.targetId, agentId)))).toEqual([]);
+      expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, connection!.id), eq(activityLog.action, "tool_connection.install_access_extended")))).toEqual([]);
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER reject_atomic_tool_intent ON issue_thread_interactions"));
+      await db.execute(sql.raw("DROP FUNCTION reject_atomic_tool_intent()"));
+    }
+    await expect(connectionIntentService(db).complete(interaction!.id, connection!.id, "alice", { canManageOrganizationGrant: true })).resolves.toMatchObject({ status: "accepted" });
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, connection!.id), eq(activityLog.action, "tool_connection.install_access_extended")))).toHaveLength(1);
   });
 
   it("creates and hires agents with an authorized restricted shared connection", async () => {

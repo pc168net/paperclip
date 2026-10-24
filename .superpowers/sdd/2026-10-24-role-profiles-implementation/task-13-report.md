@@ -80,3 +80,38 @@ Date: 2026-10-24
 - The broad Vitest suite needs a longer-running CI/local invocation for final
   repository-wide confirmation. No focused regression or typecheck failure
   remains.
+
+## Fix round 1 — transaction-scoped install activity
+
+### Root cause and change
+
+`putConnectionInstalls` performed install/profile writes using a supplied caller
+transaction, but wrote each `tool_connection.install_access_extended` activity
+through its captured root database client. An outer rollback could therefore
+remove the install and binding while retaining a false activity record.
+
+The activity write now uses the supplied transaction when one exists; standalone
+callers retain the root database client after their internal transaction commits.
+
+### RED → GREEN evidence
+
+- **RED:**
+  `pnpm exec vitest run server/src/__tests__/ai-connections.test.ts --reporter=dot --maxWorkers=1 --no-file-parallelism -t 'rolls back non-AI install access activity'`
+  failed because `tool_connection.install_access_extended` remained after a
+  forced rollback of the supplied transaction.
+- **GREEN:** the same targeted command passed. The regression uses a non-AI
+  Sentry connection intent, asserts that both the explicit caller rollback and
+  final interaction-resolution failure leave no install, profile binding, or
+  access-extension activity, then completes successfully and asserts exactly one
+  access-extension activity record.
+- **Focused suite:**
+  `pnpm exec vitest run server/src/__tests__/ai-connections.test.ts --reporter=dot --maxWorkers=1 --no-file-parallelism`
+  passed **124/124**.
+- **Typecheck:** `pnpm --filter @paperclipai/server typecheck` passed.
+
+### Additional fixture stabilization
+
+The deployment reconnect fixture now removes its temporary reader grants before
+reconnecting the explicitly selected organization connection. This prevents an
+unspecified row order from selecting a user grant for the same connection and
+wrongly reporting an ownership transition.

@@ -19028,8 +19028,9 @@ export function toolAccessService(
       };
       if (transaction) await writeInstalls(transaction);
       else await db.transaction(writeInstalls);
+      const activityDb = transaction ? transaction as unknown as Db : db;
       for (const extension of accessExtensions) {
-        await logActivity(db, {
+        await logActivity(activityDb, {
           companyId: connection.companyId,
           actorType: actor?.actorType ?? "system",
           actorId: actor?.actorId ?? "system",
