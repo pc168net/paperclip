@@ -497,6 +497,10 @@ export function pluginManagedAgentService(
       metadata: managedMetadata(options.pluginId, options.pluginKey, declaration),
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
+    }, {
+      // A plugin declaration is the system confirmation for a distinct managed
+      // non-CEO role. CEOs retain the normal duplicate-role protection.
+      allowDuplicate: (declaration.role ?? "general").trim().toLocaleLowerCase() !== "ceo",
     }) as Agent;
     created = await materializeDeclaredInstructions(companyId, created, declaration, { replaceExisting: false });
 
