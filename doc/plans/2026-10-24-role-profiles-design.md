@@ -1,7 +1,7 @@
 # Role Profiles design
 
 **Date:** 2026-10-24  
-**Status:** Proposed — requires approval before implementation
+**Status:** Implemented — Task 6 verification recorded 2026-10-24; live browser acceptance remains unexecuted because this environment lacks the Rust/Cargo toolchain required for the full build.
 
 ## Intent
 
@@ -290,6 +290,14 @@ Add **Role Profiles** after Audit in the ORG group.
    files reset.
 5. Confirm an existing CEO still has its pre-feature behavior and the CEO
    Profile cannot be edited.
+
+**2026-10-24 verification status:** The corresponding server and UI acceptance
+coverage passed in a focused run (30 tests across four files), including
+duplicate Profile adoption, managed-path-only restore, the duplicate-confirmation
+UI, and the read-only CEO Profile. A live browser walkthrough of these five
+steps was not run: `pnpm build` cannot complete in this environment because the
+Runner's native build requires `cargo`, which is not installed. This automated
+evidence does not replace the remaining interactive acceptance check.
 
 ## Risks and mitigations
 

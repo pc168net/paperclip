@@ -139,7 +139,26 @@
 - Modify: `doc/plans/2026-10-24-role-profiles-design.md`
 - Modify: `doc/plans/2026-10-24-role-profiles-implementation.md`
 
-- [ ] Run `pnpm -r typecheck`, `pnpm test:run`, `pnpm build`, and `pnpm check:token-gates`.
-- [ ] Exercise the manual acceptance path from the design: create Researcher, adopt twice, change one agent, diff/restore it, and confirm CEO Profile is read-only.
-- [ ] Update design/implementation status and record any verification limitation.
-- [ ] Commit verification documentation.
+- [x] Run `pnpm -r typecheck`, `pnpm test:run`, `pnpm build`, and `pnpm check:token-gates`.
+  `pnpm check:token-gates` passed. `pnpm -r typecheck` and `pnpm build` both
+  reached the Runner Rust stage but could not finish because `cargo` is not
+  installed. `pnpm test:run` exceeded the 20-minute local bound before a final
+  summary; it had reported 18 failures in the unrelated
+  `agent-hire-ai-connections.test.ts` file. See the Task 6 report for exact
+  command evidence.
+- [x] Exercise acceptance behavior with focused automated coverage:
+  `pnpm exec vitest run server/src/__tests__/agent-role-profile-adoption.test.ts ui/src/pages/RoleProfiles.test.tsx ui/src/components/new-agent/NewAgentSetup.deployment.test.tsx ui/src/pages/AgentDetail.instructions.test.tsx`
+  passed 30 tests. It covers adoption by two agents after confirmation,
+  managed-path-only restore, duplicate-confirmation UI, and read-only CEO
+  Profile. The live browser walkthrough remains unexecuted because the missing
+  Rust toolchain blocks the required complete build.
+- [x] Update design/implementation status and record verification limitations.
+- [x] Commit verification documentation.
+
+## Task 6 verification status (2026-10-24)
+
+The Role Profiles-focused acceptance coverage and token gates are green. Full
+repository verification is incomplete in this environment: install Rust/Cargo
+and rerun typecheck/build, then rerun the full test suite to completion and
+perform the documented browser walkthrough before treating this as full
+end-to-end acceptance.
