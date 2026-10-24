@@ -67,7 +67,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const created = await lifecycle.requestHire(companyId, { name: "Created by member", createdByUserId: "spoofed-user" }, { createdByUserId: "member-1" });
     expect(created.createdByUserId).toBe("member-1");
     expect((await current(created.id)).createdByUserId).toBe("member-1");
-    const system = await lifecycle.requestHire(companyId, { name: "System hire", createdByUserId: "spoofed-user", allowDuplicate: true });
+    const system = await lifecycle.requestHire(companyId, { name: "System hire", createdByUserId: "spoofed-user" }, { allowDuplicate: true });
     expect((await current(system.id)).createdByUserId).toBeNull();
   });
 
@@ -415,7 +415,7 @@ const support = await getEmbeddedPostgresTestSupport();
   it.each(["updateConfiguration", "updateAndTransition"] as const)("limits %s budget reconciliation to the edited agent", async command => {
     const lifecycle = createAgentLifecycle(db);
     const one = await hire();
-    const two = await lifecycle.requestHire(companyId, { name: "Other budget target", allowDuplicate: true });
+    const two = await lifecycle.requestHire(companyId, { name: "Other budget target" }, { allowDuplicate: true });
     await db.update(companies).set({ status: "paused" }).where(eq(companies.id, companyId));
     if (command === "updateConfiguration") await lifecycle.updateConfiguration(one.id, { budgetMonthlyCents: 1000 });
     else await lifecycle.updateAndTransition(one.id, "pause", { budgetMonthlyCents: 1000 });
@@ -425,7 +425,7 @@ const support = await getEmbeddedPostgresTestSupport();
 
   it("limits invocation policy checks to the requested agent", async () => {
     const one = await hire();
-    const two = await createAgentLifecycle(db).requestHire(companyId, { name: "Another agent", allowDuplicate: true });
+    const two = await createAgentLifecycle(db).requestHire(companyId, { name: "Another agent" }, { allowDuplicate: true });
     await db.update(companies).set({ status: "paused" }).where(eq(companies.id, companyId));
     await budgetService(db).getInvocationBlock(companyId, one.id);
     expect((await current(one.id)).lifecycleHolds).toContain("company_paused");

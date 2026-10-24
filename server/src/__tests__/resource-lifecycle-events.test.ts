@@ -42,7 +42,7 @@ describePostgres("Resource lifecycle events", () => {
 
   const events = () => db.select().from(resourceLifecycleEvents).where(and(eq(resourceLifecycleEvents.companyId, companyId), ne(resourceLifecycleEvents.resourceType, "agent_runtime")));
   const createAgent = async (status: "idle" | "pending_approval" | "terminated" = "idle", database: Db = db, allowDuplicate = false) => {
-    const agent = await createAgentLifecycle(database).requestHire(companyId, { name: "Lifecycle agent", adapterType: "process", adapterConfig: {}, status, allowDuplicate });
+    const agent = await createAgentLifecycle(database).requestHire(companyId, { name: "Lifecycle agent", adapterType: "process", adapterConfig: {}, status }, { allowDuplicate });
     await worker.process(agent.id);
     return (await agentService(db).getById(agent.id))!;
   };
