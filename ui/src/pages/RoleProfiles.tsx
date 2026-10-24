@@ -94,7 +94,11 @@ export function RoleProfiles() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.agentRoleProfiles.list(selectedCompanyId ?? "") });
       pushToast({ title: "Role Profile created", tone: "success" });
     },
-    onError: (error) => pushToast({ title: "Could not create Role Profile", body: error instanceof Error ? error.message : undefined, tone: "error" }),
+    onError: (error) => {
+      setCreating(false);
+      setDraft(null);
+      pushToast({ title: "Could not create Role Profile", body: error instanceof Error ? error.message : undefined, tone: "error" });
+    },
   });
   const archiveProfile = useMutation({
     mutationFn: () => agentRoleProfilesApi.archive(selectedCompanyId!, selectedProfile!.id),
@@ -113,7 +117,7 @@ export function RoleProfiles() {
     <div className="flex h-full min-h-0">
       <aside className="w-80 shrink-0 border-r border-border">
         <div className="border-b border-border px-4 py-3">
-          <div className="flex items-center justify-between gap-2"><h1 className="text-lg font-semibold">Role Profiles</h1><Button type="button" size="sm" variant="outline" onClick={() => { setCreating(true); setSelectedProfileId(null); setDraft({ name: "New Profile", description: "", changeSummary: "", managedFiles: { "AGENTS.md": "" } }); }}><Plus />Create Profile</Button></div>
+          <div className="flex items-center justify-between gap-2"><h1 className="text-lg font-semibold">Role Profiles</h1><Button type="button" size="sm" variant="outline" onClick={() => { setCreating(true); setDraft({ name: "New Profile", description: "", changeSummary: "", managedFiles: { "AGENTS.md": "" } }); }}><Plus />Create Profile</Button></div>
           <p className="mt-1 text-sm text-muted-foreground">Initial instruction bundles for new agents.</p>
         </div>
         <div className="p-2">
@@ -121,7 +125,7 @@ export function RoleProfiles() {
             <button
               key={profile.id}
               type="button"
-              onClick={() => setSelectedProfileId(profile.id)}
+              onClick={() => { setCreating(false); setDraft(profileDraft(profile)); setSelectedProfileId(profile.id); }}
               className={`w-full rounded-md px-3 py-2 text-left hover:bg-accent ${selectedProfile?.id === profile.id ? "bg-accent" : ""}`}
             >
               <div className="flex items-center justify-between gap-2">
@@ -139,7 +143,7 @@ export function RoleProfiles() {
       </aside>
       <main className="min-w-0 flex-1 overflow-y-auto p-6">
         {creating && draft ? (
-          <EditableProfile profile={{ id: "new", companyId: selectedCompanyId ?? "", key: "new", name: draft.name, description: draft.description, kind: "custom", readOnly: false, revision: { id: "new", number: 1, managedFiles: draft.managedFiles, changeSummary: null, createdAt: null } }} draft={draft} revisions={[]} revisionsLoading={false} revisionsError={false} saving={createProfile.isPending} onChange={setDraft} onSave={() => createProfile.mutate(draft)} saveLabel="Save Profile" />
+          <EditableProfile profile={{ id: "new", companyId: selectedCompanyId ?? "", key: "new", name: draft.name, description: draft.description, kind: "custom", readOnly: false, revision: { id: "new", number: 1, managedFiles: draft.managedFiles, changeSummary: null, createdAt: null } }} draft={draft} revisions={[]} revisionsLoading={false} revisionsError={false} saving={createProfile.isPending} onChange={setDraft} onSave={() => createProfile.mutate(draft)} onCancel={() => { setCreating(false); setDraft(null); }} saveLabel="Save Profile" />
         ) : selectedProfile ? (
           selectedProfile.readOnly ? (
             <ReadOnlyProfile profile={selectedProfile} />
@@ -178,7 +182,7 @@ function ReadOnlyProfile({ profile }: { profile: AgentRoleProfile }) {
   </div>;
 }
 
-function EditableProfile({ profile, draft, revisions, revisionsLoading, revisionsError, saving, onChange, onSave, onArchive, archiving, saveLabel = "Save revision" }: { profile: AgentRoleProfile; draft: ProfileDraft; revisions: { id: string; number: number; managedFiles: AgentRoleProfileManagedFiles; changeSummary: string | null; createdAt: string | Date | null }[]; revisionsLoading: boolean; revisionsError: boolean; saving: boolean; onChange: (draft: ProfileDraft) => void; onSave: () => void; onArchive?: () => void; archiving?: boolean; saveLabel?: string }) {
+function EditableProfile({ profile, draft, revisions, revisionsLoading, revisionsError, saving, onChange, onSave, onCancel, onArchive, archiving, saveLabel = "Save revision" }: { profile: AgentRoleProfile; draft: ProfileDraft; revisions: { id: string; number: number; managedFiles: AgentRoleProfileManagedFiles; changeSummary: string | null; createdAt: string | Date | null }[]; revisionsLoading: boolean; revisionsError: boolean; saving: boolean; onChange: (draft: ProfileDraft) => void; onSave: () => void; onCancel?: () => void; onArchive?: () => void; archiving?: boolean; saveLabel?: string }) {
   const setFile = (path: string, content: string) => onChange({ ...draft, managedFiles: { ...draft.managedFiles, [path]: content } });
   const removeFile = (path: string) => {
     const managedFiles = { ...draft.managedFiles };
@@ -192,7 +196,7 @@ function EditableProfile({ profile, draft, revisions, revisionsLoading, revision
     onChange({ ...draft, managedFiles: { ...draft.managedFiles, [path]: "" } });
   };
   return <div className="max-w-3xl space-y-6">
-    <div className="flex items-start justify-between gap-4"><div><div className="flex items-center gap-2"><h2 className="text-xl font-bold">{profile.name}</h2><Badge variant="secondary">{profileKindLabel(profile)}</Badge></div><p className="mt-2 text-sm text-muted-foreground">Changes create a new immutable revision. Agents that already adopted this Profile are not changed.</p></div><div className="flex gap-2">{onArchive && <Button variant="destructive" onClick={onArchive} disabled={archiving}>Archive Profile</Button>}<Button onClick={onSave} disabled={saving || Object.keys(draft.managedFiles).length === 0}><Save />{saveLabel}</Button></div></div>
+    <div className="flex items-start justify-between gap-4"><div><div className="flex items-center gap-2"><h2 className="text-xl font-bold">{profile.name}</h2><Badge variant="secondary">{profileKindLabel(profile)}</Badge></div><p className="mt-2 text-sm text-muted-foreground">Changes create a new immutable revision. Agents that already adopted this Profile are not changed.</p></div><div className="flex gap-2">{onCancel && <Button variant="outline" onClick={onCancel} aria-label="Cancel new Profile">Cancel</Button>}{onArchive && <Button variant="destructive" onClick={onArchive} disabled={archiving}>Archive Profile</Button>}<Button onClick={onSave} disabled={saving || Object.keys(draft.managedFiles).length === 0}><Save />{saveLabel}</Button></div></div>
     <div className="space-y-4 rounded-lg border border-border p-4">
       <label className="block text-sm font-medium">Name<Input aria-label="Profile name" value={draft.name} onChange={(event) => onChange({ ...draft, name: event.target.value })} className="mt-2" /></label>
       <label className="block text-sm font-medium">Description<Textarea value={draft.description} onChange={(event) => onChange({ ...draft, description: event.target.value })} className="mt-2" /></label>

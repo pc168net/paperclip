@@ -196,6 +196,49 @@ describe("RoleProfiles", () => {
     await waitFor(() => expect(mockAgentRoleProfilesApi.archive).toHaveBeenCalledWith("company-1", profiles[1].id));
     expect(container.textContent).not.toContain("Archive Profile");
   });
+
+  it("cancels a new Profile draft and exits it when an existing Profile is selected", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    flushSync(() => {
+      root!.render(<QueryClientProvider client={queryClient}><RoleProfiles /></QueryClientProvider>);
+    });
+    await flushQueries();
+
+    await act(async () => { buttonByText(container, "Create Profile").click(); });
+    expect((container.querySelector('input[aria-label="Profile name"]') as HTMLInputElement).value).toBe("New Profile");
+
+    const cancelButton = container.querySelector('button[aria-label="Cancel new Profile"]') as HTMLButtonElement | null;
+    expect(cancelButton).not.toBeNull();
+    await act(async () => { cancelButton!.click(); });
+    await flushQueries();
+    expect(container.textContent).toContain("Existing CEO behavior remains unchanged");
+    expect(container.textContent).not.toContain("Save Profile");
+
+    await act(async () => { buttonByText(container, "Create Profile").click(); });
+    await act(async () => { buttonByText(container, "Researcher").click(); });
+    await flushQueries();
+    expect((container.querySelector('input[aria-label="Profile name"]') as HTMLInputElement).value).toBe("Researcher");
+    expect(container.textContent).not.toContain("Save Profile");
+  });
+
+  it("exits new Profile mode after a failed creation", async () => {
+    mockAgentRoleProfilesApi.create.mockRejectedValue(new Error("create failed"));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    flushSync(() => {
+      root!.render(<QueryClientProvider client={queryClient}><RoleProfiles /></QueryClientProvider>);
+    });
+    await flushQueries();
+
+    await act(async () => { buttonByText(container, "Create Profile").click(); });
+    await act(async () => { buttonByText(container, "Save Profile").click(); });
+    await waitFor(() => expect(mockAgentRoleProfilesApi.create).toHaveBeenCalled());
+    await flushQueries();
+
+    expect(container.textContent).toContain("Existing CEO behavior remains unchanged");
+    expect(container.textContent).not.toContain("Save Profile");
+  });
 });
 
 function buttonByText(container: HTMLElement, text: string) {
