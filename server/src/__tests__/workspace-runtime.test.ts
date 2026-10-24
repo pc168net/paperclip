@@ -169,7 +169,7 @@ async function writeRegisteredSourceConfig(baseCwd: string, instanceId = "source
 
 async function createTempRepo(defaultBranch = "main") {
   const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-repo-"));
-  await runGit(repoRoot, ["init"]);
+  await runGit(repoRoot, ["init", "-b", defaultBranch]);
   await runGit(repoRoot, ["config", "user.email", "paperclip@example.com"]);
   await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
   await fs.writeFile(path.join(repoRoot, "README.md"), "hello\n", "utf8");
@@ -178,6 +178,32 @@ async function createTempRepo(defaultBranch = "main") {
   await runGit(repoRoot, ["checkout", "-B", defaultBranch]);
   return repoRoot;
 }
+
+describe("createTempRepo", () => {
+  it("creates only the requested master branch when Git defaults to main", async () => {
+    const configRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-config-"));
+    const globalConfigPath = path.join(configRoot, "config");
+    const originalGlobalConfig = process.env.GIT_CONFIG_GLOBAL;
+    await fs.writeFile(globalConfigPath, "[init]\n\tdefaultBranch = main\n", "utf8");
+    process.env.GIT_CONFIG_GLOBAL = globalConfigPath;
+
+    try {
+      const repoRoot = await createTempRepo("master");
+      try {
+        expect(await readGit(repoRoot, ["branch", "--format=%(refname:short)"])).toBe("master");
+      } finally {
+        await fs.rm(repoRoot, { recursive: true, force: true });
+      }
+    } finally {
+      if (originalGlobalConfig === undefined) {
+        delete process.env.GIT_CONFIG_GLOBAL;
+      } else {
+        process.env.GIT_CONFIG_GLOBAL = originalGlobalConfig;
+      }
+      await fs.rm(configRoot, { recursive: true, force: true });
+    }
+  });
+});
 
 async function expectPersistedBranchMismatchRejected(input: {
   repoRoot: string;
