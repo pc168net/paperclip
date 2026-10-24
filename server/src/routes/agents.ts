@@ -96,7 +96,7 @@ import { agentInstructionRevisionService } from "../services/agent-instruction-r
 import { agentInstructionWorkingCopyService } from "../services/agent-instruction-working-copies.js";
 import { authorizeInstructionRead } from "../services/agent-instruction-authorization.js";
 import { instructionPath } from "../services/agent-instruction-files.js";
-import { agentInstructionsBundleMode, deriveBundleState } from "../services/agent-instructions.js";
+import { agentInstructionsBundleMode, deriveBundleState, resolveManagedInstructionsRoot } from "../services/agent-instructions.js";
 import {
   agentService,
   agentInstructionsService,
@@ -290,6 +290,7 @@ import {
 import { managedAgentProfileService } from "../services/managed-agent-profiles.js";
 import { remoteAgentProfileService } from "../services/remote-agent-profiles.js";
 import { agentRoleProfileService } from "../services/agent-role-profiles.js";
+import { deleteAgentDependencies } from "../services/agent-deletion.js";
 
 const AGENT_SKILL_ASSIGNMENT_MODES = ["add", "remove", "replace"] as const;
 
@@ -535,6 +536,8 @@ export function agentRoutes(
        */
       completeCredential?: SetupTokenSecretWriter;
     };
+    /** Test-only fault boundary for managed instruction materialization. */
+    instructionsService?: ReturnType<typeof agentInstructionsService>;
   } = {},
 ) {
   // Legacy hardcoded maps — used as fallback when adapter module does not
@@ -776,7 +779,7 @@ export function agentRoutes(
   const recovery = recoveryService(db, { enqueueWakeup: heartbeat.wakeup });
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
-  const instructions = agentInstructionsService(db);
+  const instructions = options.instructionsService ?? agentInstructionsService(db);
   const agentFiles = agentFileStore(db);
   const instructionRevisions = agentInstructionRevisionService(db);
   const instructionWorkingCopies = agentInstructionWorkingCopyService(db);
@@ -2416,6 +2419,52 @@ export function agentRoutes(
       allowPendingApprovalConfigUpdate: true,
     });
     return (updated as T | null) ?? { ...agent, adapterConfig: nextAdapterConfig };
+  }
+
+  async function materializeProfileAdoptionOrCompensate<T extends {
+    id: string;
+    companyId: string;
+    name: string;
+    role: string;
+    adapterType: string;
+    adapterConfig: unknown;
+  }>(
+    agent: T,
+    profile: { profile: { id: string }; revision: { id: string; managedFiles: Record<string, string> } },
+    actor: { userId?: string | null },
+  ) {
+    try {
+      await roleProfiles.recordAdoption({
+        companyId: agent.companyId,
+        agentId: agent.id,
+        profileId: profile.profile.id,
+        revisionId: profile.revision.id,
+        managedPaths: Object.keys(profile.revision.managedFiles),
+        actor,
+        action: "agent_role_profile.applied",
+      });
+      return await materializeDefaultInstructionsBundleForNewAgent(agent, {
+        files: profile.revision.managedFiles,
+        entryFile: "AGENTS.md",
+      });
+    } catch (error) {
+      // Database and filesystem writes cannot share a native transaction. A
+      // failed Profile application compensates both durable records and the
+      // server-owned instruction root before the request exposes the new agent.
+      await rm(resolveManagedInstructionsRoot(agent), { recursive: true, force: true });
+      try {
+        await db.transaction(async (tx) => {
+          await deleteAgentDependencies(tx as unknown as Db, agent.companyId, agent.id);
+          await tx.delete(agentsTable).where(and(
+            eq(agentsTable.companyId, agent.companyId),
+            eq(agentsTable.id, agent.id),
+          ));
+        });
+      } catch (compensationError) {
+        throw new AggregateError([error, compensationError], "Role Profile application failed and compensation did not complete");
+      }
+      throw error;
+    }
   }
 
   // Resolve the server-owned instruction bundle for the onboarding first agent.
@@ -4455,26 +4504,9 @@ export function agentRoutes(
         agentName: createdAgent.name,
         organizationName: company.name ?? null,
       });
-      // The adoption manifest is persisted before filesystem materialization so
-      // a failed host write cannot leave Profile-owned files without restore
-      // authority, matching direct agent creation.
-      if (selectedHireRoleProfile) {
-        await roleProfiles.recordAdoption({
-          companyId,
-          agentId: createdAgent.id,
-          profileId: selectedHireRoleProfile.profile.id,
-          revisionId: selectedHireRoleProfile.revision.id,
-          managedPaths: Object.keys(selectedHireRoleProfile.revision.managedFiles),
-          actor: { userId: req.actor.userId },
-          action: "agent_role_profile.applied",
-        });
-      }
-      const agent = await materializeDefaultInstructionsBundleForNewAgent(
-        createdAgent,
-        selectedHireRoleProfile
-          ? { files: selectedHireRoleProfile.revision.managedFiles, entryFile: "AGENTS.md" }
-          : onboardingFirstAgentBundle ?? instructionsBundle,
-      );
+      const agent = selectedHireRoleProfile
+        ? await materializeProfileAdoptionOrCompensate(createdAgent, selectedHireRoleProfile, { userId: req.actor.userId })
+        : await materializeDefaultInstructionsBundleForNewAgent(createdAgent, onboardingFirstAgentBundle ?? instructionsBundle);
 
       let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
       const actor = getActorInfo(req);
@@ -4644,7 +4676,10 @@ export function agentRoutes(
     if (createRoleProfileId && req.actor.type !== "board") {
       throw forbidden("Only board users can apply a Role Profile");
     }
-    if (createRoleProfileId && createInput.role === "ceo") {
+    // Direct creation is also an onboarding entry point. Treat its first roster
+    // member as CEO-authoritative regardless of an omitted or forged role.
+    const isFirstDirectCreate = createRoleProfileId && (await svc.list(companyId)).length === 0;
+    if (createRoleProfileId && (createInput.role === "ceo" || isFirstDirectCreate)) {
       throw unprocessable("The CEO Role Profile is informational and cannot change CEO instructions");
     }
     const selectedRoleProfile = createRoleProfileId
@@ -4747,28 +4782,9 @@ export function agentRoutes(
       agentName: createdAgent.name,
       organizationName: company.name ?? null,
     });
-    // Persist the adoption before filesystem materialization. The managed
-    // instruction root cannot participate in a database transaction; recording
-    // provenance first means a host write or commit failure never leaves copied
-    // Profile files without the manifest that bounds a later restore. A failed
-    // materialization remains recoverable through the recorded adoption.
-    if (selectedRoleProfile) {
-      await roleProfiles.recordAdoption({
-        companyId,
-        agentId: createdAgent.id,
-        profileId: selectedRoleProfile.profile.id,
-        revisionId: selectedRoleProfile.revision.id,
-        managedPaths: Object.keys(selectedRoleProfile.revision.managedFiles),
-        actor: { userId: req.actor.userId },
-        action: "agent_role_profile.applied",
-      });
-    }
-    const agent = await materializeDefaultInstructionsBundleForNewAgent(
-      createdAgent,
-      selectedRoleProfile
-        ? { files: selectedRoleProfile.revision.managedFiles, entryFile: "AGENTS.md" }
-        : onboardingFirstAgentBundle ?? instructionsBundle,
-    );
+    const agent = selectedRoleProfile
+      ? await materializeProfileAdoptionOrCompensate(createdAgent, selectedRoleProfile, { userId: req.actor.userId })
+      : await materializeDefaultInstructionsBundleForNewAgent(createdAgent, onboardingFirstAgentBundle ?? instructionsBundle);
 
     const actor = getActorInfo(req);
     await logActivity(db, {

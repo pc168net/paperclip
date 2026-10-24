@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { companies, createDb } from "@paperclipai/db";
+import { agentRoleProfileAdoptions, agents, companies, createDb } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import { agentFileStore, fileHash } from "../services/agent-file-store.js";
 import { errorHandler } from "../middleware/index.js";
 import { agentRoleProfileRoutes } from "../routes/agent-role-profiles.js";
 import { agentRoutes } from "../routes/agents.js";
+import { agentInstructionsService } from "../services/index.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -28,7 +30,7 @@ if (!support.supported) console.warn(`Role Profile adoption database tests unava
     return id;
   }
 
-  function app(companyId: string) {
+  function app(companyId: string, agentRouteOptions?: any) {
     const result = express();
     result.use(express.json());
     result.use((req, _res, next) => {
@@ -39,9 +41,16 @@ if (!support.supported) console.warn(`Role Profile adoption database tests unava
       next();
     });
     result.use("/api", agentRoleProfileRoutes(db));
-    result.use("/api", agentRoutes(db));
+    result.use("/api", agentRoutes(db, agentRouteOptions));
     result.use(errorHandler);
     return result;
+  }
+
+  async function bootstrapCeo(api: express.Express, companyId: string) {
+    await request(api)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({ name: "Chief", role: "ceo", adapterType: "claude_local" })
+      .expect(201);
   }
 
   it("copies a selected Profile's files into independent general agents after explicit duplicate confirmation", async () => {
@@ -51,6 +60,7 @@ if (!support.supported) console.warn(`Role Profile adoption database tests unava
       .post(`/api/companies/${companyId}/agent-role-profiles`)
       .send({ name: "Research", managedFiles: { "AGENTS.md": "Research instructions", "SOUL.md": "Curious" } })
       .expect(201);
+    await bootstrapCeo(api, companyId);
 
     const first = await request(api)
       .post(`/api/companies/${companyId}/agents`)
@@ -132,6 +142,46 @@ if (!support.supported) console.warn(`Role Profile adoption database tests unava
       .expect(422);
   });
 
+  it("rejects Profile application for the first direct creation when the request omits role", async () => {
+    const companyId = await createCompany();
+    const api = app(companyId);
+    const profile = await request(api)
+      .post(`/api/companies/${companyId}/agent-role-profiles`)
+      .send({ name: "First direct attempt", managedFiles: { "AGENTS.md": "Not first-agent instructions" } })
+      .expect(201);
+
+    await request(api)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({ name: "First teammate", adapterType: "claude_local", roleProfileId: profile.body.id })
+      .expect(422);
+  });
+
+  it("compensates a failed Profile materialization without leaving an agent or adoption", async () => {
+    const companyId = await createCompany();
+    await bootstrapCeo(app(companyId), companyId);
+    const instructions = agentInstructionsService(db);
+    const api = app(companyId, {
+      instructionsService: {
+        ...instructions,
+        materializeManagedBundle: async () => { throw new Error("simulated instruction storage failure"); },
+      },
+    });
+    const profile = await request(api)
+      .post(`/api/companies/${companyId}/agent-role-profiles`)
+      .send({ name: "Materialization failure", managedFiles: { "AGENTS.md": "Profile instructions" } })
+      .expect(201);
+
+    await request(api)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({ name: "Broken profile agent", adapterType: "claude_local", roleProfileId: profile.body.id })
+      .expect(500);
+
+    expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toEqual([
+      expect.objectContaining({ name: "Chief", role: "ceo" }),
+    ]);
+    expect(await db.select().from(agentRoleProfileAdoptions).where(eq(agentRoleProfileAdoptions.companyId, companyId))).toEqual([]);
+  });
+
   it("restores only files recorded in the adoption manifest", async () => {
     const companyId = await createCompany();
     const api = app(companyId);
@@ -139,6 +189,7 @@ if (!support.supported) console.warn(`Role Profile adoption database tests unava
       .post(`/api/companies/${companyId}/agent-role-profiles`)
       .send({ name: "Restore profile", managedFiles: { "AGENTS.md": "Profile agent", "SOUL.md": "Profile soul" } })
       .expect(201);
+    await bootstrapCeo(api, companyId);
     const created = await request(api)
       .post(`/api/companies/${companyId}/agents`)
       .send({ name: "Restore agent", adapterType: "claude_local", roleProfileId: profile.body.id })
@@ -171,6 +222,7 @@ if (!support.supported) console.warn(`Role Profile adoption database tests unava
       .post(`/api/companies/${companyId}/agent-role-profiles`)
       .send({ name: "Narrow restore", managedFiles: { "AGENTS.md": "Version one" } })
       .expect(201);
+    await bootstrapCeo(api, companyId);
     const created = await request(api)
       .post(`/api/companies/${companyId}/agents`)
       .send({ name: "Narrow agent", adapterType: "claude_local", roleProfileId: profile.body.id })
@@ -196,6 +248,7 @@ if (!support.supported) console.warn(`Role Profile adoption database tests unava
       .post(`/api/companies/${companyId}/agent-role-profiles`)
       .send({ name: "Explicit narrow restore", managedFiles: { "AGENTS.md": "Version one" } })
       .expect(201);
+    await bootstrapCeo(api, companyId);
     const created = await request(api)
       .post(`/api/companies/${companyId}/agents`)
       .send({ name: "Explicit narrow agent", adapterType: "claude_local", roleProfileId: profile.body.id })
@@ -227,6 +280,7 @@ if (!support.supported) console.warn(`Role Profile adoption database tests unava
       .post(`/api/companies/${companyId}/agent-role-profiles`)
       .send({ name: "Pinned revision", managedFiles: { "AGENTS.md": "Version one" } })
       .expect(201);
+    await bootstrapCeo(api, companyId);
     const created = await request(api)
       .post(`/api/companies/${companyId}/agents`)
       .send({ name: "Pinned agent", adapterType: "claude_local", roleProfileId: profile.body.id })

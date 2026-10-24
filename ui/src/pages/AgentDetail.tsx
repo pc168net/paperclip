@@ -2734,7 +2734,7 @@ export function PromptsTab({
               <p className="text-sm text-muted-foreground">
                 {roleProfile.data.profile.name} · revision {roleProfile.data.revision.number}
               </p>
-              <p className="text-xs text-muted-foreground">Applied {formatDate(roleProfile.data.createdAt)}</p>
+              <p className="text-xs text-muted-foreground">Applied {formatDate(roleProfile.data.appliedAt)}</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <Button type="button" size="sm" variant="outline" onClick={() => setShowProfileDiff((open) => !open)}>

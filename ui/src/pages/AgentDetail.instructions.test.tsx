@@ -648,7 +648,7 @@ describe("PromptsTab instruction editor", () => {
     const summary = makeSummary("AGENTS.md", "AGENTS.md");
     mockAgentsApi.roleProfile.mockResolvedValue({
       profileId: "profile-1", appliedRevisionId: "revision-2", managedPaths: ["AGENTS.md", "SOUL.md"],
-      createdAt: "2026-10-24T00:00:00Z", updatedAt: "2026-10-24T00:00:00Z",
+      appliedAt: "2026-10-24T00:00:00Z", updatedAt: "2026-10-24T00:00:00Z",
       profile: { id: "profile-1", name: "Researcher", key: "researcher" },
       revision: { id: "revision-2", number: 2, managedFiles: { "AGENTS.md": "# Research", "SOUL.md": "Focus" } },
     });
@@ -676,7 +676,7 @@ describe("PromptsTab instruction editor", () => {
     const summary = makeSummary("AGENTS.md", "AGENTS.md");
     mockAgentsApi.roleProfile.mockResolvedValue({
       profileId: "profile-1", appliedRevisionId: "revision-2", managedPaths: ["AGENTS.md"],
-      createdAt: "2026-10-24T00:00:00Z", updatedAt: "2026-10-24T00:00:00Z",
+      appliedAt: "2026-10-24T00:00:00Z", updatedAt: "2026-10-24T00:00:00Z",
       profile: { id: "profile-1", name: "Researcher", key: "researcher" },
       revision: { id: "revision-2", number: 2, managedFiles: { "AGENTS.md": "# Research" } },
     });

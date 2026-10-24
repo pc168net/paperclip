@@ -85,7 +85,7 @@ export interface AgentRoleProfileAdoption {
   profileId: string;
   appliedRevisionId: string;
   managedPaths: string[];
-  createdAt: string | Date;
+  appliedAt: string | Date;
   updatedAt: string | Date;
   profile: { id: string; name: string; key: string };
   revision: { id: string; number: number; managedFiles: Record<string, string> };
