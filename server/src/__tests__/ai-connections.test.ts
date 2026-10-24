@@ -11,7 +11,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { promises as fs } from "node:fs";
-import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:fs/promises";
+import { mkdtemp, realpath, rm, access, readFile, writeFile, stat, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
@@ -28,7 +28,7 @@ import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import * as runnerProbe from "../vendor/paperclip-runner/index.js";
 import * as nativeCodexRunner from "../services/native-runtime/native-codex-runner.js";
 import { testNativeRunnerAuthentication } from "../services/native-runtime/setup-readiness.js";
-import { prepareManagedAiRuntime, withManagedAiProbe, assertManagedAiProjectAuth, isAiConnectionBusy } from "../services/ai-connection-runtime.js";
+import { prepareManagedAiRuntime as prepareManagedAiRuntimeForFixture, withManagedAiProbe as withManagedAiProbeForFixture, assertManagedAiProjectAuth, isAiConnectionBusy } from "../services/ai-connection-runtime.js";
 import { execute as executeGemini, testEnvironment as testGeminiEnvironment } from "@paperclipai/adapter-gemini-local/server";
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
@@ -45,6 +45,7 @@ vi.mock("../services/local-ai-browser-login.js", () => ({
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
 let db: ReturnType<typeof createDb>;
 let home: string;
+let executionRoot: string;
 const companyId = randomUUID();
 const otherCompanyId = randomUUID();
 const agentId = randomUUID();
@@ -52,9 +53,19 @@ let service: ReturnType<typeof aiConnectionService>;
 const binding = { provider: "anthropic", method: "api_key", mode: "responsible_user" } as const;
 const input = { companyId, agentId, adapterType: "claude_local", binding };
 const create = (userId: string, name: string, ownership: "personal" | "shared" = "personal") => service.save(companyId, userId, { provider: "anthropic", method: "api_key", ownership, name, apiKey: "fixture", agentIds: [], allAgents: true }, `fixture-${name}`);
+const fixtureAdapterConfig = <T extends Record<string, unknown>>(config: T) => ({
+  ...config,
+  cwd: typeof config.cwd === "string" ? config.cwd : executionRoot,
+});
+const prepareManagedAiRuntime = (database: Parameters<typeof prepareManagedAiRuntimeForFixture>[0], runtimeInput: Parameters<typeof prepareManagedAiRuntimeForFixture>[1]) =>
+  prepareManagedAiRuntimeForFixture(database, { ...runtimeInput, config: fixtureAdapterConfig(runtimeInput.config) });
+const withManagedAiProbe = (...[database, runtimeInput, probe]: Parameters<typeof withManagedAiProbeForFixture>) =>
+  withManagedAiProbeForFixture(database, { ...runtimeInput, config: fixtureAdapterConfig(runtimeInput.config) }, probe);
 
 beforeAll(async () => {
   home = await realpath(await mkdtemp(path.join(os.tmpdir(), "paperclip-ai-tests-")));
+  executionRoot = path.join(home, "execution-root");
+  await mkdir(executionRoot);
   vi.stubEnv("PAPERCLIP_HOME", home);
   vi.stubEnv("PAPERCLIP_INSTANCE_ID", "ai-connection-fixture");
   database = await startEmbeddedPostgresTestDatabase("paperclip-ai-db-");
@@ -67,6 +78,27 @@ beforeAll(async () => {
 afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
 
 describe("managed AI connections", () => {
+  it("does not inherit host Claude auth from the suite-owned execution root", async () => {
+    const owner = "fixture-execution-root-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    await create(owner, "Fixture execution root");
+
+    const runtime = await prepareManagedAiRuntime(db, {
+      companyId,
+      agentId,
+      responsibleUserId: owner,
+      adapterType: "claude_local",
+      binding,
+      config: {},
+    });
+    try {
+      expect(runtime.config.cwd).toBe(executionRoot);
+      expect(runtime.config.env.ANTHROPIC_API_KEY).toBe("fixture-Fixture execution root");
+    } finally {
+      await runtime.cleanup();
+    }
+  });
+
   it("keeps a custom gateway personal and selectable without requiring a provider default", async () => {
     const owner = "custom-gateway-onboarding-owner";
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
