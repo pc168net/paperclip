@@ -3,6 +3,7 @@ import { AGENT_ROLE_LABELS, AGENT_ROLES, isUuidLike, type CreateAgentRoleProfile
 import { activityLog, agentRoleProfileRevisions, agentRoleProfiles, type Db } from "@paperclipai/db";
 import { and, desc, eq, isNull, max } from "drizzle-orm";
 import { badRequest, conflict, forbidden, notFound } from "../errors.js";
+import { isUniqueViolation } from "../db-errors.js";
 import { loadDefaultAgentInstructionsBundle } from "./default-agent-instructions.js";
 import { instructionPath } from "./agent-instruction-files.js";
 
@@ -10,13 +11,13 @@ const SYSTEM_CEO_PROFILE_ID = "system-ceo";
 type BoardActor = { userId?: string | null };
 
 function assertProfileId(profileId: string) {
-  if (profileId !== SYSTEM_CEO_PROFILE_ID && !isUuidLike(profileId)) {
+  if (profileId !== SYSTEM_CEO_PROFILE_ID && (profileId.trim() !== profileId || !isUuidLike(profileId))) {
     throw badRequest("Invalid role profile id");
   }
 }
 
 function assertRevisionId(revisionId: string) {
-  if (!isUuidLike(revisionId)) throw badRequest("Invalid role profile revision id");
+  if (revisionId.trim() !== revisionId || !isUuidLike(revisionId)) throw badRequest("Invalid role profile revision id");
 }
 
 function validateManagedFiles(managedFiles: CreateAgentRoleProfile["managedFiles"]) {
@@ -29,6 +30,15 @@ export function agentRoleProfileService(db: Db) {
     const defaults = await loadDefaultAgentInstructionsBundle("default");
     await db.transaction(async (tx) => {
       for (const role of AGENT_ROLES.filter((role) => role !== "ceo")) {
+        const [sameName] = await tx.select({ id: agentRoleProfiles.id, key: agentRoleProfiles.key }).from(agentRoleProfiles)
+          .where(and(eq(agentRoleProfiles.companyId, companyId), eq(agentRoleProfiles.name, AGENT_ROLE_LABELS[role])))
+          .for("update");
+        if (sameName && sameName.key !== role) {
+          await tx.update(agentRoleProfiles).set({
+            name: `${AGENT_ROLE_LABELS[role]} (custom ${sameName.id})`,
+            updatedAt: new Date(),
+          }).where(and(eq(agentRoleProfiles.companyId, companyId), eq(agentRoleProfiles.id, sameName.id)));
+        }
         const [profile] = await tx.insert(agentRoleProfiles).values({
           companyId, key: role, name: AGENT_ROLE_LABELS[role], kind: "seeded",
         }).onConflictDoNothing({ target: [agentRoleProfiles.companyId, agentRoleProfiles.key] }).returning();
@@ -89,24 +99,30 @@ export function agentRoleProfileService(db: Db) {
   async function create(companyId: string, input: CreateAgentRoleProfile, actor: BoardActor) {
     await ensureSeededProfiles(companyId);
     validateManagedFiles(input.managedFiles);
-    const result = await db.transaction(async (tx) => {
-      const [namedProfile] = await tx.select({ id: agentRoleProfiles.id }).from(agentRoleProfiles).where(and(
-        eq(agentRoleProfiles.companyId, companyId),
-        eq(agentRoleProfiles.name, input.name),
-      ));
-      if (namedProfile) throw conflict("A Role Profile with this name already exists");
-      const [profile] = await tx.insert(agentRoleProfiles).values({
-        companyId, key: `custom-${randomUUID()}`, name: input.name, description: input.description ?? null,
-        kind: "custom", createdByUserId: actor.userId ?? null,
-      }).returning();
-      const [revision] = await tx.insert(agentRoleProfileRevisions).values({
-        companyId, profileId: profile!.id, revisionNumber: 1, managedFiles: input.managedFiles,
-        changeSummary: input.changeSummary ?? null, createdByUserId: actor.userId ?? null,
-      }).returning();
-      await tx.insert(activityLog).values({ companyId, actorType: "user", actorId: actor.userId ?? "board", action: "agent_role_profile.created", entityType: "agent_role_profile", entityId: profile!.id });
-      return { ...profile!, readOnly: false, revision: publicRevision(revision!) };
-    });
-    return result;
+    try {
+      return await db.transaction(async (tx) => {
+        const [namedProfile] = await tx.select({ id: agentRoleProfiles.id }).from(agentRoleProfiles).where(and(
+          eq(agentRoleProfiles.companyId, companyId),
+          eq(agentRoleProfiles.name, input.name),
+        ));
+        if (namedProfile) throw conflict("A Role Profile with this name already exists");
+        const [profile] = await tx.insert(agentRoleProfiles).values({
+          companyId, key: `custom-${randomUUID()}`, name: input.name, description: input.description ?? null,
+          kind: "custom", createdByUserId: actor.userId ?? null,
+        }).returning();
+        const [revision] = await tx.insert(agentRoleProfileRevisions).values({
+          companyId, profileId: profile!.id, revisionNumber: 1, managedFiles: input.managedFiles,
+          changeSummary: input.changeSummary ?? null, createdByUserId: actor.userId ?? null,
+        }).returning();
+        await tx.insert(activityLog).values({ companyId, actorType: "user", actorId: actor.userId ?? "board", action: "agent_role_profile.created", entityType: "agent_role_profile", entityId: profile!.id });
+        return { ...profile!, readOnly: false, revision: publicRevision(revision!) };
+      });
+    } catch (error) {
+      if (isUniqueViolation(error, "agent_role_profiles_company_name_uq")) {
+        throw conflict("A Role Profile with this name already exists");
+      }
+      throw error;
+    }
   }
 
   async function update(companyId: string, profileId: string, input: UpdateAgentRoleProfile, actor: BoardActor) {

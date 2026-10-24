@@ -64,6 +64,30 @@ if (!support.supported) console.warn(`Role Profile database tests unavailable: $
     ]));
   });
 
+  it("recovers a legacy custom Engineer name collision while seeding Engineer", async () => {
+    const companyId = await company();
+    const [legacy] = await db.insert(agentRoleProfiles).values({
+      companyId,
+      key: `custom-${randomUUID()}`,
+      name: "Engineer",
+      kind: "custom",
+    }).returning();
+    await db.insert(agentRoleProfileRevisions).values({
+      companyId,
+      profileId: legacy!.id,
+      revisionNumber: 1,
+      managedFiles: { "AGENTS.md": "Legacy custom profile" },
+    });
+
+    await request(app(companyId)).get(`/api/companies/${companyId}/agent-role-profiles`).expect(200);
+
+    const profiles = await db.select().from(agentRoleProfiles).where(eq(agentRoleProfiles.companyId, companyId));
+    expect(profiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "engineer", name: "Engineer", kind: "seeded" }),
+      expect.objectContaining({ id: legacy!.id, kind: "custom", name: `Engineer (custom ${legacy!.id})` }),
+    ]));
+  });
+
   it.each(["C:/instructions.md", "notes\0instructions.md"])("rejects manifests with an instruction path rejected by the file policy: %s", async (path) => {
     const companyId = await company();
     await request(app(companyId))
@@ -77,6 +101,21 @@ if (!support.supported) console.warn(`Role Profile database tests unavailable: $
     const api = app(companyId);
     await request(api).get(`/api/companies/${companyId}/agent-role-profiles/not-a-uuid/revisions`).expect(400);
     await request(api).get(`/api/companies/${companyId}/agent-role-profiles/not-a-uuid/revisions/not-a-uuid`).expect(400);
+  });
+
+  it("rejects whitespace-wrapped profile ids before revision queries", async () => {
+    const companyId = await company();
+    const api = app(companyId);
+    const created = await request(api)
+      .post(`/api/companies/${companyId}/agent-role-profiles`)
+      .send({ name: "Whitespace profile", managedFiles: { "AGENTS.md": "Profile" } })
+      .expect(201);
+    const profileId = created.body.id as string;
+    const revisionId = created.body.revision.id as string;
+    const whitespaceProfileId = `%20${profileId}%20`;
+
+    await request(api).get(`/api/companies/${companyId}/agent-role-profiles/${whitespaceProfileId}/revisions`).expect(400);
+    await request(api).get(`/api/companies/${companyId}/agent-role-profiles/${whitespaceProfileId}/revisions/${revisionId}`).expect(400);
   });
 
   it("keeps revisions immutable, archives non-CEO profiles, and rejects CEO mutations", async () => {
