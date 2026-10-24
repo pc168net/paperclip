@@ -1606,9 +1606,9 @@ function LatestRunCard({
   });
 
   const summaryRaw = run
-    ? run.resultJson
+    ? run.errorCode === "native_provider_rate_limited" ? ""
+      : run.resultJson
       ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
-      : run.errorCode === "native_provider_rate_limited" ? ""
       : run.error ?? ""
     : "";
 
@@ -3376,9 +3376,10 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
   const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
   const StatusIcon = statusInfo.icon;
   const metrics = runMetrics(run);
-  const summary = run.resultJson
+  const summary = run.errorCode === "native_provider_rate_limited"
+    ? ""
+    : run.resultJson
     ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
-    : run.errorCode === "native_provider_rate_limited" ? ""
     : run.error ?? "";
   const sourceResolvedFold = readSourceResolvedWatchdogFold(run.resultJson);
 
@@ -4693,7 +4694,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
         <div ref={logEndRef} />
       </div>
 
-      {(run.status === "failed" || run.status === "timed_out") && (
+      {(run.status === "failed" || run.status === "timed_out") && run.errorCode !== "native_provider_rate_limited" && (
         <div className="rounded-lg border border-red-300 dark:border-red-500/30 bg-red-50 dark:bg-red-950/20 p-3 space-y-2">
           <div className="text-xs font-medium text-red-700 dark:text-red-300">Failure details</div>
           {run.error && (

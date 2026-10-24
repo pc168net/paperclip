@@ -71,6 +71,35 @@ it.each([
 });
 
 it.each([
+  ["streamlined", RunsTab],
+  ["production", ProductionRunsTab],
+] as const)("hides provider result summaries and failure details for a rate-limited %s run", async (_variant, Tab) => {
+  const run = {
+    id: "rate-limited-failed-run", companyId: "company-1", agentId: "agent-1", status: "failed", invocationSource: "automation",
+    createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z",
+    resultJson: { summary: "Azure provider result summary: eastus-private", providerPayload: "secret provider error" },
+    usageJson: null, contextSnapshot: null, exitCode: 1, error: "Azure provider payload: deployment eastus-private",
+    errorCode: "native_provider_rate_limited", stderrExcerpt: "provider stderr", stdoutExcerpt: "provider stdout", logRef: null,
+    startedAt: null, finishedAt: "2026-01-01T00:01:00Z", retryOfRunId: null,
+  } as unknown as HeartbeatRun;
+  get.mockResolvedValue(run);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  const element = document.createElement("div"); document.body.append(element);
+  const root = createRoot(element);
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter><PanelProvider><ToastProvider>
+      <Tab runs={[run]} companyId="company-1" agentId="agent-1" agentRouteId="agent-1" selectedRunId="rate-limited-failed-run" adapterType="codex_local" adapterConfig={{}} />
+    </ToastProvider></PanelProvider></MemoryRouter></QueryClientProvider>));
+    await vi.waitFor(async () => { await act(async () => {}); expect(element.textContent).toContain("failed"); });
+    expect(element.textContent).not.toContain("Azure provider result summary");
+    expect(element.textContent).not.toContain("secret provider error");
+    expect(element.textContent).not.toContain("Azure provider payload");
+    expect(element.textContent).not.toContain("native_provider_rate_limited");
+    expect(element.textContent).not.toContain("Failure details");
+  } finally { await act(async () => root.unmount()); client.clear(); element.remove(); }
+});
+
+it.each([
   { Tab: RunsTab, isMobile: false }, { Tab: ProductionRunsTab, isMobile: false },
   { Tab: RunsTab, isMobile: true }, { Tab: ProductionRunsTab, isMobile: true },
 ])("renders an older selected run when history is empty (%#)", async ({ Tab, isMobile }) => {
