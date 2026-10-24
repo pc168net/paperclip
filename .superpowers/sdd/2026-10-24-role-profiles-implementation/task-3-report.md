@@ -96,8 +96,52 @@ unavailable.
   managed-instruction invariant. A Profile revision that omits that entry will
   receive a validation error before mutation.
 - File writes necessarily use the existing filesystem-backed managed-instruction
-  mechanisms. Adoption metadata is recorded only after successful initial
-  materialization; restore metadata is recorded only after the per-file writes
+  mechanisms. Restore metadata is recorded only after the per-file writes
   complete. A host filesystem failure during a multi-file restore can therefore
   leave a partial file restore but no advanced adoption revision; retry remains
   safe and the stored provenance continues to bound deletion authority.
+
+## Review-fix addendum
+
+### Root cause
+
+Review identified three correctness gaps in the initial implementation:
+
+1. Diff constructed its candidate path set from both `adoption.managedPaths`
+   and the target revision's paths. A later Profile revision could therefore
+   claim an independently created agent file.
+2. Diff and restore delegated an omitted revision to the Profile service, where
+   omission means latest revision, rather than pinning to the agent's recorded
+   adoption revision.
+3. Creation materialized files before the adoption database transaction. A
+   database failure on that later transaction could leave copied files with no
+   restoration authority manifest.
+
+### Fixes
+
+- Diff and restore now enumerate **only** `adoption.managedPaths`. A target
+  revision may replace or omit those recorded paths, but cannot add new restore
+  authority. Omitted target content is still shown as a removal, so deletion
+  remains limited to prior Profile-owned paths.
+- Diff and restore now explicitly pass `adoption.appliedRevisionId` when the
+  request omits a revision. Another Profile revision requires the caller to
+  name its ID.
+- Agent creation now persists the adoption row and its activity record before
+  the managed-bundle filesystem operation. Both database writes remain one
+  transaction. If they fail, materialization is never attempted; if filesystem
+  materialization fails afterward, durable adoption provenance remains to bound
+  and recover the instruction state. Profile selection with an explicit bundle
+  is rejected so provenance cannot be recorded for a bundle that was deliberately
+  not materialized.
+
+### Review-fix RED/GREEN evidence
+
+- **RED:** Added a test where an agent adopted revision 1, created `notes.md`,
+  and a later Profile revision added `notes.md`. The old diff exposed
+  `notes.md` as changed and restore would overwrite it.
+- **RED:** Added a test where revision 2 changed `AGENTS.md`. The old default
+  diff returned revision 2 instead of the agent's adopted revision 1.
+- **GREEN:** `pnpm exec vitest run
+  server/src/__tests__/agent-role-profile-adoption.test.ts` passed all 4 tests
+  after limiting candidates to the stored manifest, pinning omitted revisions,
+  and reordering durable adoption before materialization.

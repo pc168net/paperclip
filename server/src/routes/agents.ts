@@ -4617,6 +4617,9 @@ export function agentRoutes(
       throw unprocessable("The selected adapter does not support managed instruction bundles");
     }
     const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
+    if (selectedRoleProfile && KNOWN_INSTRUCTIONS_BUNDLE_KEYS.some((key) => rawCreateAdapterConfig[key] !== undefined)) {
+      throw unprocessable("A Role Profile cannot be combined with an explicit instructions bundle");
+    }
     assertProviderTraceSettingTransition(req, createInput.runtimeConfig);
     await assertFreshPaperclipRunnerProvider(
       companyId,
@@ -4707,17 +4710,15 @@ export function agentRoutes(
       agentName: createdAgent.name,
       organizationName: company.name ?? null,
     });
-    const agent = await materializeDefaultInstructionsBundleForNewAgent(
-      createdAgent,
-      selectedRoleProfile
-        ? { files: selectedRoleProfile.revision.managedFiles, entryFile: "AGENTS.md" }
-        : onboardingFirstAgentBundle ?? instructionsBundle,
-    );
-
+    // Persist the adoption before filesystem materialization. The managed
+    // instruction root cannot participate in a database transaction; recording
+    // provenance first means a host write or commit failure never leaves copied
+    // Profile files without the manifest that bounds a later restore. A failed
+    // materialization remains recoverable through the recorded adoption.
     if (selectedRoleProfile) {
       await roleProfiles.recordAdoption({
         companyId,
-        agentId: agent.id,
+        agentId: createdAgent.id,
         profileId: selectedRoleProfile.profile.id,
         revisionId: selectedRoleProfile.revision.id,
         managedPaths: Object.keys(selectedRoleProfile.revision.managedFiles),
@@ -4725,6 +4726,12 @@ export function agentRoutes(
         action: "agent_role_profile.applied",
       });
     }
+    const agent = await materializeDefaultInstructionsBundleForNewAgent(
+      createdAgent,
+      selectedRoleProfile
+        ? { files: selectedRoleProfile.revision.managedFiles, entryFile: "AGENTS.md" }
+        : onboardingFirstAgentBundle ?? instructionsBundle,
+    );
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -4993,7 +5000,10 @@ export function agentRoutes(
     actor: Request["actor"],
   ) {
     const targetFiles = revision.managedFiles;
-    const paths = [...new Set([...adoption.managedPaths, ...Object.keys(targetFiles)])].sort();
+    // The adoption manifest is an immutable authority boundary: a later Profile
+    // revision may add files, but it must not claim independently-created agent
+    // files during comparison or restore.
+    const paths = [...new Set(adoption.managedPaths)].sort();
     const files = await Promise.all(paths.map(async (relativePath) => {
       instructionPath(relativePath);
       const current = await agentFiles.read(agent.companyId, agent.id, relativePath, actor);
@@ -5024,7 +5034,7 @@ export function agentRoutes(
     const adoption = await roleProfiles.getAdoption(existing.companyId, existing.id);
     if (!adoption) throw notFound("Role Profile adoption not found");
     const revisionId = typeof req.query.revisionId === "string" ? req.query.revisionId : undefined;
-    const selected = await roleProfiles.resolveAdoptionRevision(existing.companyId, adoption.profileId, revisionId, { includeArchived: true });
+    const selected = await roleProfiles.resolveAdoptionRevision(existing.companyId, adoption.profileId, revisionId ?? adoption.appliedRevisionId, { includeArchived: true });
     res.json(await roleProfileDiff(existing, adoption, selected.revision, req.actor));
   });
 
@@ -5036,7 +5046,7 @@ export function agentRoutes(
     assertExternalInstructionsAdmin(req, existing);
     const adoption = await roleProfiles.getAdoption(existing.companyId, existing.id);
     if (!adoption) throw notFound("Role Profile adoption not found");
-    const selected = await roleProfiles.resolveAdoptionRevision(existing.companyId, adoption.profileId, req.body.roleProfileRevisionId, { includeArchived: true });
+    const selected = await roleProfiles.resolveAdoptionRevision(existing.companyId, adoption.profileId, req.body.roleProfileRevisionId ?? adoption.appliedRevisionId, { includeArchived: true });
     const diff = await roleProfileDiff(existing, adoption, selected.revision, req.actor);
     const entryFile = deriveBundleState(existing).entryFile;
     const entry = diff.files.find((file) => file.path === entryFile);
