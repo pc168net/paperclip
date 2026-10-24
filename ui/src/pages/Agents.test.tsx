@@ -403,16 +403,38 @@ describe("Agents", () => {
     }
   });
 
-  it("shows the configured model beside the adapter on the all agents page", async () => {
+  it.each([
+    ["streamlined", Agents],
+    ["production", ProductionAgents],
+  ] as const)("shows the server-projected connection deployment model in the %s agent list", async (_mode, AgentList) => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({
+        adapterConfig: { model: "gpt-5.6-sol" },
+        effectiveModel: "gpt-5.6-terra",
+        modelSource: "verified_deployment",
+      }),
+    ]);
     root = createRoot(container);
     await act(async () => {
-      renderAgentsView(root, queryClient);
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <AgentList />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
     });
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("codex_local");
-    expect(container.textContent).toContain("gpt-5.4");
+    const listToggle = container.querySelector<HTMLButtonElement>('button[aria-label="List view"]');
+    await act(async () => { listToggle?.click(); });
+    await flushReact();
+
+    const row = findAgentRow(container, "Alpha");
+    expect(row?.textContent).toContain("gpt-5.6-terra");
+    expect(row?.textContent).toContain("Connection deployment");
+    expect(row?.textContent).toContain("gpt-5.6-sol");
 
     // The heartbeat cell must render on a single line so full dates like
     // "Apr 30, 2026" never wrap (PAP-85 defect #2).
