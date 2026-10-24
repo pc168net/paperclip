@@ -211,3 +211,61 @@ $ pnpm --filter @paperclipai/server exec tsc --noEmit
   override; it adds no dependency calls and preserves the batched selector path.
 - The focused test covers both public list and detail route projections. The full
   repository suite was not run because this is an ordering-only route regression.
+
+## Review-fix round 5
+
+### Fixed remaining unattributed explicit-binding gap
+
+The projection previously built its fail-closed set only from explicit bindings
+that supplied `deploymentId`. Consequently, an agent request without a
+responsible user (`userId === null`) could still expose `adapterConfig.model` as
+an executable effective model when its explicit `shared` or `delegated` binding
+left deployment selection to runtime.
+
+The resolver now classifies every parsed explicit `shared`/`delegated` binding
+before the responsible-user check. With no responsible user, all such bindings
+return `{ effectiveModel: null, modelSource: "adapter_default" }` immediately,
+without account, grant, installation, or deployment reads. Router,
+responsible-user, malformed, and absent bindings preserve their existing
+semantics. In particular, an agent with no explicit binding retains its normal
+configured/default projection.
+
+### RED evidence
+
+Added real embedded-Postgres route coverage for an unattributed agent reading a
+shared explicit binding with no `deploymentId`. Before the correction:
+
+```text
+$ pnpm --filter @paperclipai/server exec vitest run src/__tests__/agent-effective-model-routes.test.ts
+FAIL  src/__tests__/agent-effective-model-routes.test.ts > agent effective model routes > projects only a verified selected deployment as an agent's effective model
+AssertionError: expected { effectiveModel: 'gpt-5.6-sol', …(1) } to deeply equal { effectiveModel: null, …(1) }
+```
+
+### GREEN evidence
+
+```text
+$ pnpm --filter @paperclipai/server exec vitest run src/__tests__/agent-effective-model-routes.test.ts
+Test Files  1 passed (1)
+Tests       1 passed (1)
+
+$ pnpm --filter @paperclipai/server exec tsc --noEmit
+(no output; exit 0)
+
+$ pnpm --filter @paperclipai/shared typecheck
+passed
+
+$ git diff --check
+(no output; exit 0)
+```
+
+### Regression coverage and review
+
+- An unattributed agent receives fail-closed projections for both an explicit
+  `shared` binding and an explicit `delegated` binding that omit `deploymentId`,
+  through both agent-list and agent-detail routes.
+- An unattributed agent with no explicit AI binding still receives the configured
+  `gpt-5.6-sol` projection, proving the fail-closed classification does not
+  erase the normal configured/default path.
+- The early return avoids extra account/grant/deployment queries for requests
+  that cannot validate an explicit binding. Attributed bindings retain the
+  existing batched account and set-based connection/install reads.

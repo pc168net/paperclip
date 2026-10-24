@@ -1370,9 +1370,23 @@ export function agentRoutes(
     const fallbacks = parsed.map(({ agent, binding }) =>
       agentModelFallback(agent, binding.success && binding.data.mode === "router"),
     );
-    const explicit = parsed.flatMap(({ agent, binding }, index) =>
-      binding.success && binding.data.mode !== "router" && binding.data.mode !== "responsible_user" && binding.data.deploymentId
+    const explicitBindings = parsed.flatMap(({ agent, binding }, index) =>
+      binding.success && (binding.data.mode === "shared" || binding.data.mode === "delegated")
         ? [{ agent, binding: binding.data, index }]
+        : [],
+    );
+    // Explicit shared/delegated credentials require a responsible user for every
+    // runtime selection. Without one, do not claim adapterConfig.model can run,
+    // even when this binding leaves deployment selection to the runtime.
+    if (!userId) {
+      for (const { index } of explicitBindings) {
+        fallbacks[index] = { effectiveModel: null, modelSource: "adapter_default" };
+      }
+      return fallbacks;
+    }
+    const explicit = explicitBindings.flatMap(({ agent, binding, index }) =>
+      binding.deploymentId
+        ? [{ agent, binding, index }]
         : [],
     );
     if (!explicit.length) return fallbacks;
@@ -1383,8 +1397,6 @@ export function agentRoutes(
     for (const { index } of explicit) {
       fallbacks[index] = { effectiveModel: null, modelSource: "adapter_default" };
     }
-    if (!userId) return fallbacks;
-
     // Resolve account audience and deployments once for the company. The list
     // surface can contain hundreds of agents; selecting each binding separately
     // would turn this display-only projection into an N+1 query path.

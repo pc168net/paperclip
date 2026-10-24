@@ -142,6 +142,8 @@ describe("agent effective model routes", () => {
     const staleAgentId = randomUUID();
     const failedAgentId = randomUUID();
     const noConnectionAgentId = randomUUID();
+    const explicitUndeployedAgentId = randomUUID();
+    const delegatedUndeployedAgentId = randomUUID();
     const routerAgentId = randomUUID();
     const incompatibleBindingAgentId = randomUUID();
     const methodMismatchAgentId = randomUUID();
@@ -178,6 +180,22 @@ describe("agent effective model routes", () => {
         name: "Unconnected runner",
         adapterType: "paperclip_runner",
         adapterConfig: { provider: "codex", model: "gpt-5.6-sol" },
+      },
+      {
+        id: explicitUndeployedAgentId,
+        companyId,
+        name: "Explicit undeployed runner",
+        adapterType: "paperclip_runner",
+        adapterConfig: { provider: "codex", model: "gpt-5.6-sol" },
+        runtimeConfig: { aiConnection: { provider: "openai", method: "api_key", mode: "shared", connectionId: connected.connectionId, grantId: connected.grantId } },
+      },
+      {
+        id: delegatedUndeployedAgentId,
+        companyId,
+        name: "Delegated undeployed runner",
+        adapterType: "paperclip_runner",
+        adapterConfig: { provider: "codex", model: "gpt-5.6-sol" },
+        runtimeConfig: { aiConnection: { provider: "openai", method: "api_key", mode: "delegated", connectionId: personal.connectionId, grantId: personal.grantId } },
       },
       {
         id: routerAgentId,
@@ -333,5 +351,36 @@ describe("agent effective model routes", () => {
         modelSource: "adapter_default",
       });
     }
+
+    const unattributedUndeployedList = await request(app(unattributedAgentActor)).get(`/api/companies/${companyId}/agents`);
+    const unattributedUndeployedDetails = await Promise.all([
+      request(app(unattributedAgentActor)).get(`/api/agents/${explicitUndeployedAgentId}`),
+      request(app(unattributedAgentActor)).get(`/api/agents/${delegatedUndeployedAgentId}`),
+    ]);
+    expect(unattributedUndeployedList.status, JSON.stringify(unattributedUndeployedList.body)).toBe(200);
+    for (const agentId of [explicitUndeployedAgentId, delegatedUndeployedAgentId]) {
+      const projected = unattributedUndeployedList.body.find((agent: { id: string }) => agent.id === agentId);
+      expect({ effectiveModel: projected.effectiveModel, modelSource: projected.modelSource }).toEqual({
+        effectiveModel: null,
+        modelSource: "adapter_default",
+      });
+    }
+    for (const response of unattributedUndeployedDetails) {
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect({ effectiveModel: response.body.effectiveModel, modelSource: response.body.modelSource }).toEqual({
+        effectiveModel: null,
+        modelSource: "adapter_default",
+      });
+    }
+
+    const unattributedUnboundDetail = await request(app(unattributedAgentActor)).get(`/api/agents/${noConnectionAgentId}`);
+    expect(unattributedUnboundDetail.status, JSON.stringify(unattributedUnboundDetail.body)).toBe(200);
+    expect({
+      effectiveModel: unattributedUnboundDetail.body.effectiveModel,
+      modelSource: unattributedUnboundDetail.body.modelSource,
+    }).toEqual({
+      effectiveModel: "gpt-5.6-sol",
+      modelSource: "agent_config",
+    });
   }, 90_000);
 });
