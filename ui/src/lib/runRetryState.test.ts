@@ -42,6 +42,23 @@ describe("runRetryState", () => {
     });
   });
 
+  it("presents only configured fallback metadata for a rate-limited retry", () => {
+    expect(describeRunRetryState({
+      status: "scheduled_retry",
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: "native_provider_rate_limited",
+      scheduledRetryAt: "2026-04-18T20:15:00.000Z",
+      contextSnapshot: {
+        rateLimitRecovery: {
+          fallbackModel: { provider: "codex", model: "gpt-5.6-sol" },
+        },
+      },
+    })).toMatchObject({
+      badgeLabel: "Model rate limited",
+      secondary: expect.stringContaining("Fallback model: gpt-5.6-sol"),
+    });
+  });
+
   it("describes exhausted retries", () => {
     expect(
       describeRunRetryState({

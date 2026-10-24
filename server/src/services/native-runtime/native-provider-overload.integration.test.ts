@@ -34,7 +34,7 @@ describe("durable native provider capacity retry", () => {
     db = createDb(temporary.connectionString);
     await db.insert(companies).values({ id: companyId, name: "Capacity regression", issuePrefix: "CAP" });
     await db.insert(agents).values([
-      { id: agentId, companyId, name: "Capacity worker", status: "active", adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "test-model" } },
+      { id: agentId, companyId, name: "Capacity worker", status: "active", adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "test-model", fallbackModel: { provider: "codex", model: "safe-fallback" } } },
       { id: otherAgentId, companyId, name: "New owner", status: "active", adapterType: "paperclip_runner" },
     ]);
   });
@@ -173,6 +173,8 @@ describe("durable native provider capacity retry", () => {
         const notices = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
         expect(notices).toHaveLength(1);
         expect(notices[0]).toMatchObject({ ownerType: "board", cause: "native_provider_rate_limited_exhausted", evidence: { agentId, issueId, retryAttempts: 2, originalError: NATIVE_PROVIDER_RATE_LIMITED_MESSAGE } });
+        expect(notices[0]?.evidence).not.toHaveProperty("provider");
+        expect(notices[0]?.evidence).not.toHaveProperty("model");
         expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(1);
         break;
       }
@@ -186,7 +188,9 @@ describe("durable native provider capacity retry", () => {
       });
       expect(retry.contextSnapshot?.rateLimitRecovery).not.toHaveProperty("model");
       expect(retry.contextSnapshot?.rateLimitRecovery).not.toHaveProperty("originalModel");
-      expect(retry.contextSnapshot?.rateLimitRecovery).not.toHaveProperty("fallbackModel");
+       expect(retry.contextSnapshot?.rateLimitRecovery).toMatchObject({
+         fallbackModel: { provider: "codex", model: "safe-fallback" },
+       });
       const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.runId, retry.id));
       expect(wake).toMatchObject({
         reason: "native_provider_rate_limited",
@@ -211,7 +215,7 @@ describe("durable native provider capacity retry", () => {
       }]);
       expect(activities[0]?.details).not.toHaveProperty("model");
       expect(activities[0]?.details).not.toHaveProperty("originalModel");
-      expect(activities[0]?.details).not.toHaveProperty("fallbackModel");
+       expect(activities[0]?.details).toMatchObject({ fallbackModel: { provider: "codex", model: "safe-fallback" } });
       const delay = failure === 0 ? 5 * 60_000 : 15 * 60_000;
       expect(retry.scheduledRetryAt!.getTime() - before).toBeGreaterThanOrEqual(delay);
       expect(retry.scheduledRetryAt!.getTime() - Date.now()).toBeLessThanOrEqual(delay);

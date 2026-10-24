@@ -54,12 +54,11 @@ import {
   type ActivityPublication,
 } from "../activity-log.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
-import { materializeNativeProviderCapacityRetry } from "./native-provider-capacity-retry.js";
 import {
   isNativeProviderCapacityRetryCode,
+  materializeNativeProviderCapacityRetry,
   nativeProviderCapacityRetryMessage,
 } from "./native-provider-capacity-retry.js";
-import { NATIVE_PROVIDER_RATE_LIMITED_MESSAGE } from "./native-provider-failure.js";
 
 export class NativeStatusRaceError extends Error {
   readonly code = "native_status_race" as const;
@@ -781,22 +780,16 @@ async function materializeDecisionEffect(input: {
     // Exhaustion is a board-visible incident, not another retry opportunity.
     // Keep the action source-scoped and keyed by the committed decision so a
     // replay of the same terminal decision cannot create duplicate notices.
-    if (effect.owner === "board" && /automatic retries exhausted/i.test(effect.action)) {
-      const capacityCode = effect.action.startsWith(NATIVE_PROVIDER_RATE_LIMITED_MESSAGE)
-        ? "native_provider_rate_limited"
-        : "native_provider_overloaded";
+    if (effect.owner === "board" && isNativeProviderCapacityRetryCode(effect.cause)) {
+      const capacityCode = effect.cause;
       const [run] = await input.tx.select({
         agentId: heartbeatRuns.agentId,
         scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
         error: heartbeatRuns.error,
         errorCode: heartbeatRuns.errorCode,
-        runnerProfileJson: heartbeatRuns.runnerProfileJson,
       }).from(heartbeatRuns).where(and(
         eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
       )).limit(1);
-      const profile = record(run?.runnerProfileJson);
-      const nativeInput = record(profile.nativeExecutionInput);
-      const provider = record(nativeInput.provider);
       await issueRecoveryActionService(input.tx).upsertSourceScoped({
         companyId: input.companyId,
         sourceIssueId: input.issue.id,
@@ -811,8 +804,6 @@ async function materializeDecisionEffect(input: {
           decisionId: input.decisionId,
           agentId: run?.agentId ?? null,
           issueId: input.issue.id,
-          provider: typeof provider.kind === "string" ? provider.kind : null,
-          model: typeof provider.model === "string" ? provider.model : null,
           retryAttempts: run?.scheduledRetryAttempt ?? 0,
           originalError: nativeProviderCapacityRetryMessage(capacityCode),
         },

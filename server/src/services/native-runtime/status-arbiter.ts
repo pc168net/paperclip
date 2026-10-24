@@ -53,6 +53,8 @@ export type NativeStatusEffect =
       kind: "bind_blocker";
       owner: { agentId: string } | "board";
       action: string;
+      /** Closed capacity cause carried to durable recovery materialization. */
+      cause?: NativeProviderCapacityRetryCode;
     }
   | { kind: "schedule_retry"; cause: string; summary: string; agentId: string }
   | {
@@ -218,7 +220,7 @@ export function arbitrateNativeStatus(input: {
         policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
         statusAction: "blocked", toStatus: "blocked", reasonCode: `${providerCapacityFailure}_exhausted`,
         unblockDescriptor: { owner: "board", action },
-        effects: [{ kind: "bind_blocker", owner: "board", action }],
+        effects: [{ kind: "bind_blocker", owner: "board", action, cause: providerCapacityFailure }],
       };
     }
     return {

@@ -492,6 +492,41 @@ describe("PaperclipControlPlanePort conformance", () => {
     }
   });
 
+  it("persists only closed rate-limit evidence for failed turns", async () => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    const providerMessage = "Azure eastus-private deployment secret-grant rate limit";
+    await db.insert(heartbeatRuns).values({
+      id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId,
+      nativeSessionId: identity.sessionId, runnerInstanceId: runnerId,
+      completionContractId: contractId, completionContractSha256: contractSha,
+      contextSnapshot: { issueId: identity.issueId },
+    });
+    const observed: PrpEvent[] = [];
+    const port = new PaperclipControlPlanePort(db, {
+      ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `rate-limit-${identity.runId}`,
+    }, { onCommittedEvent: async event => { observed.push(event); } });
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    await port.appendEvent({
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:1`, sourceSeq: 1,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+      normalizedSessionId: identity.sessionId, turnId: "rate-limit-turn", eventType: "turn.failed", schemaVersion: 1,
+      priority: 0, emittedAt: new Date().toISOString(), payload: {
+        status: "failed", error: { codexErrorInfo: "rate_limit_exceeded", message: providerMessage, region: "eastus-private" },
+      },
+    });
+    const [persisted] = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
+    const saved = JSON.stringify({ persisted, observed });
+    expect(saved).not.toContain(providerMessage);
+    expect(saved).not.toContain("eastus-private");
+    expect(persisted.payload).not.toBeNull();
+    expect((persisted.payload!.prpEvent as PrpEvent).payload).toEqual({
+      status: "failed", error: { codexErrorInfo: "rate_limit_exceeded" },
+    });
+  });
+
   it("runs the unchanged package conformance suite against Paperclip persistence", async () => {
     const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
     const committedEventIds: string[] = [];

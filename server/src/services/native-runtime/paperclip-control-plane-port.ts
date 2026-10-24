@@ -56,6 +56,29 @@ function isCompleteInput(value: NativeRunResult | CompleteControlPlaneRunInput):
   return "result" in value && "terminal" in value;
 }
 
+/**
+ * A recognized provider rate limit needs only its closed classifier for
+ * finalization replay. Provider text can contain deployment or account details,
+ * so never make it durable or publish it through the run-event stream.
+ */
+function sanitizeRateLimitedTurnFailure(event: PrpEvent): PrpEvent {
+  const payload = event.payload;
+  const error = payload.error;
+  if (
+    event.eventType !== "turn.failed" ||
+    payload.status !== "failed" ||
+    !error || typeof error !== "object" || Array.isArray(error) ||
+    (error as Record<string, unknown>).codexErrorInfo !== "rate_limit_exceeded"
+  ) return event;
+  return {
+    ...event,
+    payload: {
+      status: "failed",
+      error: { codexErrorInfo: "rate_limit_exceeded" },
+    },
+  };
+}
+
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -256,7 +279,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         }
       }
     }
-    event = redactRunnerApiPayloads(event);
+    event = sanitizeRateLimitedTurnFailure(redactRunnerApiPayloads(event));
     const persisted = await this.#db.transaction(async tx => {
       this.#assertActive(options);
       const receipt = await appendHeartbeatRunEvent(tx as unknown as Db, {

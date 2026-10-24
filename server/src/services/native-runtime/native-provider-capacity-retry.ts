@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { agentWakeupRequests, heartbeatRuns, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, agents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { accountingForScheduledRetry, executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import {
   NATIVE_PROVIDER_CAPACITY_MAX_RETRIES,
@@ -82,6 +82,10 @@ export async function materializeNativeProviderCapacityRetry(input: {
     "paperclipTaskMarkdownAssignment", "paperclipTaskMarkdownAssignmentCompact", "paperclipTurnContext",
   ]) delete predecessorContext[key];
   const errorMessage = nativeProviderCapacityRetryMessage(input.cause);
+  const [agent] = await input.tx.select({ adapterConfig: agents.adapterConfig }).from(agents).where(and(
+    eq(agents.companyId, run.companyId), eq(agents.id, run.agentId),
+  )).limit(1);
+  const fallbackModel = readConfiguredFallbackModel(agent?.adapterConfig);
   const contextSnapshot = {
     ...predecessorContext,
     issueId: input.issueId,
@@ -99,6 +103,7 @@ export async function materializeNativeProviderCapacityRetry(input: {
       category: "provider_capacity",
       retryCount: attempt,
       scheduledRetryAt: dueAt.toISOString(),
+      ...(fallbackModel ? { fallbackModel } : {}),
     },
   };
   const [wake] = await input.tx.insert(agentWakeupRequests).values({
