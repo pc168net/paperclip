@@ -1059,7 +1059,7 @@ export function connectionIntentService(db: Db) {
           const selected = await service.select({ companyId: loaded.issue.companyId, agentId: payload.requestingAgentId, userId, adapterType: managed.agent.adapterType, model: managed.adapterConfig.model, runnerProvider: managed.adapterConfig.provider, acpxAgent: managed.adapterConfig.acpxAgent, binding: managed.binding, allowUninstalledPersonal: true });
           if (selected.connection.id !== selectedConnection.id) throw conflict("Choose this account as your personal default in Connections first");
           const installs = await txAccess.listConnectionInstalls(selectedConnection.id, loaded.issue.companyId);
-          await txAccess.putConnectionInstalls(selectedConnection.id, { installs: [...installs, { targetType: "agent", targetId: payload.requestingAgentId }] }, { actorType: "user", actorId: userId });
+          await txAccess.putConnectionInstalls(selectedConnection.id, { installs: [...installs, { targetType: "agent", targetId: payload.requestingAgentId }] }, { actorType: "user", actorId: userId }, tx);
         }
         const selected = await service.select({ companyId: loaded.issue.companyId, agentId: payload.requestingAgentId, userId, adapterType: managed.agent.adapterType, model: managed.adapterConfig.model, runnerProvider: managed.adapterConfig.provider, acpxAgent: managed.adapterConfig.acpxAgent, binding: managed.binding });
         if (selected.connection.id !== selectedConnection.id) throw conflict("This is not the account selected for the agent");
@@ -1127,7 +1127,7 @@ export function connectionIntentService(db: Db) {
       await txAccess.putConnectionInstalls(selectedConnection.id, { installs: additiveInstalls }, {
         actorType: "user",
         actorId: userId,
-      });
+      }, tx);
 
       if (payload.accessRequest) {
         await grantConnectionAgentTools(txDb, {

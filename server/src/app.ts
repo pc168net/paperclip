@@ -86,6 +86,7 @@ import { summarySlotRoutes } from "./routes/summary-slots.js";
 import { statusCardRoutes } from "./routes/status-cards.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
+import { agentRoleProfileRoutes } from "./routes/agent-role-profiles.js";
 import { resolveAgentRunnerTargetForCompany } from "./services/agent-runner-selection.js";
 import type { SetupTokenSessionService } from "./services/setup-token-session.js";
 import {
@@ -896,6 +897,7 @@ export async function createApp(
   api.use(announcementRoutes(db, { ...opts.announcements, version: opts.hostVersion ?? serverVersion }));
   api.use(resourceMembershipRoutes(db));
   api.use(primaryAgentRoutes(db));
+  api.use(agentRoleProfileRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db, workerManager, opts.prepareIdleDatabaseBackup));
   if (opts.databaseBackupService) {

@@ -98,6 +98,7 @@ import { PluginSettings } from "./pages/PluginSettings";
 import { AdapterManager } from "./pages/AdapterManager";
 import { PluginPage } from "./pages/PluginPage";
 import { NewAgent } from "./pages/NewAgent";
+import { RoleProfiles } from "./pages/RoleProfiles";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
 import { AssistantConnection } from "./pages/apps/AssistantConnection";
@@ -293,6 +294,7 @@ function boardRoutes(streamlinedUiEnabled: boolean, combinedInboxTasksEnabled: b
         />
       ))}
       <Route path="agents/new" element={<NewAgent />} />
+      <Route path="role-profiles" element={<RoleProfiles />} />
       <Route path="agents/:agentId" element={<AgentDetail />} />
       <Route path="agents/:agentId/:tab" element={<AgentDetail />} />
       <Route path="agents/:agentId/runs/:runId" element={<AgentDetail />} />
@@ -874,6 +876,7 @@ export function App() {
             <Route key={tab} path={`agents/${tab}`} element={<UnprefixedBoardRedirect />} />
           ))}
           <Route path="agents/new" element={<UnprefixedBoardRedirect />} />
+          <Route path="role-profiles" element={<UnprefixedBoardRedirect />} />
           <Route path="agents/:agentId" element={<UnprefixedBoardRedirect />} />
           <Route path="agents/:agentId/:tab" element={<UnprefixedBoardRedirect />} />
           <Route path="agents/:agentId/runs/:runId" element={<UnprefixedBoardRedirect />} />

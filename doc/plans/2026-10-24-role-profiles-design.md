@@ -1,7 +1,10 @@
 # Role Profiles design
 
 **Date:** 2026-10-24  
-**Status:** Proposed — requires approval before implementation
+**Status:** Implemented — Task 6 verification was refreshed 2026-10-24:
+typecheck and build passed, while the full test run remains incomplete because
+it timed out before a final Vitest summary. Live browser acceptance remains
+unrecorded.
 
 ## Intent
 
@@ -290,6 +293,17 @@ Add **Role Profiles** after Audit in the ORG group.
    files reset.
 5. Confirm an existing CEO still has its pre-feature behavior and the CEO
    Profile cannot be edited.
+
+**2026-10-24 verification status:** The corresponding server and UI acceptance
+coverage passed in a focused run (30 tests across four files), including
+duplicate Profile adoption, managed-path-only restore, the duplicate-confirmation
+UI, and the read-only CEO Profile. Fresh `pnpm -r typecheck` and `pnpm build`
+passed; their Runner Rust/Vite warnings were non-failing environment/toolchain
+warnings. A fresh `pnpm test:run` exceeded the 25-minute harness timeout without
+a final Vitest summary (and emitted no `FAIL` or failed-test markers), so it is
+not full-suite success. A live browser walkthrough of these five steps remains
+unrecorded. This automated evidence does not replace the remaining interactive
+acceptance check.
 
 ## Risks and mitigations
 

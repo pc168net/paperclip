@@ -377,7 +377,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
 
     // A replay of the same claim inserts no second agent.
     await expect(
-      createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
+      createAgentLifecycle(db).requestHire(scope.companyId, { ...createInput(scope), allowDuplicate: true }, {
         claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
       }),
     ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
@@ -476,7 +476,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
       claudeLogin: { storedSessionId: consumedSession, ownerUserId: consumedScope.ownerUserId },
     });
     messages.push(
-      await createAgentLifecycle(db).requestHire(consumedScope.companyId, createInput(consumedScope), {
+      await createAgentLifecycle(db).requestHire(consumedScope.companyId, { ...createInput(consumedScope), allowDuplicate: true }, {
           claudeLogin: { storedSessionId: consumedSession, ownerUserId: consumedScope.ownerUserId },
         })
         .then(() => "no-error")
@@ -491,10 +491,10 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     const sessionId = await seedStoredClaim(scope, Date.now() + 60_000);
 
     const results = await Promise.allSettled([
-      createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
+      createAgentLifecycle(db).requestHire(scope.companyId, { ...createInput(scope), allowDuplicate: true }, {
         claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
       }),
-      createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
+      createAgentLifecycle(db).requestHire(scope.companyId, { ...createInput(scope), allowDuplicate: true }, {
         claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
       }),
     ]);
@@ -853,7 +853,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     const scope = await seedScope();
     const parent = await seedParentAgent(scope);
 
-    const created = await createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
+    const created = await createAgentLifecycle(db).requestHire(scope.companyId, { ...createInput(scope), allowDuplicate: true }, {
       claudeLogin: { inheritedFromAgentId: parent.id },
     });
 
@@ -868,7 +868,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
 
     const created = await createAgentLifecycle(db).requestHire(
       scope.companyId,
-      createInput(scope, { CLAUDE_CODE_OAUTH_TOKEN: { ...FIXED_BINDING, version: 5 } }),
+      { ...createInput(scope, { CLAUDE_CODE_OAUTH_TOKEN: { ...FIXED_BINDING, version: 5 } }), allowDuplicate: true },
       { claudeLogin: { inheritedFromAgentId: parent.id } },
     );
 
@@ -887,7 +887,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     await expect(
       createAgentLifecycle(db).requestHire(
         scope.companyId,
-        createInput(scope, { CLAUDE_CODE_OAUTH_TOKEN: { ...FIXED_BINDING, version: 2 } }),
+        { ...createInput(scope, { CLAUDE_CODE_OAUTH_TOKEN: { ...FIXED_BINDING, version: 2 } }), allowDuplicate: true },
         { claudeLogin: { inheritedFromAgentId: parent.id } },
       ),
     ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
@@ -901,7 +901,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     const parent = await seedParentAgent(scope, { holdsFixedBinding: false });
 
     await expect(
-      createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
+      createAgentLifecycle(db).requestHire(scope.companyId, { ...createInput(scope), allowDuplicate: true }, {
         claudeLogin: { inheritedFromAgentId: parent.id },
       }),
     ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
@@ -945,7 +945,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     const parent = await seedParentAgent(scope, { adapterType: "codex_local" });
 
     await expect(
-      createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
+      createAgentLifecycle(db).requestHire(scope.companyId, { ...createInput(scope), allowDuplicate: true }, {
         claudeLogin: { inheritedFromAgentId: parent.id },
       }),
     ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
@@ -985,7 +985,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     // the parent row lock, so it can only proceed once the rotation commits.
     const createPromise = createAgentLifecycle(db).requestHire(
         scope.companyId,
-        createInput(scope, { CLAUDE_CODE_OAUTH_TOKEN: { ...FIXED_BINDING, version: 5 } }),
+        { ...createInput(scope, { CLAUDE_CODE_OAUTH_TOKEN: { ...FIXED_BINDING, version: 5 } }), allowDuplicate: true },
         { claudeLogin: { inheritedFromAgentId: parent.id } },
       )
       .then(() => "created")

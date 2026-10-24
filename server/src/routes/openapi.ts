@@ -1,5 +1,6 @@
 import { createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema } from "@paperclipai/shared";
 import { updateFastResponseSchema } from "@paperclipai/shared";
+import { createAgentRoleProfileSchema, updateAgentRoleProfileSchema, restoreAgentRoleProfileSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
 import {
@@ -1380,6 +1381,9 @@ const browserUseOperations = [
 ] as const;
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "GET /api/agents/{id}/role-profile",
+  "GET /api/agents/{id}/role-profile/diff",
+  "POST /api/agents/{id}/role-profile/restore",
   "GET /api/companies/{companyId}/fast-response",
   "PUT /api/companies/{companyId}/fast-response",
   "GET /api/companies/{companyId}/fast-response/models",
@@ -1434,6 +1438,12 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/managed-agent-profiles",
   "GET /api/companies/{companyId}/remote-agent-profiles",
   "POST /api/companies/{companyId}/remote-agent-profiles",
+  "GET /api/companies/{companyId}/agent-role-profiles",
+  "POST /api/companies/{companyId}/agent-role-profiles",
+  "PUT /api/companies/{companyId}/agent-role-profiles/{profileId}",
+  "POST /api/companies/{companyId}/agent-role-profiles/{profileId}/archive",
+  "GET /api/companies/{companyId}/agent-role-profiles/{profileId}/revisions",
+  "GET /api/companies/{companyId}/agent-role-profiles/{profileId}/revisions/{revisionId}",
   "POST /api/execution-workspaces/{id}/reconcile-branch",
   "POST /api/execution-workspaces/{id}/login-handoff",
   "GET /api/board-api-keys",
@@ -10712,6 +10722,98 @@ registerCurrentRoute({
   summary: "Withdraw a pending issue thread interaction",
   body: withdrawIssueThreadInteractionSchema,
 });
+
+const agentRoleProfileRevisionResponseSchema = z.object({
+  id: z.string(),
+  companyId: z.string(),
+  profileId: z.string(),
+  revisionNumber: z.number().int().positive(),
+  number: z.number().int().positive().optional(),
+  managedFiles: z.record(z.string(), z.string()),
+  changeSummary: z.string().nullable(),
+  createdAt: z.string().datetime().nullable(),
+}).passthrough();
+
+const agentRoleProfileResponseSchema = z.object({
+  id: z.string(),
+  companyId: z.string(),
+  key: z.string(),
+  name: z.string(),
+  description: z.string().nullable(),
+  kind: z.enum(["system_ceo", "seeded", "custom"]),
+  readOnly: z.boolean(),
+  revision: z.object({
+    id: z.string(),
+    number: z.number().int().positive(),
+    managedFiles: z.record(z.string(), z.string()),
+    changeSummary: z.string().nullable().optional(),
+    createdAt: z.string().datetime().nullable(),
+  }),
+}).passthrough();
+
+const agentRoleProfileAdoptionResponseSchema = z.object({
+  companyId: z.string(),
+  agentId: z.string(),
+  profileId: z.string(),
+  appliedRevisionId: z.string(),
+  managedPaths: z.array(z.string()),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  profile: z.object({ id: z.string(), name: z.string(), key: z.string() }),
+  revision: z.object({
+    id: z.string(), number: z.number().int().positive(), managedFiles: z.record(z.string(), z.string()),
+    changeSummary: z.string().nullable().optional(), createdAt: z.string().datetime().nullable(),
+  }),
+}).passthrough();
+
+const agentRoleProfileDiffResponseSchema = z.object({
+  adoption: agentRoleProfileAdoptionResponseSchema,
+  revision: z.object({ id: z.string(), number: z.number().int().positive(), managedFiles: z.record(z.string(), z.string()) }),
+  files: z.array(z.object({
+    path: z.string(), status: z.enum(["unchanged", "added", "changed", "removed"]),
+    currentContent: z.string().nullable(), profileContent: z.string().nullable(),
+  })),
+});
+
+for (const route of [
+  ["get", "/api/companies/{companyId}/agent-role-profiles", "List company role profiles", undefined, r.ok(z.array(agentRoleProfileResponseSchema))],
+  ["post", "/api/companies/{companyId}/agent-role-profiles", "Create a role profile", createAgentRoleProfileSchema, r.ok(agentRoleProfileResponseSchema)],
+  ["put", "/api/companies/{companyId}/agent-role-profiles/{profileId}", "Create an immutable role profile revision", updateAgentRoleProfileSchema, r.ok(agentRoleProfileResponseSchema)],
+  ["post", "/api/companies/{companyId}/agent-role-profiles/{profileId}/archive", "Archive a role profile", undefined, r.ok()],
+  ["get", "/api/companies/{companyId}/agent-role-profiles/{profileId}/revisions", "List immutable role profile revisions", undefined, r.ok(z.array(agentRoleProfileRevisionResponseSchema))],
+  ["get", "/api/companies/{companyId}/agent-role-profiles/{profileId}/revisions/{revisionId}", "Get a role profile revision", undefined, r.ok(agentRoleProfileRevisionResponseSchema)],
+] as const) {
+  registerCurrentRoute({
+    method: route[0],
+    path: route[1],
+    tags: ["agent-role-profiles"],
+    summary: route[2],
+    ...(route[3] ? { body: route[3] } : {}),
+    responses: {
+      200: route[4],
+      ...(route[0] === "post" && route[1].endsWith("agent-role-profiles") ? { 201: route[4] } : {}),
+      400: r.badRequest,
+      401: r.unauthorized,
+      403: r.forbidden,
+      404: r.notFound,
+    },
+  });
+}
+
+for (const route of [
+  ["get", "/api/agents/{id}/role-profile", "Get agent Role Profile provenance", undefined, r.ok(agentRoleProfileAdoptionResponseSchema.nullable())],
+  ["get", "/api/agents/{id}/role-profile/diff", "Compare agent files with a Role Profile revision", undefined, r.ok(agentRoleProfileDiffResponseSchema)],
+  ["post", "/api/agents/{id}/role-profile/restore", "Restore a Role Profile revision to its adopted managed paths", restoreAgentRoleProfileSchema, r.ok(agentRoleProfileDiffResponseSchema)],
+] as const) {
+  registerCurrentRoute({
+    method: route[0],
+    path: route[1],
+    tags: ["agent-role-profiles"],
+    summary: route[2],
+    ...(route[3] ? { body: route[3] } : {}),
+    responses: { 200: route[4], 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+  });
+}
 
 for (const route of [
   ["get", "/api/routines/{id}/revisions", "List routine revisions"],

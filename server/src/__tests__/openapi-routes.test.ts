@@ -19,6 +19,7 @@ const apiPrefixes: Record<string, string> = {
   "activity.ts": "/api",
   "adapters.ts": "/api",
   "agents.ts": "/api",
+  "agent-role-profiles.ts": "/api",
   "agent-commentary.ts": "/api",
   "agent-avatars.ts": "/api",
   "agent-profile-avatar.ts": "/api",
@@ -316,6 +317,18 @@ describe("openapi routes", () => {
     expect(properties.status.enum).toEqual(["paused", "idle", "terminated"]);
     expect(properties).toHaveProperty("name");
     expect(properties).toHaveProperty("budgetMonthlyCents");
+  });
+
+  it("documents board-only agent Role Profile provenance, diff, and restore operations", () => {
+    const document = buildOpenApiSpec() as any;
+    const provenance = document.paths["/api/agents/{id}/role-profile"].get;
+    const diff = document.paths["/api/agents/{id}/role-profile/diff"].get;
+    const restore = document.paths["/api/agents/{id}/role-profile/restore"].post;
+    for (const operation of [provenance, diff, restore]) {
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      expect(operation.responses["404"]).toBeDefined();
+    }
+    expect(restore.requestBody.content["application/json"].schema.required).toContain("confirm");
   });
 
   it("documents public Dot pairing capabilities while ordinary consent keeps board authentication", () => {

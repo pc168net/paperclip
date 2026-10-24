@@ -38,7 +38,10 @@ const api = vi.hoisted(() => ({
   hire: vi.fn(),
   testEnvironment: vi.fn(),
 }));
-vi.mock("@/api/agents", () => ({ agentsApi: { list: vi.fn(async () => [{ id: "ceo", role: "ceo", status: "idle" }]), adapterModels: vi.fn(), hire: api.hire, testEnvironment: api.testEnvironment } }));
+const roleProfilesApi = vi.hoisted(() => ({ list: vi.fn() }));
+const setupState = vi.hoisted(() => ({ agents: [{ id: "ceo", role: "ceo", status: "idle" }] as Array<{ id: string; role: string; status: string }> }));
+vi.mock("@/api/agents", () => ({ agentsApi: { list: vi.fn(async () => setupState.agents), adapterModels: vi.fn(), hire: api.hire, testEnvironment: api.testEnvironment } }));
+vi.mock("@/api/agentRoleProfiles", () => ({ agentRoleProfilesApi: roleProfilesApi }));
 vi.mock("@/api/adapters", () => ({ adaptersApi: { list: vi.fn(async () => [{ type: "codex_local", loaded: true, disabled: false }, { type: "paperclip_runner", loaded: true, disabled: false }]) } }));
 vi.mock("@/api/environments", () => ({ environmentsApi: { list: vi.fn(async () => [{ id: "local-1", name: "Local", driver: "local", config: {} }]), capabilities: vi.fn(async () => ({ sandboxProviders: {} })) } }));
 vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: { get: vi.fn(async () => ({ defaultEnvironmentId: "local-1" })), getExperimental: vi.fn(async () => ({ enableNativeRunner: true })), getGeneral: vi.fn(async () => ({ executionMode: "any" })) } }));
@@ -95,6 +98,11 @@ beforeEach(() => {
   document.body.append(container);
   root = createRoot(container);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  setupState.agents = [{ id: "ceo", role: "ceo", status: "idle" }];
+  roleProfilesApi.list.mockResolvedValue([{
+    id: "profile-1", companyId: "company-1", key: "researcher", name: "Researcher", description: "Research instructions", kind: "seeded", readOnly: false,
+    revision: { id: "revision-1", number: 2, managedFiles: { "AGENTS.md": "# Research" }, changeSummary: null, createdAt: "2026-10-24T00:00:00Z" },
+  }]);
 });
 
 afterEach(async () => {
@@ -211,4 +219,79 @@ it("persists the verified Connector deployment binding when setup finishes", asy
       },
     }),
   }));
+});
+
+it("requires duplicate confirmation before creating an agent from a Profile", async () => {
+  api.testEnvironment.mockResolvedValueOnce({
+    adapterType: "codex_local", status: "pass",
+    checks: [{ code: "openai_hello_probe_passed", level: "info", message: "Verified deployment responded." }],
+    testedAt: "2026-10-23T00:00:00.000Z",
+  });
+  api.hire.mockResolvedValueOnce({ agent: { id: "agent-1", name: "Atlas", status: "idle" }, approval: null });
+
+  await act(async () => {
+    root.render(<QueryClientProvider client={client}><NewAgentSetup /></QueryClientProvider>);
+  });
+  await settle();
+
+  await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Select verified deployment")?.click());
+  await settle();
+  await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Use connection")?.click());
+  await settle();
+
+  const profile = container.querySelector<HTMLSelectElement>('select[aria-label="Role Profile"]');
+  expect(profile).not.toBeNull();
+  await act(async () => {
+    profile!.value = "profile-1";
+    profile!.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  expect(container.textContent).toContain("AGENTS.md");
+
+  await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Finish setup")?.click());
+  await settle();
+  expect(api.hire).not.toHaveBeenCalled();
+  expect(document.body.textContent).toContain("Create another agent with this Profile?");
+
+  await act(async () => [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Create duplicate agent")?.click());
+  await settle();
+  expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({
+    roleProfileId: "profile-1",
+    roleProfileRevisionId: "revision-1",
+    allowDuplicate: true,
+  }));
+});
+
+it("keeps Role Profiles out of the first-agent CEO flow", async () => {
+  setupState.agents = [];
+  await act(async () => {
+    root.render(<QueryClientProvider client={client}><NewAgentSetup /></QueryClientProvider>);
+  });
+  await settle();
+
+  await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Select verified deployment")?.click());
+  await settle();
+  await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Use connection")?.click());
+  await settle();
+
+  expect(container.querySelector('select[aria-label="Role Profile"]')).toBeNull();
+  expect(container.textContent).not.toContain("Role Profile");
+});
+
+it("offers a retry action when Role Profiles cannot load", async () => {
+  roleProfilesApi.list.mockRejectedValueOnce(new Error("Profiles unavailable"));
+  await act(async () => {
+    root.render(<QueryClientProvider client={client}><NewAgentSetup /></QueryClientProvider>);
+  });
+  await settle();
+
+  await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Select verified deployment")?.click());
+  await settle();
+  await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Use connection")?.click());
+  await settle();
+
+  expect(container.textContent).toContain("Could not load Role Profiles");
+  const retry = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Retry Role Profiles");
+  expect(retry).toBeTruthy();
+  await act(async () => retry!.click());
+  expect(roleProfilesApi.list).toHaveBeenCalledTimes(2);
 });

@@ -119,6 +119,10 @@ export const createAgentSchema = z.object({
   // Duplicate names/roles are rejected by the company-scoped hire guard unless
   // the operator explicitly confirms that a distinct agent is intended.
   allowDuplicate: z.boolean().optional(),
+  // A Role Profile is copied into the agent's managed instruction files at
+  // creation time. These references are provenance, not agent columns.
+  roleProfileId: z.string().uuid().optional(),
+  roleProfileRevisionId: z.string().uuid().optional(),
 });
 
 export type CreateAgent = z.infer<typeof createAgentSchema>;

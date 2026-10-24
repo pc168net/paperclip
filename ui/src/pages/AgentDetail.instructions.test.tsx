@@ -20,7 +20,11 @@ const mockAgentsApi = vi.hoisted(() => ({
   resolveInstructionCandidate: vi.fn(),
   instructionDiff: vi.fn(),
   restoreInstructions: vi.fn(),
+  roleProfile: vi.fn(),
+  roleProfileDiff: vi.fn(),
+  restoreRoleProfile: vi.fn(),
 }));
+const mockRoleProfilesApi = vi.hoisted(() => ({ revisions: vi.fn() }));
 
 const markdownEditorRenderMock = vi.hoisted(() => vi.fn());
 const copyTextToClipboardMock = vi.hoisted(() => vi.fn(async (_text: string) => {}));
@@ -30,6 +34,7 @@ vi.mock("../lib/clipboard", () => ({ copyTextToClipboard: copyTextToClipboardMoc
 vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
 }));
+vi.mock("../api/agentRoleProfiles", () => ({ agentRoleProfilesApi: mockRoleProfilesApi }));
 
 vi.mock("../api/assets", () => ({
   assetsApi: {
@@ -249,6 +254,8 @@ describe("PromptsTab instruction editor", () => {
       content: data.content,
     }));
     mockAgentsApi.deleteInstructionsFile.mockResolvedValue({});
+    mockAgentsApi.roleProfile.mockResolvedValue(null);
+    mockRoleProfilesApi.revisions.mockResolvedValue([]);
   });
 
   afterEach(async () => {
@@ -635,5 +642,50 @@ describe("PromptsTab instruction editor", () => {
       expect(container.querySelector('[data-testid="markdown-editor"]')).toBeNull();
       expect(container.querySelector<HTMLTextAreaElement>('textarea[placeholder="File contents"]')?.value).toBe("raw instructions");
     });
+  });
+
+  it("shows adopted Profile provenance and limits restore confirmation to managed paths", async () => {
+    const summary = makeSummary("AGENTS.md", "AGENTS.md");
+    mockAgentsApi.roleProfile.mockResolvedValue({
+      profileId: "profile-1", appliedRevisionId: "revision-2", managedPaths: ["AGENTS.md", "SOUL.md"],
+      appliedAt: "2026-10-24T00:00:00Z", updatedAt: "2026-10-24T00:00:00Z",
+      profile: { id: "profile-1", name: "Researcher", key: "researcher" },
+      revision: { id: "revision-2", number: 2, managedFiles: { "AGENTS.md": "# Research", "SOUL.md": "Focus" } },
+    });
+    mockRoleProfilesApi.revisions.mockResolvedValue([{ id: "revision-2", number: 2, managedFiles: { "AGENTS.md": "# Research", "SOUL.md": "Focus" } }]);
+    mockAgentsApi.roleProfileDiff.mockResolvedValue({
+      files: [
+        { path: "AGENTS.md", status: "changed", currentContent: "Agent change", profileContent: "# Research" },
+        { path: "SOUL.md", status: "removed", currentContent: "Agent soul", profileContent: null },
+      ],
+    });
+    await renderPromptsTab(makeBundle("AGENTS.md", [summary]), { "AGENTS.md": makeDetail(summary) });
+
+    await waitFor(() => expect(container.textContent).toContain("Researcher · revision 2"));
+    await act(async () => { buttonByText(container, "Restore Profile").click(); });
+    await waitFor(() => expect(document.body.textContent).toContain("Restore Profile initial values?"));
+    expect(document.body.textContent).toContain("AGENTS.md");
+    expect(document.body.textContent).toContain("SOUL.md");
+    expect(document.body.textContent).not.toContain("unrelated.md");
+    await waitFor(() => expect(mockAgentsApi.roleProfileDiff).toHaveBeenCalledWith(expect.anything(), "company-1", "revision-2"));
+    await waitFor(() => expect(document.body.textContent).toContain("AGENTS.md · changed"));
+    expect(document.body.textContent).toContain("SOUL.md · removed");
+  });
+
+  it("offers a retry action when Profile revisions cannot load", async () => {
+    const summary = makeSummary("AGENTS.md", "AGENTS.md");
+    mockAgentsApi.roleProfile.mockResolvedValue({
+      profileId: "profile-1", appliedRevisionId: "revision-2", managedPaths: ["AGENTS.md"],
+      appliedAt: "2026-10-24T00:00:00Z", updatedAt: "2026-10-24T00:00:00Z",
+      profile: { id: "profile-1", name: "Researcher", key: "researcher" },
+      revision: { id: "revision-2", number: 2, managedFiles: { "AGENTS.md": "# Research" } },
+    });
+    mockRoleProfilesApi.revisions.mockRejectedValue(new Error("Revisions unavailable"));
+    await renderPromptsTab(makeBundle("AGENTS.md", [summary]), { "AGENTS.md": makeDetail(summary) });
+
+    await waitFor(() => expect(container.textContent).toContain("Researcher · revision 2"));
+    await act(async () => { buttonByText(container, "Restore Profile").click(); });
+    await waitFor(() => expect(document.body.textContent).toContain("Could not load Profile revisions"));
+    expect(Array.from(document.querySelectorAll("button")).some((button) => button.textContent === "Retry Profile revisions")).toBe(true);
   });
 });

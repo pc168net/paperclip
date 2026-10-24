@@ -221,6 +221,7 @@ export { announcementDismissals, announcementPublications } from "./announcement
 export { chatTaskHandoffs, chatCompletionDeliveries } from "./chat_completion_deliveries.js";
 
 export { agentInstructionRevisions, agentInstructionHeads, agentInstructionWorkingCopies } from "./agent_instruction_revisions.js";
+export { agentRoleProfiles, agentRoleProfileRevisions, agentRoleProfileAdoptions } from "./agent_role_profiles.js";
 export { browserUseSettings, browserUseSessions, browserUseRuns, browserUseBrowsers } from "./browser_use.js";
 
 

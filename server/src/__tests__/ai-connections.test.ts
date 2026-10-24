@@ -11,11 +11,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { promises as fs } from "node:fs";
-import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:fs/promises";
+import { mkdtemp, realpath, rm, access, readFile, writeFile, stat, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, activityLog, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants, aiDeployments } from "@paperclipai/db";
+import { createDb, activityLog, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, toolCatalogEntries, toolProfileBindings, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants, aiDeployments } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
@@ -28,7 +28,7 @@ import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import * as runnerProbe from "../vendor/paperclip-runner/index.js";
 import * as nativeCodexRunner from "../services/native-runtime/native-codex-runner.js";
 import { testNativeRunnerAuthentication } from "../services/native-runtime/setup-readiness.js";
-import { prepareManagedAiRuntime, withManagedAiProbe, assertManagedAiProjectAuth, isAiConnectionBusy } from "../services/ai-connection-runtime.js";
+import { prepareManagedAiRuntime as prepareManagedAiRuntimeForFixture, withManagedAiProbe as withManagedAiProbeForFixture, assertManagedAiProjectAuth, isAiConnectionBusy } from "../services/ai-connection-runtime.js";
 import { execute as executeGemini, testEnvironment as testGeminiEnvironment } from "@paperclipai/adapter-gemini-local/server";
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
@@ -45,6 +45,7 @@ vi.mock("../services/local-ai-browser-login.js", () => ({
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
 let db: ReturnType<typeof createDb>;
 let home: string;
+let executionRoot: string;
 const companyId = randomUUID();
 const otherCompanyId = randomUUID();
 const agentId = randomUUID();
@@ -52,9 +53,19 @@ let service: ReturnType<typeof aiConnectionService>;
 const binding = { provider: "anthropic", method: "api_key", mode: "responsible_user" } as const;
 const input = { companyId, agentId, adapterType: "claude_local", binding };
 const create = (userId: string, name: string, ownership: "personal" | "shared" = "personal") => service.save(companyId, userId, { provider: "anthropic", method: "api_key", ownership, name, apiKey: "fixture", agentIds: [], allAgents: true }, `fixture-${name}`);
+const fixtureAdapterConfig = <T extends Record<string, unknown>>(config: T) => ({
+  ...config,
+  cwd: typeof config.cwd === "string" ? config.cwd : executionRoot,
+});
+const prepareManagedAiRuntime = (database: Parameters<typeof prepareManagedAiRuntimeForFixture>[0], runtimeInput: Parameters<typeof prepareManagedAiRuntimeForFixture>[1]) =>
+  prepareManagedAiRuntimeForFixture(database, { ...runtimeInput, config: fixtureAdapterConfig(runtimeInput.config) });
+const withManagedAiProbe = (...[database, runtimeInput, probe]: Parameters<typeof withManagedAiProbeForFixture>) =>
+  withManagedAiProbeForFixture(database, { ...runtimeInput, config: fixtureAdapterConfig(runtimeInput.config) }, probe);
 
 beforeAll(async () => {
   home = await realpath(await mkdtemp(path.join(os.tmpdir(), "paperclip-ai-tests-")));
+  executionRoot = path.join(home, "execution-root");
+  await mkdir(executionRoot);
   vi.stubEnv("PAPERCLIP_HOME", home);
   vi.stubEnv("PAPERCLIP_INSTANCE_ID", "ai-connection-fixture");
   database = await startEmbeddedPostgresTestDatabase("paperclip-ai-db-");
@@ -67,6 +78,27 @@ beforeAll(async () => {
 afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
 
 describe("managed AI connections", () => {
+  it("does not inherit host Claude auth from the suite-owned execution root", async () => {
+    const owner = "fixture-execution-root-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    await create(owner, "Fixture execution root");
+
+    const runtime = await prepareManagedAiRuntime(db, {
+      companyId,
+      agentId,
+      responsibleUserId: owner,
+      adapterType: "claude_local",
+      binding,
+      config: {},
+    });
+    try {
+      expect(runtime.config.cwd).toBe(executionRoot);
+      expect(runtime.config.env.ANTHROPIC_API_KEY).toBe("fixture-Fixture execution root");
+    } finally {
+      await runtime.cleanup();
+    }
+  });
+
   it("keeps a custom gateway personal and selectable without requiring a provider default", async () => {
     const owner = "custom-gateway-onboarding-owner";
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
@@ -1105,7 +1137,25 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
         expect(toml).not.toContain("fixture-routed-credential");
       } finally { await runtime.cleanup(); }
     }
-    await expect(service.save(companyId, "alice", { provider: "openrouter", method: "api_key", name: "Routed test", ownership: "personal", apiKey: "fixture", connectionId: saved.connectionId, allAgents: true, agentIds: [], routing: { ...routing, kind: "gateway", baseUrl: "https://other.example/v1", models: [] } }, "fixture-replacement")).rejects.toThrow("retain");
+    const [beforeRoutingChange] = await db.select().from(toolConnections).where(eq(toolConnections.id, saved.connectionId));
+    const deploymentId = randomUUID();
+    await db.insert(aiDeployments).values({
+      id: deploymentId,
+      companyId,
+      connectionId: saved.connectionId,
+      modelId: "openrouter/gpt-5.4",
+      displayName: "OpenRouter GPT-5.4",
+      protocol: "responses",
+      status: "verified",
+      verifiedCredentialEpoch: beforeRoutingChange!.credentialEpoch,
+      verifiedAt: new Date(),
+      createdByUserId: "alice",
+    });
+    expect(await service.save(companyId, "alice", { provider: "openrouter", method: "api_key", name: "Routed test", ownership: "personal", apiKey: "fixture", connectionId: saved.connectionId, allAgents: true, agentIds: [], routing: { ...routing, kind: "gateway", baseUrl: "https://other.example/v1", models: [] } }, "fixture-replacement")).toEqual(saved);
+    const [routedConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, saved.connectionId));
+    const [staleDeployment] = await db.select().from(aiDeployments).where(eq(aiDeployments.id, deploymentId));
+    expect(routedConnection!.config.ai).toMatchObject({ routing: { kind: "gateway", protocol: "responses", auth: "bearer", baseUrl: "https://other.example/v1", models: [] } });
+    expect(staleDeployment).toMatchObject({ status: "stale", verifiedAt: null });
     await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, saved.grantId));
     await expect(service.select({ ...input, binding: selected, userId: "alice", adapterType: "codex_local", model: "openai/gpt-5.4" })).rejects.toThrow("Reconnect");
   });
@@ -1126,7 +1176,25 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     expect(await service.credential(selected)).toBe("new-gateway-credential");
     const installs = await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, saved.connectionId));
     expect(installs).toEqual([expect.objectContaining({ targetType: "agent", targetId: agentId })]);
-    await expect(service.save(companyId, "alice", { ...input, agentIds: [agentId], connectionId: saved.connectionId, routing: { ...reordered, baseUrl: "https://different.example/v1" } }, "rejected-credential")).rejects.toThrow("retain");
+    const [beforeRoutingChange] = await db.select().from(toolConnections).where(eq(toolConnections.id, saved.connectionId));
+    const deploymentId = randomUUID();
+    await db.insert(aiDeployments).values({
+      id: deploymentId,
+      companyId,
+      connectionId: saved.connectionId,
+      modelId: "gateway-model",
+      displayName: "Gateway model",
+      protocol: "responses",
+      status: "verified",
+      verifiedCredentialEpoch: beforeRoutingChange!.credentialEpoch,
+      verifiedAt: new Date(),
+      createdByUserId: "alice",
+    });
+    expect(await service.save(companyId, "alice", { ...input, agentIds: [agentId], connectionId: saved.connectionId, routing: { ...reordered, baseUrl: "https://different.example/v1" } }, "new-gateway-credential")).toEqual(saved);
+    const [routedConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, saved.connectionId));
+    const [staleDeployment] = await db.select().from(aiDeployments).where(eq(aiDeployments.id, deploymentId));
+    expect(routedConnection!.config.ai).toMatchObject({ routing: { ...reordered, baseUrl: "https://different.example/v1" } });
+    expect(staleDeployment).toMatchObject({ status: "stale", verifiedAt: null });
     expect(await service.credential(await service.select(selection))).toBe("new-gateway-credential");
   });
 
@@ -1937,11 +2005,11 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       method: "api_key",
       ownership: "shared",
       name: "Deployment account",
-      apiKey: "stored-secret",
-      routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://example.test/v1", models: [] },
+        apiKey: "deployment-stored-secret",
+        routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://deployment.example.test/v1", models: [] },
       agentIds: [],
       allAgents: true,
-    }, "stored-secret");
+    }, "deployment-stored-secret");
     const organizationAccount = await service.save(deploymentCompanyId, manager, {
       provider: "openai",
       method: "api_key",
@@ -2016,15 +2084,15 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(verify.status).toBe(200);
       expect(verify.body).toMatchObject({ id: createBody.id, status: "verified", verifiedCredentialEpoch: currentConnection?.credentialEpoch, lastError: null, verifiedAt: expect.any(String) });
       expect(verifyCalls).toHaveLength(1);
-      expect(verifyCalls[0]).toMatchObject({ url: "https://example.test/v1/responses", init: { method: "POST", headers: expect.objectContaining({ "api-key": "stored-secret" }) } });
-      expect(JSON.stringify(verify.body)).not.toContain("stored-secret");
+      expect(verifyCalls[0]).toMatchObject({ url: "https://deployment.example.test/v1/responses", init: { method: "POST", headers: expect.objectContaining({ "api-key": "deployment-stored-secret" }) } });
+      expect(JSON.stringify(verify.body)).not.toContain("deployment-stored-secret");
 
       const chatDeploymentId = randomUUID();
       await db.insert(aiDeployments).values({ id: chatDeploymentId, companyId: deploymentCompanyId, connectionId: account.connectionId, modelId: "chat-model", displayName: "Chat", protocol: "chat", status: "verified", verifiedCredentialEpoch: currentConnection?.credentialEpoch ?? 1, verifiedAt: new Date(), lastError: null, createdByUserId: manager });
       const verifyChat = await request(app).post(`${base}/${chatDeploymentId}/verify?grantId=${account.grantId}`).set("x-test-user", manager);
       expect(verifyChat.status).toBe(200);
       expect(verifyCalls).toHaveLength(2);
-      expect(verifyCalls[1]).toMatchObject({ url: "https://example.test/v1/chat/completions", init: { method: "POST", headers: expect.objectContaining({ "api-key": "stored-secret" }) } });
+      expect(verifyCalls[1]).toMatchObject({ url: "https://deployment.example.test/v1/chat/completions", init: { method: "POST", headers: expect.objectContaining({ "api-key": "deployment-stored-secret" }) } });
       expect(JSON.parse(String(verifyCalls[1].init?.body))).toEqual({ model: "chat-model", messages: [{ role: "user", content: "ping" }], max_tokens: 1 });
 
       const orgBase = `/api/companies/${deploymentCompanyId}/ai-connections/${organizationAccount.connectionId}/deployments`;
@@ -2047,6 +2115,13 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
         binding: { mode: "shared", provider: "openai", method: "api_key", connectionId: organizationAccount.connectionId, grantId: organizationAccount.grantId, deploymentId: organizationDeployment.id },
       })).rejects.toMatchObject({ status: 403, message: "This credential is not shared with the responsible user" });
 
+      // The reader fixtures create user grants on this same connection. Remove
+      // them before reconnecting so the explicit connection ID resolves its
+      // organization grant deterministically.
+      await db.delete(connectionGrants).where(and(
+        eq(connectionGrants.connectionId, account.connectionId),
+        eq(connectionGrants.kind, "user"),
+      ));
       const rotated = await service.save(deploymentCompanyId, manager, {
         provider: "openai",
         method: "api_key",
@@ -2054,7 +2129,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
         name: "Deployment account",
         connectionId: account.connectionId,
         apiKey: "rotated-secret",
-        routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://example.test/v1", models: [] },
+        routing: { kind: "gateway", protocol: "responses", auth: "api_key", baseUrl: "https://deployment.example.test/v1", models: [] },
         agentIds: [],
         allAgents: true,
       }, "rotated-secret");
@@ -2065,7 +2140,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       const [rotatedFailed] = await db.select().from(aiDeployments).where(eq(aiDeployments.modelId, "failed-model"));
       expect(rotatedVerified?.status).toBe("stale");
       expect(rotatedFailed?.status).toBe("failed");
-      expect((await request(app).get(base).set("x-test-user", reader)).body).toEqual([]);
+      expect((await request(app).get(base).set("x-test-user", reader)).status).toBe(404);
       await expect(service.select({
         companyId: deploymentCompanyId,
         agentId: randomUUID(),
@@ -2329,9 +2404,13 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const [environment] = await db.insert(environments).values({ name: `Adoption sandbox ${inline}`, driver: "sandbox", config: { provider: "daytona" } }).returning();
     await settings.update({ defaultEnvironmentId: environment.id });
     const id = randomUUID();
+    const adoptionCredential = `fixture-adoption-key-${inline}`;
     await db.insert(agents).values({ id, companyId, name: "Runner adoption", adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-5.6-sol" } });
-    const account = await service.save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Runner adoption account", apiKey: "fixture-adoption-key", agentIds: inline ? [] : [id], allAgents: false }, "fixture-adoption-key");
+    const account = await service.save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Runner adoption account", apiKey: adoptionCredential, agentIds: inline ? [] : [id], allAgents: false }, adoptionCredential);
     await service.setDefault(companyId, "alice", account.grantId);
+    if (inline) {
+      expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, account.connectionId))).toEqual([]);
+    }
     const tryDeliver = vi.fn(async (interactionId: string) => {
       // Dispatch observes committed adoption, never a partially saved choice.
       expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId)))[0].status).toBe("accepted");
@@ -2408,15 +2487,108 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(acquire).toHaveBeenCalledWith(expect.objectContaining({ companyId, environment: expect.objectContaining({ id: environment.id }) }));
       expect(probe).toHaveBeenCalledWith(expect.objectContaining({ executionTarget: target, config: expect.objectContaining({ provider: "codex", model: "gpt-5.6-sol", managedAiConnection: expect.any(Object) }) }));
       expect(providerRequest).toHaveBeenCalledWith("https://api.openai.com/v1/models", expect.objectContaining({
-        headers: { Authorization: "Bearer fixture-adoption-key" },
+        headers: { Authorization: `Bearer ${adoptionCredential}` },
         redirect: "error",
       }));
       expect(release).toHaveBeenCalledTimes(inline ? 3 : 2);
-      expect(JSON.stringify(saved.body)).not.toContain("fixture-adoption-key");
+      expect(JSON.stringify(saved.body)).not.toContain(adoptionCredential);
     } finally {
       delivery.mockRestore(); providerRequest.mockRestore(); probe.mockRestore(); runtime.mockRestore(); resolveTarget.mockRestore();
       await settings.update({ defaultEnvironmentId: previous.defaultEnvironmentId });
     }
+  });
+
+  it("rolls back non-AI install access activity when inline intent resolution fails", async () => {
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId, name: "Tool intent agent", adapterType: "claude_local" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Atomic tool access", status: "in_progress", assigneeAgentId: agentId });
+    const [application] = await db.insert(toolApplications).values({
+      companyId,
+      applicationKey: `app-gallery:sentry`,
+      name: "Sentry",
+      type: "mcp_http",
+      status: "active",
+      metadata: { sourceTemplateKey: "sentry" },
+    }).onConflictDoUpdate({
+      target: [toolApplications.companyId, toolApplications.applicationKey],
+      set: { name: "Sentry" },
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId,
+      applicationId: application!.id,
+      name: "Atomic Sentry",
+      uid: `atomic-sentry-${randomUUID()}`,
+      transport: "mcp_remote",
+      credentialPolicy: "shared",
+      status: "active",
+      enabled: true,
+      healthStatus: "ok",
+      config: { sourceTemplateKey: "sentry", url: "https://sentry.example.test/mcp" },
+      transportConfig: { sourceTemplateKey: "sentry", url: "https://sentry.example.test/mcp" },
+    }).returning();
+    await db.insert(connectionGrants).values({ companyId, connectionId: connection!.id, kind: "organization", status: "active", credentialSecretRefs: [] });
+    const [catalogEntry] = await db.insert(toolCatalogEntries).values({
+      companyId,
+      applicationId: application!.id,
+      connectionId: connection!.id,
+      entryKind: "tool",
+      name: "Read Sentry issues",
+      toolName: "sentry-read",
+      versionHash: "atomic-sentry-v1",
+      status: "active",
+      riskLevel: "read",
+      inputSchema: { type: "object" },
+    }).returning();
+    await expect(db.transaction(async (tx) => {
+      await toolAccessService(db).putConnectionInstalls(connection!.id, {
+        installs: [{ targetType: "agent", targetId: agentId }],
+      }, { actorType: "user", actorId: "alice" }, tx);
+      throw new Error("rollback the supplied transaction");
+    })).rejects.toThrow("rollback the supplied transaction");
+    expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connection!.id))).toEqual([]);
+    expect(await db.select().from(toolProfileBindings).where(and(eq(toolProfileBindings.companyId, companyId), eq(toolProfileBindings.targetId, agentId)))).toEqual([]);
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, connection!.id), eq(activityLog.action, "tool_connection.install_access_extended")))).toEqual([]);
+    const [interaction] = await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId,
+      kind: "connection_intent",
+      status: "pending",
+      addresseeUserId: "alice",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      payload: {
+        version: 1,
+        serviceSlug: "sentry",
+        serviceName: "Sentry",
+        requestingAgentId: agentId,
+        requestingAgentName: "Tool intent agent",
+        phase: "requested",
+        accessRequest: {
+          connectionId: connection!.id,
+          connectionName: connection!.name,
+          tools: [{
+            catalogEntryId: catalogEntry!.id,
+            toolName: catalogEntry!.toolName,
+            versionHash: catalogEntry!.versionHash,
+            permission: "allowed",
+          }],
+        },
+      },
+    }).returning();
+    await db.execute(sql.raw(`CREATE FUNCTION reject_atomic_tool_intent() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id = '${interaction!.id}'::uuid THEN RAISE EXCEPTION 'injected resolution failure'; END IF; RETURN NEW; END $$`));
+    await db.execute(sql.raw("CREATE TRIGGER reject_atomic_tool_intent BEFORE UPDATE ON issue_thread_interactions FOR EACH ROW EXECUTE FUNCTION reject_atomic_tool_intent()"));
+    try {
+      await expect(connectionIntentService(db).complete(interaction!.id, connection!.id, "alice", { canManageOrganizationGrant: true })).rejects.toThrow("issue_thread_interactions");
+      expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connection!.id))).toEqual([]);
+      expect(await db.select().from(toolProfileBindings).where(and(eq(toolProfileBindings.companyId, companyId), eq(toolProfileBindings.targetId, agentId)))).toEqual([]);
+      expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, connection!.id), eq(activityLog.action, "tool_connection.install_access_extended")))).toEqual([]);
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER reject_atomic_tool_intent ON issue_thread_interactions"));
+      await db.execute(sql.raw("DROP FUNCTION reject_atomic_tool_intent()"));
+    }
+    await expect(connectionIntentService(db).complete(interaction!.id, connection!.id, "alice", { canManageOrganizationGrant: true })).resolves.toMatchObject({ status: "accepted" });
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, connection!.id), eq(activityLog.action, "tool_connection.install_access_extended")))).toHaveLength(1);
   });
 
   it("creates and hires agents with an authorized restricted shared connection", async () => {
@@ -2433,7 +2605,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     app.use("/api", agentRoutes(db));
     app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
     for (const endpoint of ["agents", "agent-hires"]) {
-      const response = await request(app).post(`/api/companies/${companyId}/${endpoint}`).send({ name: `Shared ${endpoint}`, role: "general", adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-4-6" }, runtimeConfig: { aiConnection: selected } });
+      const response = await request(app).post(`/api/companies/${companyId}/${endpoint}`).send({ name: `Shared ${endpoint}`, role: "general", allowDuplicate: true, adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-4-6" }, runtimeConfig: { aiConnection: selected } });
       expect(response.status, JSON.stringify(response.body)).toBe(201);
       const agent = endpoint === "agents" ? response.body : response.body.agent;
       expect(agent.adapterConfig.model).toBe("claude-sonnet-4-6");
@@ -2448,7 +2620,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     try {
       for (const endpoint of ["agents", "agent-hires"]) {
         const name = `Rollback ${endpoint}`;
-        const response = await request(app).post(`/api/companies/${companyId}/${endpoint}`).send({ name, role: "general", adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-4-6" }, runtimeConfig: { aiConnection: selected } });
+        const response = await request(app).post(`/api/companies/${companyId}/${endpoint}`).send({ name, role: "general", allowDuplicate: true, adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-4-6" }, runtimeConfig: { aiConnection: selected } });
         expect(response.status).toBe(500);
         expect(await db.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.name, name)))).toEqual([]);
       }

@@ -13,7 +13,7 @@ import { publicMcpConfig } from "../services/public-mcp/oauth.js";
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
 import { completeConnectionIntentSchema } from "@paperclipai/shared";
 import { HEARTBEAT_RUN_LIST_DEFAULT_LIMIT, HEARTBEAT_RUN_LIST_MAX_LIMIT } from "@paperclipai/shared";
-import { agentFileStore, agentFileTokenFromHash } from "../services/agent-file-store.js";
+import { agentFileStore, agentFileTokenFromHash, fileHash } from "../services/agent-file-store.js";
 import { pipeline } from "node:stream/promises";
 import { resolveAgentAppearance, agentAvatarUrl } from "@paperclipai/shared";
 import { listOpenRouterModels } from "../services/openrouter-models.js";
@@ -54,6 +54,7 @@ import {
   createAgentKeySchema,
   createAgentHireSchema,
   createAgentSchema,
+  restoreAgentRoleProfileSchema,
   deriveAgentUrlKey,
   isUuidLike,
   normalizeIssueIdentifier,
@@ -95,7 +96,7 @@ import { agentInstructionRevisionService } from "../services/agent-instruction-r
 import { agentInstructionWorkingCopyService } from "../services/agent-instruction-working-copies.js";
 import { authorizeInstructionRead } from "../services/agent-instruction-authorization.js";
 import { instructionPath } from "../services/agent-instruction-files.js";
-import { agentInstructionsBundleMode, deriveBundleState } from "../services/agent-instructions.js";
+import { agentInstructionsBundleMode, deriveBundleState, resolveManagedInstructionsRoot } from "../services/agent-instructions.js";
 import {
   agentService,
   agentInstructionsService,
@@ -288,6 +289,8 @@ import {
 } from "../services/native-runtime/provider-profile.js";
 import { managedAgentProfileService } from "../services/managed-agent-profiles.js";
 import { remoteAgentProfileService } from "../services/remote-agent-profiles.js";
+import { agentRoleProfileService } from "../services/agent-role-profiles.js";
+import { deleteAgentDependencies } from "../services/agent-deletion.js";
 
 const AGENT_SKILL_ASSIGNMENT_MODES = ["add", "remove", "replace"] as const;
 
@@ -533,6 +536,12 @@ export function agentRoutes(
        */
       completeCredential?: SetupTokenSecretWriter;
     };
+    /** Test-only fault boundary for managed instruction materialization. */
+    instructionsService?: ReturnType<typeof agentInstructionsService>;
+    /** Test-only fault boundary for cleanup of a new managed instruction root. */
+    removeManagedInstructionsRoot?: (root: string) => Promise<void>;
+    /** Test-only fault boundary for deletion of a failed Profile-created agent. */
+    compensateProfileAgent?: (agent: { companyId: string; id: string }) => Promise<void>;
   } = {},
 ) {
   // Legacy hardcoded maps — used as fallback when adapter module does not
@@ -774,10 +783,23 @@ export function agentRoutes(
   const recovery = recoveryService(db, { enqueueWakeup: heartbeat.wakeup });
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
-  const instructions = agentInstructionsService(db);
+  const instructions = options.instructionsService ?? agentInstructionsService(db);
+  const removeManagedInstructionsRoot = options.removeManagedInstructionsRoot
+    ?? ((root: string) => rm(root, { recursive: true, force: true }));
+  const compensateProfileAgent = options.compensateProfileAgent
+    ?? (async (agent: { companyId: string; id: string }) => {
+      await db.transaction(async (tx) => {
+        await deleteAgentDependencies(tx as unknown as Db, agent.companyId, agent.id);
+        await tx.delete(agentsTable).where(and(
+          eq(agentsTable.companyId, agent.companyId),
+          eq(agentsTable.id, agent.id),
+        ));
+      });
+    });
   const agentFiles = agentFileStore(db);
   const instructionRevisions = agentInstructionRevisionService(db);
   const instructionWorkingCopies = agentInstructionWorkingCopyService(db);
+  const roleProfiles = agentRoleProfileService(db);
   function instructionFileDetail(snapshot: import("@paperclipai/shared").AgentInstructionSnapshot,
     receipt?: import("@paperclipai/shared").AgentInstructionCommitReceipt) {
     const path = snapshot.revision.entryFile;
@@ -2413,6 +2435,61 @@ export function agentRoutes(
       allowPendingApprovalConfigUpdate: true,
     });
     return (updated as T | null) ?? { ...agent, adapterConfig: nextAdapterConfig };
+  }
+
+  async function materializeProfileAdoptionOrCompensate<T extends {
+    id: string;
+    companyId: string;
+    name: string;
+    role: string;
+    adapterType: string;
+    adapterConfig: unknown;
+  }>(
+    agent: T,
+    profile: { profile: { id: string }; revision: { id: string; managedFiles: Record<string, string> } },
+    actor: { userId?: string | null },
+  ) {
+    let adoptionRecorded = false;
+    try {
+      await roleProfiles.recordAdoption({
+        companyId: agent.companyId,
+        agentId: agent.id,
+        profileId: profile.profile.id,
+        revisionId: profile.revision.id,
+        managedPaths: Object.keys(profile.revision.managedFiles),
+        actor,
+        action: "agent_role_profile.applied",
+      });
+      adoptionRecorded = true;
+      return await materializeDefaultInstructionsBundleForNewAgent(agent, {
+        files: profile.revision.managedFiles,
+        entryFile: "AGENTS.md",
+      });
+    } catch (error) {
+      // Database and filesystem writes cannot share a native transaction. Keep
+      // the adoption row whenever either cleanup boundary fails: it is a
+      // durable, operator-accessible recovery path through Profile restore.
+      // We delete the new agent only after its server-owned root is gone.
+      try {
+        await removeManagedInstructionsRoot(resolveManagedInstructionsRoot(agent));
+      } catch (cleanupError) {
+        if (adoptionRecorded) {
+          throw new AggregateError([error, cleanupError], "Role Profile application failed; restore the recorded Profile adoption to recover");
+        }
+        // No Profile bytes were materialized before adoption persistence. Keep
+        // attempting database compensation below even if an empty-root cleanup
+        // fails, because no adoption exists to recover this failure.
+      }
+      try {
+        await compensateProfileAgent(agent);
+      } catch (compensationError) {
+        if (adoptionRecorded) {
+          throw new AggregateError([error, compensationError], "Role Profile application failed; restore the recorded Profile adoption to recover");
+        }
+        throw new AggregateError([error, compensationError], "Role Profile application failed and compensation did not complete");
+      }
+      throw error;
+    }
   }
 
   // Resolve the server-owned instruction bundle for the onboarding first agent.
@@ -4238,6 +4315,8 @@ export function agentRoutes(
       // This intent flag is consumed below and must never reach agent create.
       inheritRuntimeFrom,
       runner: hireRunner,
+      roleProfileId: hireRoleProfileId,
+      roleProfileRevisionId: hireRoleProfileRevisionId,
       ...hireInput
     } = req.body;
 
@@ -4274,7 +4353,26 @@ export function agentRoutes(
     if (inheritRuntimeFrom === "caller" && hireRunner !== undefined) throw unprocessable("inheritRuntimeFrom=caller cannot be combined with runner");
     Object.assign(hireInput, await resolveNewAgentRunnerForCompany(db, companyId, { ...hireInput, runner: hireRunner }));
     hireInput.adapterType = await assertSelectableAdapterType(hireInput.adapterType, hireInput.adapterConfig);
+    if (hireRoleProfileId && req.actor.type !== "board") {
+      throw forbidden("Only board users can apply a Role Profile");
+    }
+    // The first hire is the CEO flow even when the client omits or lies about
+    // `role`; derive that from the same company agent roster used by the hire
+    // flow rather than trusting request input.
+    const isFirstHire = (await svc.list(companyId)).length === 0;
+    if (hireRoleProfileId && (hireInput.role === "ceo" || isFirstHire)) {
+      throw unprocessable("The CEO Role Profile is informational and cannot change CEO instructions");
+    }
+    const selectedHireRoleProfile = hireRoleProfileId
+      ? await roleProfiles.resolveAdoptionRevision(companyId, hireRoleProfileId, hireRoleProfileRevisionId)
+      : null;
+    if (selectedHireRoleProfile && !adapterSupportsInstructionsBundle(hireInput.adapterType)) {
+      throw unprocessable("The selected adapter does not support managed instruction bundles");
+    }
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
+    if (selectedHireRoleProfile && KNOWN_INSTRUCTIONS_BUNDLE_KEYS.some((key) => rawHireAdapterConfig[key] !== undefined)) {
+      throw unprocessable("A Role Profile cannot be combined with an explicit instructions bundle");
+    }
     assertProviderTraceSettingTransition(req, hireInput.runtimeConfig);
     await assertFreshPaperclipRunnerProvider(
       companyId,
@@ -4431,10 +4529,9 @@ export function agentRoutes(
         agentName: createdAgent.name,
         organizationName: company.name ?? null,
       });
-      const agent = await materializeDefaultInstructionsBundleForNewAgent(
-        createdAgent,
-        onboardingFirstAgentBundle ?? instructionsBundle,
-      );
+      const agent = selectedHireRoleProfile
+        ? await materializeProfileAdoptionOrCompensate(createdAgent, selectedHireRoleProfile, { userId: req.actor.userId })
+        : await materializeDefaultInstructionsBundleForNewAgent(createdAgent, onboardingFirstAgentBundle ?? instructionsBundle);
 
       let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
       const actor = getActorInfo(req);
@@ -4586,8 +4683,10 @@ export function agentRoutes(
       // The onboarding marker is not an agent column. The server consumes it to
       // seed the chief-of-staff persona; it never reaches the insert values.
       onboardingFirstAgent: createOnboardingFirstAgent,
-       allowDuplicate: createAllowDuplicate,
-       runner: createRunner,
+      allowDuplicate: createAllowDuplicate,
+      runner: createRunner,
+      roleProfileId: createRoleProfileId,
+      roleProfileRevisionId: createRoleProfileRevisionId,
       ...createInput
     } = req.body;
     const agentId = randomUUID();
@@ -4599,7 +4698,25 @@ export function agentRoutes(
     assertExternalInstructionsAdmin(req, { id: agentId, companyId, name: createInput.name, adapterConfig: requestedCreateConfig });
     Object.assign(createInput, await resolveNewAgentRunnerForCompany(db, companyId, { ...createInput, runner: createRunner }));
     createInput.adapterType = await assertSelectableAdapterType(createInput.adapterType, createInput.adapterConfig);
+    if (createRoleProfileId && req.actor.type !== "board") {
+      throw forbidden("Only board users can apply a Role Profile");
+    }
+    // Direct creation is also an onboarding entry point. Treat its first roster
+    // member as CEO-authoritative regardless of an omitted or forged role.
+    const isFirstDirectCreate = createRoleProfileId && (await svc.list(companyId)).length === 0;
+    if (createRoleProfileId && (createInput.role === "ceo" || isFirstDirectCreate)) {
+      throw unprocessable("The CEO Role Profile is informational and cannot change CEO instructions");
+    }
+    const selectedRoleProfile = createRoleProfileId
+      ? await roleProfiles.resolveAdoptionRevision(companyId, createRoleProfileId, createRoleProfileRevisionId)
+      : null;
+    if (selectedRoleProfile && !adapterSupportsInstructionsBundle(createInput.adapterType)) {
+      throw unprocessable("The selected adapter does not support managed instruction bundles");
+    }
     const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
+    if (selectedRoleProfile && KNOWN_INSTRUCTIONS_BUNDLE_KEYS.some((key) => rawCreateAdapterConfig[key] !== undefined)) {
+      throw unprocessable("A Role Profile cannot be combined with an explicit instructions bundle");
+    }
     assertProviderTraceSettingTransition(req, createInput.runtimeConfig);
     await assertFreshPaperclipRunnerProvider(
       companyId,
@@ -4690,10 +4807,9 @@ export function agentRoutes(
       agentName: createdAgent.name,
       organizationName: company.name ?? null,
     });
-    const agent = await materializeDefaultInstructionsBundleForNewAgent(
-      createdAgent,
-      onboardingFirstAgentBundle ?? instructionsBundle,
-    );
+    const agent = selectedRoleProfile
+      ? await materializeProfileAdoptionOrCompensate(createdAgent, selectedRoleProfile, { userId: req.actor.userId })
+      : await materializeDefaultInstructionsBundleForNewAgent(createdAgent, onboardingFirstAgentBundle ?? instructionsBundle);
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -4953,6 +5069,90 @@ export function agentRoutes(
     });
 
     res.json(bundle);
+  });
+
+  async function roleProfileDiff(
+    agent: { companyId: string; id: string },
+    adoption: NonNullable<Awaited<ReturnType<typeof roleProfiles.getAdoption>>>,
+    revision: { id: string; revisionNumber: number; managedFiles: Record<string, string> },
+    actor: Request["actor"],
+  ) {
+    const targetFiles = revision.managedFiles;
+    // The adoption manifest is an immutable authority boundary: a later Profile
+    // revision may add files, but it must not claim independently-created agent
+    // files during comparison or restore.
+    const paths = [...new Set(adoption.managedPaths)].sort();
+    const files = await Promise.all(paths.map(async (relativePath) => {
+      instructionPath(relativePath);
+      const current = await agentFiles.read(agent.companyId, agent.id, relativePath, actor);
+      const target = targetFiles[relativePath];
+      const currentContent = current?.toString("utf8") ?? null;
+      const status = target === undefined
+        ? current === null ? "unchanged" : "removed"
+        : current === null ? "added"
+        : currentContent === target ? "unchanged" : "changed";
+      return { path: relativePath, status, currentContent, profileContent: target ?? null };
+    }));
+    return { adoption, revision: { id: revision.id, number: revision.revisionNumber, managedFiles: revision.managedFiles }, files };
+  }
+
+  router.get("/agents/:id/role-profile", async (req, res) => {
+    assertBoard(req);
+    const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!existing) return;
+    const adoption = await roleProfiles.getAdoption(existing.companyId, existing.id);
+    res.json(adoption);
+  });
+
+  router.get("/agents/:id/role-profile/diff", async (req, res) => {
+    assertBoard(req);
+    const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!existing) return;
+    assertExternalInstructionsAdmin(req, existing);
+    const adoption = await roleProfiles.getAdoption(existing.companyId, existing.id);
+    if (!adoption) throw notFound("Role Profile adoption not found");
+    const revisionId = typeof req.query.revisionId === "string" ? req.query.revisionId : undefined;
+    const selected = await roleProfiles.resolveAdoptionRevision(existing.companyId, adoption.profileId, revisionId ?? adoption.appliedRevisionId, { includeArchived: true });
+    res.json(await roleProfileDiff(existing, adoption, selected.revision, req.actor));
+  });
+
+  router.post("/agents/:id/role-profile/restore", validate(restoreAgentRoleProfileSchema), async (req, res) => {
+    assertBoard(req);
+    const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!existing) return;
+    await assertCanManageInstructionsPath(req, existing);
+    assertExternalInstructionsAdmin(req, existing);
+    const adoption = await roleProfiles.getAdoption(existing.companyId, existing.id);
+    if (!adoption) throw notFound("Role Profile adoption not found");
+    const selected = await roleProfiles.resolveAdoptionRevision(existing.companyId, adoption.profileId, req.body.roleProfileRevisionId ?? adoption.appliedRevisionId, { includeArchived: true });
+    const diff = await roleProfileDiff(existing, adoption, selected.revision, req.actor);
+    const entryFile = deriveBundleState(existing).entryFile;
+    const entry = diff.files.find((file) => file.path === entryFile);
+    if (entry?.status === "removed") {
+      throw unprocessable("A Role Profile restore cannot delete the configured instruction entry");
+    }
+    if (entry && entry.profileContent !== null && entry.status !== "unchanged") {
+      const current = await instructionRevisions.readCurrent({ companyId: existing.companyId, agentId: existing.id }, req.actor);
+      await instructionRevisions.commit({
+        companyId: existing.companyId, agentId: existing.id, entryFile,
+        content: entry.profileContent, baseRevisionId: current?.revision.id ?? null, source: "board",
+      }, req.actor);
+    }
+    for (const file of diff.files) {
+      if (file.path === entryFile || file.status === "unchanged") continue;
+      const current = file.currentContent === null ? null : Buffer.from(file.currentContent, "utf8");
+      await agentFiles.write({
+        companyId: existing.companyId, agentId: existing.id, path: file.path,
+        bytes: file.profileContent === null ? null : Buffer.from(file.profileContent, "utf8"),
+        baseHash: current === null ? null : fileHash(current),
+      }, req.actor);
+    }
+    await roleProfiles.recordAdoption({
+      companyId: existing.companyId, agentId: existing.id, profileId: adoption.profileId,
+      revisionId: selected.revision.id, managedPaths: adoption.managedPaths,
+      actor: { userId: req.actor.userId }, action: "agent_role_profile.restored",
+    });
+    res.json(await roleProfileDiff(existing, await roleProfiles.getAdoption(existing.companyId, existing.id) ?? adoption, selected.revision, req.actor));
   });
 
   router.get("/agents/:id/instructions-bundle/file", async (req, res) => {
