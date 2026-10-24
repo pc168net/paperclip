@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { companies, createDb } from "@paperclipai/db";
+import { activityLog, agentRoleProfileRevisions, agentRoleProfiles, companies, createDb } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
 import { errorHandler } from "../middleware/index.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentRoleProfileRoutes } from "../routes/agent-role-profiles.js";
@@ -42,6 +43,62 @@ if (!support.supported) console.warn(`Role Profile database tests unavailable: $
     const profiles = await request(app(first)).get(`/api/companies/${first}/agent-role-profiles`).expect(200);
     expect(profiles.body.find((profile: { kind: string }) => profile.kind === "system_ceo")).toMatchObject({ name: "CEO", readOnly: true });
     expect(profiles.body.some((profile: { name: string; readOnly: boolean }) => profile.name === "Engineer" && !profile.readOnly)).toBe(true);
+    await request(app(first)).get(`/api/companies/${first}/agent-role-profiles`).expect(200);
+    const seeded = await db.select().from(agentRoleProfiles).where(eq(agentRoleProfiles.companyId, first));
+    expect(seeded).toHaveLength(11);
     await request(app(first)).get(`/api/companies/${second}/agent-role-profiles`).expect(403);
+  });
+
+  it("keeps revisions immutable, archives non-CEO profiles, and rejects CEO mutations", async () => {
+    const companyId = await company();
+    const api = app(companyId);
+    const created = await request(api)
+      .post(`/api/companies/${companyId}/agent-role-profiles`)
+      .send({ name: "Release manager", description: "Initial", managedFiles: { "AGENTS.md": "first" } })
+      .expect(201);
+    const profileId = created.body.id as string;
+    const firstRevisionId = created.body.revision.id as string;
+
+    await request(api)
+      .put(`/api/companies/${companyId}/agent-role-profiles/${profileId}`)
+      .send({ name: "Release manager", description: "Revised", managedFiles: { "AGENTS.md": "second" } })
+      .expect(200);
+
+    const revisions = await request(api)
+      .get(`/api/companies/${companyId}/agent-role-profiles/${profileId}/revisions`)
+      .expect(200);
+    expect(revisions.body.map((revision: { id: string; managedFiles: Record<string, string> }) => revision.id)).toContain(firstRevisionId);
+    expect(revisions.body.map((revision: { managedFiles: Record<string, string> }) => revision.managedFiles["AGENTS.md"])).toEqual(["second", "first"]);
+
+    const storedRevisions = await db.select().from(agentRoleProfileRevisions).where(and(
+      eq(agentRoleProfileRevisions.companyId, companyId),
+      eq(agentRoleProfileRevisions.profileId, profileId),
+    ));
+    expect(storedRevisions).toHaveLength(2);
+    await request(api)
+      .get(`/api/companies/${companyId}/agent-role-profiles/${profileId}/revisions/${firstRevisionId}`)
+      .expect(200)
+      .expect(({ body }) => expect(body.managedFiles).toEqual({ "AGENTS.md": "first" }));
+
+    const otherCompanyId = await company();
+    await request(app(otherCompanyId))
+      .get(`/api/companies/${otherCompanyId}/agent-role-profiles/${profileId}/revisions`)
+      .expect(404);
+
+    await request(api).post(`/api/companies/${companyId}/agent-role-profiles/${profileId}/archive`).expect(200);
+    const listed = await request(api).get(`/api/companies/${companyId}/agent-role-profiles`).expect(200);
+    expect(listed.body.map((profile: { id: string }) => profile.id)).not.toContain(profileId);
+    await request(api)
+      .put(`/api/companies/${companyId}/agent-role-profiles/system-ceo`)
+      .send({ name: "CEO", managedFiles: { "AGENTS.md": "nope" } })
+      .expect(403);
+    await request(api).post(`/api/companies/${companyId}/agent-role-profiles/system-ceo/archive`).expect(403);
+
+    const activities = await db.select().from(activityLog).where(eq(activityLog.companyId, companyId));
+    expect(activities.map((entry) => entry.action)).toEqual(expect.arrayContaining([
+      "agent_role_profile.created",
+      "agent_role_profile.updated",
+      "agent_role_profile.archived",
+    ]));
   });
 });

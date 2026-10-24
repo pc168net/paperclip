@@ -26,5 +26,14 @@ export function agentRoleProfileRoutes(db: Db) {
   router.put("/companies/:companyId/agent-role-profiles/:profileId", validate(updateAgentRoleProfileSchema), async (req, res) => {
     res.json(await service.update(req.params.companyId as string, req.params.profileId as string, req.body, req.actor));
   });
+  router.post("/companies/:companyId/agent-role-profiles/:profileId/archive", async (req, res) => {
+    res.json(await service.archive(req.params.companyId as string, req.params.profileId as string, req.actor));
+  });
+  router.get("/companies/:companyId/agent-role-profiles/:profileId/revisions", async (req, res) => {
+    res.json(await service.listRevisions(req.params.companyId as string, req.params.profileId as string));
+  });
+  router.get("/companies/:companyId/agent-role-profiles/:profileId/revisions/:revisionId", async (req, res) => {
+    res.json(await service.getRevision(req.params.companyId as string, req.params.profileId as string, req.params.revisionId as string));
+  });
   return router;
 }
