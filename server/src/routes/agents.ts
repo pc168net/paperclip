@@ -1378,6 +1378,13 @@ export function agentRoutes(
         : [],
     );
     if (!explicit.length) return fallbacks;
+    // A saved explicit deployment binding claims a concrete executable route.
+    // Until every runtime-equivalent eligibility check below succeeds, do not
+    // substitute adapterConfig.model: that would advertise a model the binding
+    // cannot execute.
+    for (const { index } of explicit) {
+      fallbacks[index] = { effectiveModel: null, modelSource: "adapter_default" };
+    }
 
     // Resolve account audience and deployments once for the company. The list
     // surface can contain hundreds of agents; selecting each binding separately

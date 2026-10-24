@@ -72,9 +72,21 @@ describe("agent effective model routes", () => {
       allAgents: true,
     }, "fixture-api-key");
     const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+    const personal = await service.save(companyId, ownerId, {
+      provider: "openai",
+      method: "api_key",
+      ownership: "personal",
+      name: "Personal Azure",
+      apiKey: "personal-fixture-api-key",
+      routing,
+      agentIds: [],
+      allAgents: true,
+    }, "personal-fixture-api-key");
+    const [personalConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, personal.connectionId));
     const deploymentId = randomUUID();
     const staleDeploymentId = randomUUID();
     const failedDeploymentId = randomUUID();
+    const personalDeploymentId = randomUUID();
     await db.insert(aiDeployments).values([
       {
         id: deploymentId,
@@ -113,6 +125,18 @@ describe("agent effective model routes", () => {
         createdByUserId: ownerId,
         lastError: "failed error must not be projected",
       },
+      {
+        id: personalDeploymentId,
+        companyId,
+        connectionId: personal.connectionId,
+        modelId: "personal-terra",
+        displayName: "Personal Terra",
+        protocol: "responses",
+        status: "verified",
+        verifiedCredentialEpoch: personalConnection!.credentialEpoch,
+        verifiedAt: new Date(),
+        createdByUserId: ownerId,
+      },
     ]);
     const verifiedAgentId = randomUUID();
     const staleAgentId = randomUUID();
@@ -120,7 +144,9 @@ describe("agent effective model routes", () => {
     const noConnectionAgentId = randomUUID();
     const routerAgentId = randomUUID();
     const incompatibleBindingAgentId = randomUUID();
+    const methodMismatchAgentId = randomUUID();
     const wrongOwnershipAgentId = randomUUID();
+    const sharedPersonalAgentId = randomUUID();
     await db.insert(agents).values([
       {
         id: verifiedAgentId,
@@ -177,6 +203,22 @@ describe("agent effective model routes", () => {
         adapterConfig: { provider: "openai", model: "gpt-5.6-sol" },
         runtimeConfig: { aiConnection: { provider: "openai", method: "api_key", mode: "delegated", connectionId: connected.connectionId, grantId: connected.grantId, deploymentId } },
       },
+      {
+        id: methodMismatchAgentId,
+        companyId,
+        name: "Wrong method runner",
+        adapterType: "paperclip_runner",
+        adapterConfig: { provider: "codex", model: "gpt-5.6-sol" },
+        runtimeConfig: { aiConnection: { provider: "openai", method: "subscription", mode: "shared", connectionId: connected.connectionId, grantId: connected.grantId, deploymentId } },
+      },
+      {
+        id: sharedPersonalAgentId,
+        companyId,
+        name: "Shared personal runner",
+        adapterType: "paperclip_runner",
+        adapterConfig: { provider: "codex", model: "gpt-5.6-sol" },
+        runtimeConfig: { aiConnection: { provider: "openai", method: "api_key", mode: "shared", connectionId: personal.connectionId, grantId: personal.grantId, deploymentId: personalDeploymentId } },
+      },
     ]);
 
     const list = await request(app()).get(`/api/companies/${companyId}/agents`);
@@ -186,12 +228,12 @@ describe("agent effective model routes", () => {
       modelSource: "verified_deployment",
     });
     expect(list.body.find((agent: { id: string }) => agent.id === staleAgentId)).toMatchObject({
-      effectiveModel: "gpt-5.6-sol",
-      modelSource: "agent_config",
+      effectiveModel: null,
+      modelSource: "adapter_default",
     });
     expect(list.body.find((agent: { id: string }) => agent.id === failedAgentId)).toMatchObject({
-      effectiveModel: "gpt-5.6-sol",
-      modelSource: "agent_config",
+      effectiveModel: null,
+      modelSource: "adapter_default",
     });
     expect(list.body.find((agent: { id: string }) => agent.id === noConnectionAgentId)).toMatchObject({
       effectiveModel: "gpt-5.6-sol",
@@ -202,12 +244,20 @@ describe("agent effective model routes", () => {
       modelSource: "adapter_default",
     }));
     expect(list.body.find((agent: { id: string }) => agent.id === incompatibleBindingAgentId)).toMatchObject({
-      effectiveModel: "gpt-5.6-sol",
-      modelSource: "agent_config",
+      effectiveModel: null,
+      modelSource: "adapter_default",
     });
     expect(list.body.find((agent: { id: string }) => agent.id === wrongOwnershipAgentId)).toMatchObject({
-      effectiveModel: "gpt-5.6-sol",
-      modelSource: "agent_config",
+      effectiveModel: null,
+      modelSource: "adapter_default",
+    });
+    expect(list.body.find((agent: { id: string }) => agent.id === methodMismatchAgentId)).toMatchObject({
+      effectiveModel: null,
+      modelSource: "adapter_default",
+    });
+    expect(list.body.find((agent: { id: string }) => agent.id === sharedPersonalAgentId)).toMatchObject({
+      effectiveModel: null,
+      modelSource: "adapter_default",
     });
 
     const detail = await request(app()).get(`/api/agents/${verifiedAgentId}`);

@@ -125,3 +125,34 @@ passed
 - An explicit provider mismatch falls back to `adapterConfig.model`.
 - A `delegated` binding targeting a shared/organization grant also falls back.
 - Both checks run inside the existing batched eligibility pass; no per-agent selector query was reintroduced.
+
+## Review-fix round 3
+
+### Fixed remaining projection behavior
+
+Explicit bindings that name a deployment now initialize to a fail-closed null projection. Only the batched runtime-equivalent eligibility pass may replace that null with a verified deployment model. An agent with no explicit deployment binding still retains the existing configured/default model behavior.
+
+### RED evidence
+
+```text
+pnpm --filter @paperclipai/server exec vitest run src/__tests__/agent-effective-model-routes.test.ts
+FAIL: invalid provider binding returned { effectiveModel: "gpt-5.6-sol", modelSource: "agent_config" }
+```
+
+### GREEN evidence
+
+```text
+pnpm --filter @paperclipai/server exec vitest run src/__tests__/agent-effective-model-routes.test.ts
+Test Files  1 passed (1)
+Tests       1 passed (1)
+
+pnpm --filter @paperclipai/server exec tsc --noEmit
+passed
+```
+
+### Regression coverage and review
+
+- Provider mismatch, method mismatch, delegated-to-shared ownership mismatch, and shared-to-personal ownership mismatch now all project `{ effectiveModel: null, modelSource: "adapter_default" }`.
+- Stale and failed explicit deployments also fail closed to the same null projection.
+- The ordinary no-connection agent remains distinct and projects its configured model.
+- The existing integration harness does not expose a stable query-counter boundary without asserting SQL/query-builder internals. The resolver remains batched: it calls the account-list service once and makes two set-based reads for all explicit bindings; it does not invoke `aiConnectionService.select` per agent.
