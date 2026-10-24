@@ -59,3 +59,38 @@ passed
 
 - The full server typecheck is blocked locally by the missing Rust `cargo` executable, not a TypeScript diagnostic.
 - The existing permissions route fixture has unrelated failures as noted above.
+
+## Review-fix follow-up
+
+### Fixed findings
+
+1. Router bindings now parse through `aiRuntimeConnectionBindingSchema`. A router binding has no stable display-time member selection, so it fails closed to `{ effectiveModel: null, modelSource: "adapter_default" }` rather than presenting `adapterConfig.model` as effective.
+2. Agent-list projection is now bounded: one accessible-account/deployment read plus two batched connection/install reads for all explicit bindings, rather than one `aiConnectionService.select` call per agent. It keeps active connection/grant audience, compatible harness, installation, verified deployment, and credential-epoch checks before exposing a deployment model.
+3. The focused route test now exercises a restricted peer-agent list and detail response. It asserts the exact projection and verifies the redacted response contains no connection URL, grant ID, API key, or deployment error.
+
+### Review-fix RED evidence
+
+```text
+pnpm --filter @paperclipai/server exec vitest run src/__tests__/agent-effective-model-routes.test.ts
+FAIL: router-bound runner returned { effectiveModel: "gpt-5.6-sol", modelSource: "agent_config" }
+```
+
+### Review-fix GREEN evidence
+
+```text
+pnpm --filter @paperclipai/server exec vitest run src/__tests__/agent-effective-model-routes.test.ts
+Test Files  1 passed (1)
+Tests       1 passed (1)
+
+pnpm --filter @paperclipai/shared typecheck
+passed
+
+pnpm --filter @paperclipai/server exec tsc --noEmit
+passed
+```
+
+### Review-fix self-review
+
+- The batch projection only reads connection metadata, grants/audience through the existing connection listing service, deployment metadata, and installs. It does not resolve credentials or call a vault.
+- Router model selection remains execution/task-specific, so the read model does not claim a configured model is effective when no safe selected member exists.
+- Restricted responses calculate the projection from the persisted row before redaction but return only the two credential-free fields.

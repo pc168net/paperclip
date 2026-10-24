@@ -22,11 +22,16 @@ let db: ReturnType<typeof createDb>;
 let companyId: string;
 let ownerId: string;
 
-function app() {
+function app(actor: Express.Request["actor"] = {
+  type: "board",
+  source: "local_implicit",
+  userId: ownerId,
+  companyIds: [companyId],
+}) {
   const result = express();
   result.use(express.json());
   result.use((req, _res, next) => {
-    req.actor = { type: "board", source: "local_implicit", userId: ownerId, companyIds: [companyId] };
+    req.actor = actor;
     next();
   });
   result.use("/api", agentRoutes(db));
@@ -113,6 +118,7 @@ describe("agent effective model routes", () => {
     const staleAgentId = randomUUID();
     const failedAgentId = randomUUID();
     const noConnectionAgentId = randomUUID();
+    const routerAgentId = randomUUID();
     await db.insert(agents).values([
       {
         id: verifiedAgentId,
@@ -145,6 +151,14 @@ describe("agent effective model routes", () => {
         adapterType: "paperclip_runner",
         adapterConfig: { provider: "codex", model: "gpt-5.6-sol" },
       },
+      {
+        id: routerAgentId,
+        companyId,
+        name: "Routed runner",
+        adapterType: "paperclip_runner",
+        adapterConfig: { provider: "codex", model: "gpt-5.6-sol" },
+        runtimeConfig: { aiConnection: { mode: "router", connectionId: randomUUID() } },
+      },
     ]);
 
     const list = await request(app()).get(`/api/companies/${companyId}/agents`);
@@ -165,13 +179,64 @@ describe("agent effective model routes", () => {
       effectiveModel: "gpt-5.6-sol",
       modelSource: "agent_config",
     });
+    expect(list.body.find((agent: { id: string }) => agent.id === routerAgentId)).toEqual(expect.objectContaining({
+      effectiveModel: null,
+      modelSource: "adapter_default",
+    }));
 
     const detail = await request(app()).get(`/api/agents/${verifiedAgentId}`);
     expect(detail.status, JSON.stringify(detail.body)).toBe(200);
-    expect(detail.body).toMatchObject({ effectiveModel: "gpt-5.6-terra", modelSource: "verified_deployment" });
-    expect(detail.body.effectiveModel).not.toContain("azure.example.test");
-    expect(detail.body.effectiveModel).not.toContain(connected.grantId);
-    expect(detail.body.effectiveModel).not.toContain("fixture-api-key");
-    expect(detail.body.effectiveModel).not.toContain("must not be projected");
+    expect({ effectiveModel: detail.body.effectiveModel, modelSource: detail.body.modelSource }).toEqual({
+      effectiveModel: "gpt-5.6-terra",
+      modelSource: "verified_deployment",
+    });
+
+    const restrictedUserId = `viewer-${companyId}`;
+    const restrictedAgentId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalId: restrictedUserId,
+      principalType: "user",
+      status: "active",
+      membershipRole: "viewer",
+    });
+    await db.insert(agents).values({
+      id: restrictedAgentId,
+      companyId,
+      name: "Restricted viewer",
+      adapterType: "process",
+    });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalId: restrictedAgentId,
+      principalType: "agent",
+      status: "active",
+      membershipRole: "member",
+    });
+    const restrictedActor: Express.Request["actor"] = {
+      type: "agent",
+      source: "agent_jwt",
+      agentId: restrictedAgentId,
+      companyId,
+      onBehalfOfUserId: restrictedUserId,
+      onBehalfOfMemberships: [{ companyId, membershipRole: "viewer", status: "active" }],
+    };
+    const restrictedList = await request(app(restrictedActor)).get(`/api/companies/${companyId}/agents`);
+    const restrictedDetail = await request(app(restrictedActor)).get(`/api/agents/${verifiedAgentId}`);
+    for (const response of [restrictedList, restrictedDetail]) {
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      const projected = Array.isArray(response.body)
+        ? response.body.find((agent: { id: string }) => agent.id === verifiedAgentId)
+        : response.body;
+      expect({ effectiveModel: projected.effectiveModel, modelSource: projected.modelSource }).toEqual({
+        effectiveModel: "gpt-5.6-terra",
+        modelSource: "verified_deployment",
+      });
+      expect(projected.runtimeConfig).toEqual({});
+      expect(JSON.stringify(projected)).not.toContain(routing.baseUrl);
+      expect(JSON.stringify(projected)).not.toContain(connected.grantId);
+      expect(JSON.stringify(projected)).not.toContain("fixture-api-key");
+      expect(JSON.stringify(projected)).not.toContain("must not be projected");
+    }
   }, 90_000);
 });

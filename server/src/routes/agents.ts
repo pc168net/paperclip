@@ -20,11 +20,10 @@ import { listOpenRouterModels } from "../services/openrouter-models.js";
 import { withManagedAiProbe, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
 import {
   ADAPTER_AUTH_MISSING_CHECK_CODE,
-  aiConnectionBindingSchema,
   aiRuntimeConnectionBindingSchema,
   type AiRuntimeConnectionBinding,
 } from "@paperclipai/shared";
-import { toolConnections } from "@paperclipai/db";
+import { toolConnectionInstalls, toolConnections } from "@paperclipai/db";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
 import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "./ai-connections.js";
@@ -1329,7 +1328,7 @@ export function agentRoutes(
     const baseAgent = redactAgentRowForResponse(
       options?.restricted ? redactForRestrictedAgentView(agent) : agent,
     );
-    const modelProjection = await resolveAgentModelProjection(agent, viewerUserId);
+    const [modelProjection] = await resolveAgentModelProjections([agent], viewerUserId);
 
     return {
       ...baseAgent,
@@ -1344,49 +1343,84 @@ export function agentRoutes(
     modelSource: "verified_deployment" | "agent_config" | "adapter_default";
   };
 
-  async function resolveAgentModelProjection(
+  function agentModelFallback(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
-    userId: string | null,
-  ): Promise<AgentModelProjection> {
+    router = false,
+  ): AgentModelProjection {
+    if (router) return { effectiveModel: null, modelSource: "adapter_default" };
     const adapterConfig = agent.adapterConfig as Record<string, unknown>;
     const configuredModel = typeof adapterConfig.model === "string" && adapterConfig.model.trim()
       ? adapterConfig.model.trim()
       : null;
-    const fallback: AgentModelProjection = configuredModel
+    return configuredModel
       ? { effectiveModel: configuredModel, modelSource: "agent_config" }
       : { effectiveModel: null, modelSource: "adapter_default" };
+  }
 
-    // The restricted view intentionally strips runtimeConfig from its response.
-    // Resolve from the persisted row before that redaction, then expose only this
-    // credential-free projection.
-    const binding = aiConnectionBindingSchema.safeParse(
-      (agent.runtimeConfig as Record<string, unknown> | null)?.aiConnection,
+  async function resolveAgentModelProjections(
+    agents: Array<NonNullable<Awaited<ReturnType<typeof svc.getById>>>>,
+    userId: string | null,
+  ): Promise<AgentModelProjection[]> {
+    const parsed = agents.map((agent) => ({
+      agent,
+      binding: aiRuntimeConnectionBindingSchema.safeParse(
+        (agent.runtimeConfig as Record<string, unknown> | null)?.aiConnection,
+      ),
+    }));
+    const fallbacks = parsed.map(({ agent, binding }) =>
+      agentModelFallback(agent, binding.success && binding.data.mode === "router"),
     );
-    if (!binding.success || binding.data.mode === "responsible_user" || !binding.data.deploymentId) {
-      return fallback;
-    }
+    if (!userId) return fallbacks;
 
-    try {
-      const selection = await aiConnectionService(db).select({
-        companyId: agent.companyId,
-        agentId: agent.id,
-        userId,
-        adapterType: agent.adapterType,
-        binding: binding.data,
-        model: configuredModel ?? undefined,
-        runnerProvider: typeof adapterConfig.provider === "string" ? adapterConfig.provider : undefined,
-        acpxAgent: typeof adapterConfig.acpxAgent === "string" ? adapterConfig.acpxAgent : undefined,
-      });
-      return selection.deployment
-        ? { effectiveModel: selection.deployment.modelId, modelSource: "verified_deployment" }
-        : fallback;
-    } catch (error) {
-      // Connection/deployment state and access can change independently from the
-      // agent record. A display read must fail closed to the configured/default
-      // model instead of presenting an unusable deployment as effective.
-      if (error instanceof HttpError && [403, 422].includes(error.status)) return fallback;
-      throw error;
+    const explicit = parsed.flatMap(({ agent, binding }, index) =>
+      binding.success && binding.data.mode !== "router" && binding.data.mode !== "responsible_user" && binding.data.deploymentId
+        ? [{ agent, binding: binding.data, index }]
+        : [],
+    );
+    if (!explicit.length) return fallbacks;
+
+    // Resolve account audience and deployments once for the company. The list
+    // surface can contain hundreds of agents; selecting each binding separately
+    // would turn this display-only projection into an N+1 query path.
+    const companyId = agents[0]?.companyId;
+    if (!companyId || agents.some((agent) => agent.companyId !== companyId)) return fallbacks;
+    const accounts = await aiConnectionService(db).list(companyId, userId);
+    const connectionIds = [...new Set(explicit.map(({ binding }) => binding.connectionId))];
+    const [connections, installs] = await Promise.all([
+      db.select({ id: toolConnections.id, credentialEpoch: toolConnections.credentialEpoch })
+        .from(toolConnections)
+        .where(and(eq(toolConnections.companyId, companyId), inArray(toolConnections.id, connectionIds))),
+      db.select({ connectionId: toolConnectionInstalls.connectionId, targetType: toolConnectionInstalls.targetType, targetId: toolConnectionInstalls.targetId })
+        .from(toolConnectionInstalls)
+        .where(and(eq(toolConnectionInstalls.companyId, companyId), inArray(toolConnectionInstalls.connectionId, connectionIds))),
+    ]);
+    const epochs = new Map(connections.map((connection) => [connection.id, connection.credentialEpoch]));
+    const installed = new Set(installs.map((install) => `${install.connectionId}:${install.targetType}:${install.targetId}`));
+
+    for (const { agent, binding, index } of explicit) {
+      const account = accounts.find((candidate) => candidate.id === binding.connectionId && candidate.grantId === binding.grantId);
+      const deployment = account?.deployments?.find((candidate) => candidate.id === binding.deploymentId);
+      const adapterConfig = agent.adapterConfig as Record<string, unknown>;
+      const compatible = account && isAiConnectionCompatible(
+        account,
+        agent.adapterType,
+        adapterConfig.model,
+        adapterConfig.provider,
+        adapterConfig.acpxAgent,
+      );
+      const hasInstall = installed.has(`${binding.connectionId}:company:${companyId}`)
+        || installed.has(`${binding.connectionId}:agent:${agent.id}`);
+      if (
+        account?.status === "connected" &&
+        compatible &&
+        hasInstall &&
+        deployment?.status === "verified" &&
+        deployment.verifiedCredentialEpoch === epochs.get(binding.connectionId)
+      ) {
+        fallbacks[index] = { effectiveModel: deployment.modelId, modelSource: "verified_deployment" };
+      }
     }
+    return fallbacks;
   }
 
   async function resolveAgentSelfTrustPreset(req: Request, agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) {
@@ -3913,10 +3947,8 @@ export function agentRoutes(
     }
     const result = await filterAgentsForActor(req, await svc.list(companyId));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
-    const projected = await Promise.all(result.map(async (agent) => ({
-      agent,
-      modelProjection: await resolveAgentModelProjection(agent, responsibleUserForAiRequest(req)),
-    })));
+    const modelProjections = await resolveAgentModelProjections(result, responsibleUserForAiRequest(req));
+    const projected = result.map((agent, index) => ({ agent, modelProjection: modelProjections[index]! }));
     if (canReadConfigs) {
       res.json(projected.map(({ agent, modelProjection }) => ({
         ...redactAgentRowForResponse(agent),
