@@ -1,4 +1,8 @@
 export const queryKeys = {
+  agentRoleProfiles: {
+    list: (companyId: string) => ["agent-role-profiles", companyId] as const,
+    revisions: (companyId: string, profileId: string) => ["agent-role-profiles", companyId, profileId, "revisions"] as const,
+  },
   skillSources: {
     projects: (companyId: string) => ['project-skill-repositories', companyId] as const,
     preview: (companyId: string, repositoryUrl: string, connectionId: string | null, commitSha: string | null, skillPath: string, filePath: string) => ['skill-sources', companyId, 'preview', repositoryUrl, connectionId, commitSha, skillPath, filePath] as const,

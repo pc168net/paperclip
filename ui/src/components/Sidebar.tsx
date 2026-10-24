@@ -22,6 +22,7 @@ import {
   GanttChartSquare,
   LayoutGrid,
   Users,
+  ContactRound,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -278,6 +279,7 @@ export function Sidebar({ children }: { children?: ReactNode }) {
             <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
             <SidebarNavItem to="/apps" label="Connectors" icon={Unplug} />
             <SidebarNavItem to="/activity" label="Audit" icon={History} />
+            <SidebarNavItem to="/role-profiles" label="Role Profiles" icon={ContactRound} />
           </SidebarSection>
         ) : null}
 
