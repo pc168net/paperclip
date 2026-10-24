@@ -6,10 +6,17 @@ export const NATIVE_MODEL_REJECTION_MESSAGE =
 export const NATIVE_PROVIDER_OVERLOADED_MESSAGE =
   "Selected model is at capacity. Please try a different model.";
 export const NATIVE_PROVIDER_OVERLOADED_CODE = "native_provider_overloaded";
+export const NATIVE_PROVIDER_RATE_LIMITED_MESSAGE =
+  "Selected model is rate limited. Paperclip will retry after the provider capacity window.";
+export const NATIVE_PROVIDER_RATE_LIMITED_CODE = "native_provider_rate_limited";
 export const NATIVE_PROVIDER_CAPACITY_MAX_RETRIES = 2;
 export const NATIVE_PROVIDER_OVERLOADED_DIAGNOSTIC = {
   provider: "codex",
   category: "server_overloaded",
+} as const;
+export const NATIVE_PROVIDER_RATE_LIMITED_DIAGNOSTIC = {
+  provider: "codex",
+  category: "rate_limited",
 } as const;
 
 export const NATIVE_MODEL_REJECTION_DIAGNOSTIC = {
@@ -112,6 +119,7 @@ export function readNativeTurnFailureDiagnostic(value: unknown): NativeTurnFailu
 export function createNativeProviderFailureObservation(provider: { kind: string; model?: string | null }) {
   let rejectedTurnId: string | null = null;
   let overloadedTurnId: string | null = null;
+  let rateLimitedTurnId: string | null = null;
   const failedTurns = new Map<string, NativeTurnFailureDiagnostic>();
   return {
     observe(event: PrpEvent) {
@@ -129,6 +137,11 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
       }
       if (payload.status === "failed" && failure.codexErrorInfo === "serverOverloaded") {
         overloadedTurnId = event.turnId;
+        return;
+      }
+      if (payload.status === "failed" && payload.recoverable !== true && failure.recoverable !== true &&
+          failure.codexErrorInfo === "rate_limit_exceeded") {
+        rateLimitedTurnId = event.turnId;
         return;
       }
       if (!provider.model || payload.status !== "failed" || payload.recoverable === true || failure.recoverable === true ||
@@ -150,6 +163,11 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
         errorMessage: NATIVE_PROVIDER_OVERLOADED_MESSAGE,
         diagnostic: { ...NATIVE_PROVIDER_OVERLOADED_DIAGNOSTIC },
       };
+      if (turnId === rateLimitedTurnId) return {
+        errorCode: NATIVE_PROVIDER_RATE_LIMITED_CODE,
+        errorMessage: NATIVE_PROVIDER_RATE_LIMITED_MESSAGE,
+        diagnostic: { ...NATIVE_PROVIDER_RATE_LIMITED_DIAGNOSTIC },
+      };
       if (turnId !== rejectedTurnId) return null;
       return {
         errorCode: "native_provider_model_rejected" as const,
@@ -160,7 +178,7 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
     /** Diagnostics only: the failed turn that `forTerminal` did not classify. */
     unclassifiedTurnFailure(turnId: string | null | undefined, terminal: PrpTerminalState) {
       if (!turnId || terminal.turnTerminalState !== "failed" || terminal.runTerminalState !== "failed" ||
-          turnId === overloadedTurnId || turnId === rejectedTurnId) return null;
+          turnId === overloadedTurnId || turnId === rateLimitedTurnId || turnId === rejectedTurnId) return null;
       const diagnostic = failedTurns.get(turnId);
       return diagnostic ? { ...diagnostic } : null;
     },
