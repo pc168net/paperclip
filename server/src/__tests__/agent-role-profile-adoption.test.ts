@@ -182,6 +182,77 @@ if (!support.supported) console.warn(`Role Profile adoption database tests unava
     expect(await db.select().from(agentRoleProfileAdoptions).where(eq(agentRoleProfileAdoptions.companyId, companyId))).toEqual([]);
   });
 
+  it("retains adoption provenance and can restore when instruction-root cleanup fails", async () => {
+    const companyId = await createCompany();
+    await bootstrapCeo(app(companyId), companyId);
+    const instructions = agentInstructionsService(db);
+    const faultingApi = app(companyId, {
+      instructionsService: {
+        ...instructions,
+        materializeManagedBundle: async () => { throw new Error("simulated instruction storage failure"); },
+      },
+      removeManagedInstructionsRoot: async () => { throw new Error("simulated root removal failure"); },
+    });
+    const profile = await request(faultingApi)
+      .post(`/api/companies/${companyId}/agent-role-profiles`)
+      .send({ name: "Recoverable failure", managedFiles: { "AGENTS.md": "Recover me" } })
+      .expect(201);
+
+    await request(faultingApi)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({ name: "Recoverable profile agent", adapterType: "claude_local", roleProfileId: profile.body.id })
+      .expect(500);
+
+    const persisted = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    const recoverable = persisted.find((agent) => agent.name === "Recoverable profile agent");
+    expect(recoverable).toBeDefined();
+    expect(await db.select().from(agentRoleProfileAdoptions).where(eq(agentRoleProfileAdoptions.agentId, recoverable!.id))).toEqual([
+      expect.objectContaining({ profileId: profile.body.id, appliedRevisionId: profile.body.revision.id }),
+    ]);
+
+    const recoveryApi = app(companyId);
+    await request(recoveryApi)
+      .post(`/api/agents/${recoverable!.id}/role-profile/restore`)
+      .send({ confirm: true })
+      .expect(200);
+    await request(recoveryApi)
+      .get(`/api/agents/${recoverable!.id}/instructions-bundle/file?path=AGENTS.md`)
+      .expect(200)
+      .expect(({ body }) => expect(body.content).toBe("Recover me"));
+  });
+
+  it("retains adoption provenance and can restore when database compensation fails", async () => {
+    const companyId = await createCompany();
+    await bootstrapCeo(app(companyId), companyId);
+    const instructions = agentInstructionsService(db);
+    const faultingApi = app(companyId, {
+      instructionsService: {
+        ...instructions,
+        materializeManagedBundle: async () => { throw new Error("simulated instruction storage failure"); },
+      },
+      compensateProfileAgent: async () => { throw new Error("simulated database compensation failure"); },
+    });
+    const profile = await request(faultingApi)
+      .post(`/api/companies/${companyId}/agent-role-profiles`)
+      .send({ name: "Database recovery", managedFiles: { "AGENTS.md": "Recover from database failure" } })
+      .expect(201);
+
+    await request(faultingApi)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({ name: "Database recoverable profile agent", adapterType: "claude_local", roleProfileId: profile.body.id })
+      .expect(500);
+
+    const recoverable = (await db.select().from(agents).where(eq(agents.companyId, companyId)))
+      .find((agent) => agent.name === "Database recoverable profile agent");
+    expect(recoverable).toBeDefined();
+    expect(await db.select().from(agentRoleProfileAdoptions).where(eq(agentRoleProfileAdoptions.agentId, recoverable!.id))).toHaveLength(1);
+    const recoveryApi = app(companyId);
+    await request(recoveryApi)
+      .post(`/api/agents/${recoverable!.id}/role-profile/restore`)
+      .send({ confirm: true })
+      .expect(200);
+  });
+
   it("restores only files recorded in the adoption manifest", async () => {
     const companyId = await createCompany();
     const api = app(companyId);

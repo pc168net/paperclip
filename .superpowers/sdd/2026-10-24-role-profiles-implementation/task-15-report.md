@@ -92,3 +92,44 @@ suite passes independently.
   recovery remains possible from the durable row.
 - The two existing malformed-JSON Profile-service assertions described above
   remain outside this task's scope.
+
+## Fix round 1: compensation failure ordering
+
+### Root cause
+
+The first compensation implementation awaited managed-root removal outside its
+database-cleanup `try`. A removal failure therefore bypassed the rest of
+compensation. Likewise, a database cleanup failure was reported only as an
+aggregate error without documenting that the retained adoption could restore
+the instruction state.
+
+### Fix and recovery contract
+
+- Root cleanup now runs inside the compensation decision. If it fails after
+  adoption has committed, the newly created agent and adoption are deliberately
+  retained. The adoption is the durable recovery record, and normal explicit
+  Profile restore recreates the intended managed files.
+- Database compensation runs only after root removal succeeds. If its
+  transaction fails, the agent/adoption remain together for the same restore
+  recovery path; the error explicitly directs that recovery rather than
+  presenting the result as a successful cleanup.
+- If adoption persistence itself failed, no Profile filesystem materialization
+  ran. The implementation still attempts database compensation even when
+  removing an empty root fails, because no durable adoption exists for that
+  branch.
+- Controlled fault boundaries exercise both cleanup edges with the real
+  database, agent lifecycle data, adoption row, and restore API.
+
+### RED → GREEN evidence
+
+- **RED:** added a root-removal failure regression. Before the fix, the route
+  still deleted the agent because it ignored the injected removal failure; the
+  test could not find a recoverable adoption.
+- **RED:** added a database-compensation failure regression. Before the fix,
+  cleanup proceeded despite the injected database-compensation failure and the
+  expected recoverable agent/adoption was absent.
+- **GREEN:** `pnpm exec vitest run
+  server/src/__tests__/agent-role-profile-adoption.test.ts` passed all 12 tests.
+  Both failure orders retain the agent/adoption and prove the normal restore API
+  can recover the Profile instructions.
+- **GREEN:** `pnpm exec tsc -p server/tsconfig.json --noEmit` passed.

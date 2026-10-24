@@ -538,6 +538,10 @@ export function agentRoutes(
     };
     /** Test-only fault boundary for managed instruction materialization. */
     instructionsService?: ReturnType<typeof agentInstructionsService>;
+    /** Test-only fault boundary for cleanup of a new managed instruction root. */
+    removeManagedInstructionsRoot?: (root: string) => Promise<void>;
+    /** Test-only fault boundary for deletion of a failed Profile-created agent. */
+    compensateProfileAgent?: (agent: { companyId: string; id: string }) => Promise<void>;
   } = {},
 ) {
   // Legacy hardcoded maps — used as fallback when adapter module does not
@@ -780,6 +784,18 @@ export function agentRoutes(
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
   const instructions = options.instructionsService ?? agentInstructionsService(db);
+  const removeManagedInstructionsRoot = options.removeManagedInstructionsRoot
+    ?? ((root: string) => rm(root, { recursive: true, force: true }));
+  const compensateProfileAgent = options.compensateProfileAgent
+    ?? (async (agent: { companyId: string; id: string }) => {
+      await db.transaction(async (tx) => {
+        await deleteAgentDependencies(tx as unknown as Db, agent.companyId, agent.id);
+        await tx.delete(agentsTable).where(and(
+          eq(agentsTable.companyId, agent.companyId),
+          eq(agentsTable.id, agent.id),
+        ));
+      });
+    });
   const agentFiles = agentFileStore(db);
   const instructionRevisions = agentInstructionRevisionService(db);
   const instructionWorkingCopies = agentInstructionWorkingCopyService(db);
@@ -2433,6 +2449,7 @@ export function agentRoutes(
     profile: { profile: { id: string }; revision: { id: string; managedFiles: Record<string, string> } },
     actor: { userId?: string | null },
   ) {
+    let adoptionRecorded = false;
     try {
       await roleProfiles.recordAdoption({
         companyId: agent.companyId,
@@ -2443,24 +2460,32 @@ export function agentRoutes(
         actor,
         action: "agent_role_profile.applied",
       });
+      adoptionRecorded = true;
       return await materializeDefaultInstructionsBundleForNewAgent(agent, {
         files: profile.revision.managedFiles,
         entryFile: "AGENTS.md",
       });
     } catch (error) {
-      // Database and filesystem writes cannot share a native transaction. A
-      // failed Profile application compensates both durable records and the
-      // server-owned instruction root before the request exposes the new agent.
-      await rm(resolveManagedInstructionsRoot(agent), { recursive: true, force: true });
+      // Database and filesystem writes cannot share a native transaction. Keep
+      // the adoption row whenever either cleanup boundary fails: it is a
+      // durable, operator-accessible recovery path through Profile restore.
+      // We delete the new agent only after its server-owned root is gone.
       try {
-        await db.transaction(async (tx) => {
-          await deleteAgentDependencies(tx as unknown as Db, agent.companyId, agent.id);
-          await tx.delete(agentsTable).where(and(
-            eq(agentsTable.companyId, agent.companyId),
-            eq(agentsTable.id, agent.id),
-          ));
-        });
+        await removeManagedInstructionsRoot(resolveManagedInstructionsRoot(agent));
+      } catch (cleanupError) {
+        if (adoptionRecorded) {
+          throw new AggregateError([error, cleanupError], "Role Profile application failed; restore the recorded Profile adoption to recover");
+        }
+        // No Profile bytes were materialized before adoption persistence. Keep
+        // attempting database compensation below even if an empty-root cleanup
+        // fails, because no adoption exists to recover this failure.
+      }
+      try {
+        await compensateProfileAgent(agent);
       } catch (compensationError) {
+        if (adoptionRecorded) {
+          throw new AggregateError([error, compensationError], "Role Profile application failed; restore the recorded Profile adoption to recover");
+        }
         throw new AggregateError([error, compensationError], "Role Profile application failed and compensation did not complete");
       }
       throw error;
