@@ -24,4 +24,11 @@ describe("agent role profile validators", () => {
       managedFiles: { "../escape.md": "no" },
     }).success).toBe(false);
   });
+
+  it("requires the V1 AGENTS.md instruction entry file", () => {
+    expect(createAgentRoleProfileSchema.safeParse({
+      name: "Missing entry",
+      managedFiles: { "SOUL.md": "Focus" },
+    }).success).toBe(false);
+  });
 });

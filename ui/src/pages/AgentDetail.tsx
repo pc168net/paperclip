@@ -2327,7 +2327,7 @@ export function PromptsTab({
   const roleProfileDiff = useQuery({
     queryKey: ["agents", agent.id, "role-profile", "diff", selectedProfileRevisionId ?? ""],
     queryFn: () => agentsApi.roleProfileDiff(agent.id, companyId, selectedProfileRevisionId),
-    enabled: Boolean(companyId && roleProfile.data && showProfileDiff),
+    enabled: Boolean(companyId && roleProfile.data && (showProfileDiff || restoreProfileOpen)),
     retry: false,
   });
   const restoreRoleProfile = useMutation({
@@ -2778,12 +2778,14 @@ export function PromptsTab({
                 </select>
               </label>
               <ul className="space-y-1 rounded-md border border-border bg-muted/40 p-3 font-mono text-xs">
-                {roleProfile.data.managedPaths.map((path) => <li key={path}>{path}</li>)}
+                {roleProfileDiff.isLoading ? <li className="font-sans text-sm text-muted-foreground">Loading overwrite and deletion differences…</li>
+                  : roleProfileDiff.error ? <li role="alert" className="font-sans text-sm text-destructive">Could not load restore differences.</li>
+                    : roleProfileDiff.data?.files.map((file) => <li key={file.path}>{file.path} · {file.status}</li>)}
               </ul>
               {restoreRoleProfile.error && <p role="alert" className="text-sm text-destructive">{restoreRoleProfile.error instanceof Error ? restoreRoleProfile.error.message : "Could not restore the Role Profile."}</p>}
               <AlertDialogFooter>
                 <AlertDialogCancel disabled={restoreRoleProfile.isPending}>Cancel</AlertDialogCancel>
-                <AlertDialogAction disabled={restoreRoleProfile.isPending} onClick={(event) => { event.preventDefault(); restoreRoleProfile.mutate(); }}>
+                <AlertDialogAction disabled={restoreRoleProfile.isPending || roleProfileDiff.isLoading || roleProfileDiff.isError || !roleProfileDiff.data} onClick={(event) => { event.preventDefault(); restoreRoleProfile.mutate(); }}>
                   Restore managed files
                 </AlertDialogAction>
               </AlertDialogFooter>

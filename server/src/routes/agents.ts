@@ -5108,7 +5108,7 @@ export function agentRoutes(
     }
     await roleProfiles.recordAdoption({
       companyId: existing.companyId, agentId: existing.id, profileId: adoption.profileId,
-      revisionId: selected.revision.id, managedPaths: Object.keys(selected.revision.managedFiles),
+      revisionId: selected.revision.id, managedPaths: adoption.managedPaths,
       actor: { userId: req.actor.userId }, action: "agent_role_profile.restored",
     });
     res.json(await roleProfileDiff(existing, await roleProfiles.getAdoption(existing.companyId, existing.id) ?? adoption, selected.revision, req.actor));

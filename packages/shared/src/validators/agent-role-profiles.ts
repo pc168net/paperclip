@@ -11,6 +11,7 @@ function isSafeManagedInstructionPath(value: string) {
 export const agentRoleProfileManagedFilesSchema = z
   .record(z.string(), z.string().max(1024 * 1024))
   .refine((files) => Object.keys(files).length > 0, "managedFiles must contain at least one file")
+  .refine((files) => "AGENTS.md" in files, "managedFiles must contain AGENTS.md")
   .superRefine((files, context) => {
     for (const path of Object.keys(files)) {
       if (!isSafeManagedInstructionPath(path)) {

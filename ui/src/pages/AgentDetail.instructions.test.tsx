@@ -653,6 +653,12 @@ describe("PromptsTab instruction editor", () => {
       revision: { id: "revision-2", number: 2, managedFiles: { "AGENTS.md": "# Research", "SOUL.md": "Focus" } },
     });
     mockRoleProfilesApi.revisions.mockResolvedValue([{ id: "revision-2", number: 2, managedFiles: { "AGENTS.md": "# Research", "SOUL.md": "Focus" } }]);
+    mockAgentsApi.roleProfileDiff.mockResolvedValue({
+      files: [
+        { path: "AGENTS.md", status: "changed", currentContent: "Agent change", profileContent: "# Research" },
+        { path: "SOUL.md", status: "removed", currentContent: "Agent soul", profileContent: null },
+      ],
+    });
     await renderPromptsTab(makeBundle("AGENTS.md", [summary]), { "AGENTS.md": makeDetail(summary) });
 
     await waitFor(() => expect(container.textContent).toContain("Researcher · revision 2"));
@@ -661,6 +667,9 @@ describe("PromptsTab instruction editor", () => {
     expect(document.body.textContent).toContain("AGENTS.md");
     expect(document.body.textContent).toContain("SOUL.md");
     expect(document.body.textContent).not.toContain("unrelated.md");
+    await waitFor(() => expect(mockAgentsApi.roleProfileDiff).toHaveBeenCalledWith(expect.anything(), "company-1", "revision-2"));
+    await waitFor(() => expect(document.body.textContent).toContain("AGENTS.md · changed"));
+    expect(document.body.textContent).toContain("SOUL.md · removed");
   });
 
   it("offers a retry action when Profile revisions cannot load", async () => {

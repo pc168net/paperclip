@@ -319,6 +319,18 @@ describe("openapi routes", () => {
     expect(properties).toHaveProperty("budgetMonthlyCents");
   });
 
+  it("documents board-only agent Role Profile provenance, diff, and restore operations", () => {
+    const document = buildOpenApiSpec() as any;
+    const provenance = document.paths["/api/agents/{id}/role-profile"].get;
+    const diff = document.paths["/api/agents/{id}/role-profile/diff"].get;
+    const restore = document.paths["/api/agents/{id}/role-profile/restore"].post;
+    for (const operation of [provenance, diff, restore]) {
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      expect(operation.responses["404"]).toBeDefined();
+    }
+    expect(restore.requestBody.content["application/json"].schema.required).toContain("confirm");
+  });
+
   it("documents public Dot pairing capabilities while ordinary consent keeps board authentication", () => {
     const spec = buildOpenApiSpec() as any;
     for (const [method, path] of [

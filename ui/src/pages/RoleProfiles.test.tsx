@@ -9,7 +9,9 @@ import { RoleProfiles } from "./RoleProfiles";
 
 const mockAgentRoleProfilesApi = vi.hoisted(() => ({
   list: vi.fn(),
+  create: vi.fn(),
   update: vi.fn(),
+  archive: vi.fn(),
   revisions: vi.fn(),
 }));
 
@@ -68,6 +70,19 @@ async function flushQueries() {
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     await new Promise((resolve) => window.setTimeout(resolve, 0));
   });
+}
+
+async function waitFor<T>(assertion: () => T): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    try {
+      return assertion();
+    } catch (error) {
+      lastError = error;
+      await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 0)); });
+    }
+  }
+  throw lastError;
 }
 
 describe("RoleProfiles", () => {
@@ -158,4 +173,33 @@ describe("RoleProfiles", () => {
     expect(container.textContent).toContain("Revision history unavailable.");
     expect(container.textContent).not.toContain("Loading revision history…");
   });
+
+  it("lets the board create a custom Profile and archive an editable Profile", async () => {
+    mockAgentRoleProfilesApi.create.mockResolvedValue(profiles[1]);
+    mockAgentRoleProfilesApi.archive.mockResolvedValue({ ...profiles[1], archivedAt: "2026-10-24T01:00:00.000Z" });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    flushSync(() => {
+      root!.render(<QueryClientProvider client={queryClient}><RoleProfiles /></QueryClientProvider>);
+    });
+    await flushQueries();
+
+    await act(async () => { buttonByText(container, "Create Profile").click(); });
+    expect((container.querySelector('input[aria-label="Profile name"]') as HTMLInputElement).value).toBe("New Profile");
+    expect(container.textContent).not.toContain("Archive Profile");
+    await act(async () => { buttonByText(container, "Save Profile").click(); });
+    await waitFor(() => expect(mockAgentRoleProfilesApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ name: "New Profile" })));
+
+    await act(async () => { buttonByText(container, "Researcher").click(); });
+    await flushQueries();
+    await act(async () => { buttonByText(container, "Archive Profile").click(); });
+    await waitFor(() => expect(mockAgentRoleProfilesApi.archive).toHaveBeenCalledWith("company-1", profiles[1].id));
+    expect(container.textContent).not.toContain("Archive Profile");
+  });
 });
+
+function buttonByText(container: HTMLElement, text: string) {
+  const button = [...container.querySelectorAll("button")].find((candidate) => candidate.textContent?.includes(text));
+  if (!button) throw new Error(`Button not found: ${text}`);
+  return button as HTMLButtonElement;
+}
