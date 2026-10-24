@@ -2767,7 +2767,10 @@ export function PromptsTab({
                   Only the Profile-managed files below can be overwritten or deleted. Other agent files and configuration stay unchanged.
                 </AlertDialogDescription>
               </AlertDialogHeader>
-              {profileRevisions.error && <p role="alert" className="text-sm text-destructive">Could not load Profile revisions. Restore the adopted revision or retry.</p>}
+              {profileRevisions.error && <div role="alert" className="flex flex-wrap items-center gap-2 text-sm text-destructive">
+                <span>Could not load Profile revisions.</span>
+                <Button type="button" variant="outline" size="sm" onClick={() => void profileRevisions.refetch()}>Retry Profile revisions</Button>
+              </div>}
               <label className="space-y-1 text-sm">
                 <span className="text-xs text-muted-foreground">Profile revision</span>
                 <select aria-label="Profile revision" className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm" value={selectedProfileRevisionId ?? ""} onChange={(event) => setRestoreRevisionId(event.target.value)}>

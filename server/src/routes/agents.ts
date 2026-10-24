@@ -4241,6 +4241,8 @@ export function agentRoutes(
       // This intent flag is consumed below and must never reach agent create.
       inheritRuntimeFrom,
       runner: hireRunner,
+      roleProfileId: hireRoleProfileId,
+      roleProfileRevisionId: hireRoleProfileRevisionId,
       ...hireInput
     } = req.body;
 
@@ -4277,7 +4279,22 @@ export function agentRoutes(
     if (inheritRuntimeFrom === "caller" && hireRunner !== undefined) throw unprocessable("inheritRuntimeFrom=caller cannot be combined with runner");
     Object.assign(hireInput, await resolveNewAgentRunnerForCompany(db, companyId, { ...hireInput, runner: hireRunner }));
     hireInput.adapterType = await assertSelectableAdapterType(hireInput.adapterType, hireInput.adapterConfig);
+    if (hireRoleProfileId && req.actor.type !== "board") {
+      throw forbidden("Only board users can apply a Role Profile");
+    }
+    if (hireRoleProfileId && hireInput.role === "ceo") {
+      throw unprocessable("The CEO Role Profile is informational and cannot change CEO instructions");
+    }
+    const selectedHireRoleProfile = hireRoleProfileId
+      ? await roleProfiles.resolveAdoptionRevision(companyId, hireRoleProfileId, hireRoleProfileRevisionId)
+      : null;
+    if (selectedHireRoleProfile && !adapterSupportsInstructionsBundle(hireInput.adapterType)) {
+      throw unprocessable("The selected adapter does not support managed instruction bundles");
+    }
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
+    if (selectedHireRoleProfile && KNOWN_INSTRUCTIONS_BUNDLE_KEYS.some((key) => rawHireAdapterConfig[key] !== undefined)) {
+      throw unprocessable("A Role Profile cannot be combined with an explicit instructions bundle");
+    }
     assertProviderTraceSettingTransition(req, hireInput.runtimeConfig);
     await assertFreshPaperclipRunnerProvider(
       companyId,
@@ -4434,9 +4451,25 @@ export function agentRoutes(
         agentName: createdAgent.name,
         organizationName: company.name ?? null,
       });
+      // The adoption manifest is persisted before filesystem materialization so
+      // a failed host write cannot leave Profile-owned files without restore
+      // authority, matching direct agent creation.
+      if (selectedHireRoleProfile) {
+        await roleProfiles.recordAdoption({
+          companyId,
+          agentId: createdAgent.id,
+          profileId: selectedHireRoleProfile.profile.id,
+          revisionId: selectedHireRoleProfile.revision.id,
+          managedPaths: Object.keys(selectedHireRoleProfile.revision.managedFiles),
+          actor: { userId: req.actor.userId },
+          action: "agent_role_profile.applied",
+        });
+      }
       const agent = await materializeDefaultInstructionsBundleForNewAgent(
         createdAgent,
-        onboardingFirstAgentBundle ?? instructionsBundle,
+        selectedHireRoleProfile
+          ? { files: selectedHireRoleProfile.revision.managedFiles, entryFile: "AGENTS.md" }
+          : onboardingFirstAgentBundle ?? instructionsBundle,
       );
 
       let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;

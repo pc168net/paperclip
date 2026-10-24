@@ -305,6 +305,7 @@ function Setup({
     queryFn: () => agentRoleProfilesApi.list(companyId),
   });
   const selectedRoleProfile = roleProfiles.data?.find((profile) => profile.id === roleProfileId) ?? null;
+  const isFirstAgent = (agents.data?.length ?? 0) === 0;
   const aiConnections = useQuery({
     queryKey: ["ai-connections", companyId],
     queryFn: () => aiConnectionsApi.list(companyId),
@@ -1031,7 +1032,7 @@ function Setup({
                     </h2>
                     <fieldset disabled={busy} className="space-y-8">
                       <section className="space-y-5">
-                        <Field label="Role Profile">
+                        {!isFirstAgent && <Field label="Role Profile">
                           <select
                             aria-label="Role Profile"
                             className={controlClass}
@@ -1045,7 +1046,10 @@ function Setup({
                               </option>
                             ))}
                           </select>
-                          {roleProfiles.error && <p role="alert" className="text-xs text-destructive">Could not load Role Profiles. Create the agent without one or retry.</p>}
+                          {roleProfiles.error && <div role="alert" className="flex flex-wrap items-center gap-2 text-xs text-destructive">
+                            <span>Could not load Role Profiles.</span>
+                            <Button type="button" variant="outline" size="sm" onClick={() => void roleProfiles.refetch()}>Retry Role Profiles</Button>
+                          </div>}
                           {selectedRoleProfile && (
                             <div className="space-y-2 rounded-md border border-border bg-card p-3">
                               <p className="text-xs text-muted-foreground">Revision {selectedRoleProfile.revision.number} initial files</p>
@@ -1054,7 +1058,7 @@ function Setup({
                               </ul>
                             </div>
                           )}
-                        </Field>
+                        </Field>}
                         {isDot && <>
                           <p className="text-sm text-muted-foreground">Create this agent, then copy its pairing prompt to your Dot.</p>
                           {experimental.data?.enablePublicMcp !== true && <p className="text-sm text-muted-foreground">Enable Assistant connections (MCP) in Experimental settings before pairing.</p>}

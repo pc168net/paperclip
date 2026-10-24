@@ -73,6 +73,47 @@ if (!support.supported) console.warn(`Role Profile adoption database tests unava
     expect(second.body.role).toBe("general");
   });
 
+  it("applies a Role Profile through the agent-hire endpoint and records provenance", async () => {
+    const companyId = await createCompany();
+    const api = app(companyId);
+    const profile = await request(api)
+      .post(`/api/companies/${companyId}/agent-role-profiles`)
+      .send({ name: "Hire research", managedFiles: { "AGENTS.md": "Hire instructions", "SOUL.md": "Investigate" } })
+      .expect(201);
+
+    const hired = await request(api)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({ name: "Hire researcher", adapterType: "claude_local", roleProfileId: profile.body.id })
+      .expect(201);
+
+    await request(api)
+      .get(`/api/agents/${hired.body.agent.id}/instructions-bundle/file?path=AGENTS.md`)
+      .expect(200)
+      .expect(({ body }) => expect(body.content).toBe("Hire instructions"));
+    await request(api)
+      .get(`/api/agents/${hired.body.agent.id}/role-profile`)
+      .expect(200)
+      .expect(({ body }) => expect(body).toMatchObject({
+        profileId: profile.body.id,
+        appliedRevisionId: profile.body.revision.id,
+        managedPaths: ["AGENTS.md", "SOUL.md"],
+      }));
+  });
+
+  it("rejects Role Profile application to a CEO through the agent-hire endpoint", async () => {
+    const companyId = await createCompany();
+    const api = app(companyId);
+    const profile = await request(api)
+      .post(`/api/companies/${companyId}/agent-role-profiles`)
+      .send({ name: "CEO attempt", managedFiles: { "AGENTS.md": "Not CEO instructions" } })
+      .expect(201);
+
+    await request(api)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({ name: "Chief", role: "ceo", adapterType: "claude_local", roleProfileId: profile.body.id })
+      .expect(422);
+  });
+
   it("restores only files recorded in the adoption manifest", async () => {
     const companyId = await createCompany();
     const api = app(companyId);

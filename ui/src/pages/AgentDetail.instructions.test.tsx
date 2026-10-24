@@ -662,4 +662,21 @@ describe("PromptsTab instruction editor", () => {
     expect(document.body.textContent).toContain("SOUL.md");
     expect(document.body.textContent).not.toContain("unrelated.md");
   });
+
+  it("offers a retry action when Profile revisions cannot load", async () => {
+    const summary = makeSummary("AGENTS.md", "AGENTS.md");
+    mockAgentsApi.roleProfile.mockResolvedValue({
+      profileId: "profile-1", appliedRevisionId: "revision-2", managedPaths: ["AGENTS.md"],
+      createdAt: "2026-10-24T00:00:00Z", updatedAt: "2026-10-24T00:00:00Z",
+      profile: { id: "profile-1", name: "Researcher", key: "researcher" },
+      revision: { id: "revision-2", number: 2, managedFiles: { "AGENTS.md": "# Research" } },
+    });
+    mockRoleProfilesApi.revisions.mockRejectedValue(new Error("Revisions unavailable"));
+    await renderPromptsTab(makeBundle("AGENTS.md", [summary]), { "AGENTS.md": makeDetail(summary) });
+
+    await waitFor(() => expect(container.textContent).toContain("Researcher · revision 2"));
+    await act(async () => { buttonByText(container, "Restore Profile").click(); });
+    await waitFor(() => expect(document.body.textContent).toContain("Could not load Profile revisions"));
+    expect(Array.from(document.querySelectorAll("button")).some((button) => button.textContent === "Retry Profile revisions")).toBe(true);
+  });
 });
