@@ -49,6 +49,36 @@ if (!support.supported) console.warn(`Role Profile database tests unavailable: $
     await request(app(first)).get(`/api/companies/${second}/agent-role-profiles`).expect(403);
   });
 
+  it("seeds reserved role profiles before rejecting a custom name collision", async () => {
+    const companyId = await company();
+    const api = app(companyId);
+
+    await request(api)
+      .post(`/api/companies/${companyId}/agent-role-profiles`)
+      .send({ name: "Engineer", managedFiles: { "AGENTS.md": "Custom engineer" } })
+      .expect(409);
+
+    const profiles = await request(api).get(`/api/companies/${companyId}/agent-role-profiles`).expect(200);
+    expect(profiles.body).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "engineer", name: "Engineer", kind: "seeded", readOnly: false }),
+    ]));
+  });
+
+  it.each(["C:/instructions.md", "notes\0instructions.md"])("rejects manifests with an instruction path rejected by the file policy: %s", async (path) => {
+    const companyId = await company();
+    await request(app(companyId))
+      .post(`/api/companies/${companyId}/agent-role-profiles`)
+      .send({ name: `Invalid ${path}`, managedFiles: { [path]: "Unsafe" } })
+      .expect(422);
+  });
+
+  it("returns 400 rather than a database error for malformed revision profile ids", async () => {
+    const companyId = await company();
+    const api = app(companyId);
+    await request(api).get(`/api/companies/${companyId}/agent-role-profiles/not-a-uuid/revisions`).expect(400);
+    await request(api).get(`/api/companies/${companyId}/agent-role-profiles/not-a-uuid/revisions/not-a-uuid`).expect(400);
+  });
+
   it("keeps revisions immutable, archives non-CEO profiles, and rejects CEO mutations", async () => {
     const companyId = await company();
     const api = app(companyId);

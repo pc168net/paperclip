@@ -1,12 +1,28 @@
 import { randomUUID } from "node:crypto";
-import { AGENT_ROLE_LABELS, AGENT_ROLES, type CreateAgentRoleProfile, type UpdateAgentRoleProfile } from "@paperclipai/shared";
+import { AGENT_ROLE_LABELS, AGENT_ROLES, isUuidLike, type CreateAgentRoleProfile, type UpdateAgentRoleProfile } from "@paperclipai/shared";
 import { activityLog, agentRoleProfileRevisions, agentRoleProfiles, type Db } from "@paperclipai/db";
 import { and, desc, eq, isNull, max } from "drizzle-orm";
-import { forbidden, notFound } from "../errors.js";
+import { badRequest, conflict, forbidden, notFound } from "../errors.js";
 import { loadDefaultAgentInstructionsBundle } from "./default-agent-instructions.js";
+import { instructionPath } from "./agent-instruction-files.js";
 
 const SYSTEM_CEO_PROFILE_ID = "system-ceo";
 type BoardActor = { userId?: string | null };
+
+function assertProfileId(profileId: string) {
+  if (profileId !== SYSTEM_CEO_PROFILE_ID && !isUuidLike(profileId)) {
+    throw badRequest("Invalid role profile id");
+  }
+}
+
+function assertRevisionId(revisionId: string) {
+  if (!isUuidLike(revisionId)) throw badRequest("Invalid role profile revision id");
+}
+
+function validateManagedFiles(managedFiles: CreateAgentRoleProfile["managedFiles"]) {
+  for (const filePath of Object.keys(managedFiles)) instructionPath(filePath);
+  return managedFiles;
+}
 
 export function agentRoleProfileService(db: Db) {
   async function ensureSeededProfiles(companyId: string) {
@@ -15,7 +31,7 @@ export function agentRoleProfileService(db: Db) {
       for (const role of AGENT_ROLES.filter((role) => role !== "ceo")) {
         const [profile] = await tx.insert(agentRoleProfiles).values({
           companyId, key: role, name: AGENT_ROLE_LABELS[role], kind: "seeded",
-        }).onConflictDoNothing().returning();
+        }).onConflictDoNothing({ target: [agentRoleProfiles.companyId, agentRoleProfiles.key] }).returning();
         if (profile) await tx.insert(agentRoleProfileRevisions).values({
           companyId, profileId: profile.id, revisionNumber: 1, managedFiles: defaults,
         });
@@ -71,7 +87,14 @@ export function agentRoleProfileService(db: Db) {
   }
 
   async function create(companyId: string, input: CreateAgentRoleProfile, actor: BoardActor) {
+    await ensureSeededProfiles(companyId);
+    validateManagedFiles(input.managedFiles);
     const result = await db.transaction(async (tx) => {
+      const [namedProfile] = await tx.select({ id: agentRoleProfiles.id }).from(agentRoleProfiles).where(and(
+        eq(agentRoleProfiles.companyId, companyId),
+        eq(agentRoleProfiles.name, input.name),
+      ));
+      if (namedProfile) throw conflict("A Role Profile with this name already exists");
       const [profile] = await tx.insert(agentRoleProfiles).values({
         companyId, key: `custom-${randomUUID()}`, name: input.name, description: input.description ?? null,
         kind: "custom", createdByUserId: actor.userId ?? null,
@@ -88,6 +111,8 @@ export function agentRoleProfileService(db: Db) {
 
   async function update(companyId: string, profileId: string, input: UpdateAgentRoleProfile, actor: BoardActor) {
     if (profileId === SYSTEM_CEO_PROFILE_ID) throw forbidden("The CEO Role Profile is read-only");
+    assertProfileId(profileId);
+    validateManagedFiles(input.managedFiles);
     return db.transaction(async (tx) => {
       const [existing] = await tx.select().from(agentRoleProfiles).where(and(eq(agentRoleProfiles.companyId, companyId), eq(agentRoleProfiles.id, profileId), isNull(agentRoleProfiles.archivedAt))).for("update");
       if (!existing) throw notFound("Role Profile not found");
@@ -104,6 +129,7 @@ export function agentRoleProfileService(db: Db) {
 
   async function listRevisions(companyId: string, profileId: string) {
     if (profileId === SYSTEM_CEO_PROFILE_ID) return [await ceoRevision(companyId)];
+    assertProfileId(profileId);
     const [profile] = await db.select({ id: agentRoleProfiles.id }).from(agentRoleProfiles)
       .where(and(eq(agentRoleProfiles.companyId, companyId), eq(agentRoleProfiles.id, profileId)));
     if (!profile) throw notFound("Role Profile not found");
@@ -114,7 +140,12 @@ export function agentRoleProfileService(db: Db) {
   }
 
   async function getRevision(companyId: string, profileId: string, revisionId: string) {
-    if (profileId === SYSTEM_CEO_PROFILE_ID && revisionId === SYSTEM_CEO_PROFILE_ID) return ceoRevision(companyId);
+    if (profileId === SYSTEM_CEO_PROFILE_ID) {
+      if (revisionId === SYSTEM_CEO_PROFILE_ID) return ceoRevision(companyId);
+      throw notFound("Role Profile revision not found");
+    }
+    assertProfileId(profileId);
+    assertRevisionId(revisionId);
     const [revision] = await db.select().from(agentRoleProfileRevisions).where(and(
       eq(agentRoleProfileRevisions.companyId, companyId),
       eq(agentRoleProfileRevisions.profileId, profileId),
@@ -126,6 +157,7 @@ export function agentRoleProfileService(db: Db) {
 
   async function archive(companyId: string, profileId: string, actor: BoardActor) {
     if (profileId === SYSTEM_CEO_PROFILE_ID) throw forbidden("The CEO Role Profile is read-only");
+    assertProfileId(profileId);
     return db.transaction(async (tx) => {
       const [profile] = await tx.update(agentRoleProfiles).set({ archivedAt: new Date(), updatedAt: new Date() })
         .where(and(eq(agentRoleProfiles.companyId, companyId), eq(agentRoleProfiles.id, profileId), isNull(agentRoleProfiles.archivedAt)))
