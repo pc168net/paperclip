@@ -239,6 +239,31 @@ describe("RoleProfiles", () => {
     expect(container.textContent).toContain("Existing CEO behavior remains unchanged");
     expect(container.textContent).not.toContain("Save Profile");
   });
+
+  it("keeps the selected Profile draft when a pending new Profile creation fails", async () => {
+    let rejectCreate: (reason?: unknown) => void = () => {};
+    mockAgentRoleProfilesApi.create.mockImplementation(() => new Promise((_, reject) => {
+      rejectCreate = reject;
+    }));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    flushSync(() => {
+      root!.render(<QueryClientProvider client={queryClient}><RoleProfiles /></QueryClientProvider>);
+    });
+    await flushQueries();
+
+    await act(async () => { buttonByText(container, "Create Profile").click(); });
+    await act(async () => { buttonByText(container, "Save Profile").click(); });
+    await waitFor(() => expect(mockAgentRoleProfilesApi.create).toHaveBeenCalled());
+    await act(async () => { buttonByText(container, "Researcher").click(); });
+    expect((container.querySelector('input[aria-label="Profile name"]') as HTMLInputElement).value).toBe("Researcher");
+
+    await act(async () => { rejectCreate(new Error("create failed")); });
+    await flushQueries();
+
+    expect((container.querySelector('input[aria-label="Profile name"]') as HTMLInputElement).value).toBe("Researcher");
+    expect(container.textContent).toContain("Archive Profile");
+  });
 });
 
 function buttonByText(container: HTMLElement, text: string) {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FileText, LockKeyhole, Plus, Save, X } from "lucide-react";
 import type { AgentRoleProfile } from "@/api/agentRoleProfiles";
@@ -43,6 +43,7 @@ export function RoleProfiles() {
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   const [draft, setDraft] = useState<ProfileDraft | null>(null);
   const [creating, setCreating] = useState(false);
+  const createModeGeneration = useRef(0);
   const profilesQuery = useQuery({
     queryKey: queryKeys.agentRoleProfiles.list(selectedCompanyId ?? ""),
     queryFn: () => agentRoleProfilesApi.list(selectedCompanyId!),
@@ -67,6 +68,12 @@ export function RoleProfiles() {
     if (!creating && selectedProfile) setDraft(profileDraft(selectedProfile));
   }, [creating, selectedProfile]);
 
+  const leaveCreateMode = () => {
+    createModeGeneration.current += 1;
+    setCreating(false);
+    setDraft(null);
+  };
+
   const saveProfile = useMutation({
     mutationFn: (payload: ProfileDraft) => agentRoleProfilesApi.update(selectedCompanyId!, selectedProfile!.id, {
       name: payload.name.trim(),
@@ -88,15 +95,16 @@ export function RoleProfiles() {
       managedFiles: payload.managedFiles,
       changeSummary: payload.changeSummary.trim() || null,
     }),
+    onMutate: () => createModeGeneration.current,
     onSuccess: async (profile) => {
+      createModeGeneration.current += 1;
       setCreating(false);
       setSelectedProfileId(profile.id);
       await queryClient.invalidateQueries({ queryKey: queryKeys.agentRoleProfiles.list(selectedCompanyId ?? "") });
       pushToast({ title: "Role Profile created", tone: "success" });
     },
-    onError: (error) => {
-      setCreating(false);
-      setDraft(null);
+    onError: (error, _payload, activeGeneration) => {
+      if (activeGeneration === createModeGeneration.current) leaveCreateMode();
       pushToast({ title: "Could not create Role Profile", body: error instanceof Error ? error.message : undefined, tone: "error" });
     },
   });
@@ -117,7 +125,7 @@ export function RoleProfiles() {
     <div className="flex h-full min-h-0">
       <aside className="w-80 shrink-0 border-r border-border">
         <div className="border-b border-border px-4 py-3">
-          <div className="flex items-center justify-between gap-2"><h1 className="text-lg font-semibold">Role Profiles</h1><Button type="button" size="sm" variant="outline" onClick={() => { setCreating(true); setDraft({ name: "New Profile", description: "", changeSummary: "", managedFiles: { "AGENTS.md": "" } }); }}><Plus />Create Profile</Button></div>
+          <div className="flex items-center justify-between gap-2"><h1 className="text-lg font-semibold">Role Profiles</h1><Button type="button" size="sm" variant="outline" onClick={() => { createModeGeneration.current += 1; setCreating(true); setDraft({ name: "New Profile", description: "", changeSummary: "", managedFiles: { "AGENTS.md": "" } }); }}><Plus />Create Profile</Button></div>
           <p className="mt-1 text-sm text-muted-foreground">Initial instruction bundles for new agents.</p>
         </div>
         <div className="p-2">
@@ -125,7 +133,7 @@ export function RoleProfiles() {
             <button
               key={profile.id}
               type="button"
-              onClick={() => { setCreating(false); setDraft(profileDraft(profile)); setSelectedProfileId(profile.id); }}
+              onClick={() => { createModeGeneration.current += 1; setCreating(false); setDraft(profileDraft(profile)); setSelectedProfileId(profile.id); }}
               className={`w-full rounded-md px-3 py-2 text-left hover:bg-accent ${selectedProfile?.id === profile.id ? "bg-accent" : ""}`}
             >
               <div className="flex items-center justify-between gap-2">
@@ -143,7 +151,7 @@ export function RoleProfiles() {
       </aside>
       <main className="min-w-0 flex-1 overflow-y-auto p-6">
         {creating && draft ? (
-          <EditableProfile profile={{ id: "new", companyId: selectedCompanyId ?? "", key: "new", name: draft.name, description: draft.description, kind: "custom", readOnly: false, revision: { id: "new", number: 1, managedFiles: draft.managedFiles, changeSummary: null, createdAt: null } }} draft={draft} revisions={[]} revisionsLoading={false} revisionsError={false} saving={createProfile.isPending} onChange={setDraft} onSave={() => createProfile.mutate(draft)} onCancel={() => { setCreating(false); setDraft(null); }} saveLabel="Save Profile" />
+          <EditableProfile profile={{ id: "new", companyId: selectedCompanyId ?? "", key: "new", name: draft.name, description: draft.description, kind: "custom", readOnly: false, revision: { id: "new", number: 1, managedFiles: draft.managedFiles, changeSummary: null, createdAt: null } }} draft={draft} revisions={[]} revisionsLoading={false} revisionsError={false} saving={createProfile.isPending} onChange={setDraft} onSave={() => createProfile.mutate(draft)} onCancel={leaveCreateMode} saveLabel="Save Profile" />
         ) : selectedProfile ? (
           selectedProfile.readOnly ? (
             <ReadOnlyProfile profile={selectedProfile} />
