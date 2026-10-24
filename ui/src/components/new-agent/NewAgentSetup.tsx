@@ -28,6 +28,7 @@ import type {
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { agentsApi } from "@/api/agents";
+import { agentRoleProfilesApi } from "@/api/agentRoleProfiles";
 import { adaptersApi } from "@/api/adapters";
 import { environmentsApi } from "@/api/environments";
 import { instanceSettingsApi } from "@/api/instanceSettings";
@@ -57,6 +58,7 @@ import { ModelDropdown } from "../AgentConfigForm";
 import { Field, ToggleField } from "../agent-config-primitives";
 import { SecretPicker } from "../environment-variables-editor/SecretPicker";
 import { Button } from "../ui/button";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "../ui/alert-dialog";
 import { Input } from "../ui/input";
 import { NativeSelect, nativeSelectClassName } from "../ui/select";
 import {
@@ -257,6 +259,8 @@ function Setup({
     null,
   );
   const [error, setError] = useState<string | null>(null);
+  const [roleProfileId, setRoleProfileId] = useState("");
+  const [duplicateProfileConfirmationOpen, setDuplicateProfileConfirmationOpen] = useState(false);
   const generation = useRef(0);
   const savingRef = useRef(false);
   useEffect(
@@ -296,6 +300,11 @@ function Setup({
     queryKey: queryKeys.agents.list(companyId),
     queryFn: () => agentsApi.list(companyId),
   });
+  const roleProfiles = useQuery({
+    queryKey: queryKeys.agentRoleProfiles.list(companyId),
+    queryFn: () => agentRoleProfilesApi.list(companyId),
+  });
+  const selectedRoleProfile = roleProfiles.data?.find((profile) => profile.id === roleProfileId) ?? null;
   const aiConnections = useQuery({
     queryKey: ["ai-connections", companyId],
     queryFn: () => aiConnectionsApi.list(companyId),
@@ -613,7 +622,7 @@ function Setup({
       return false;
     }
   }
-  async function finish() {
+  async function finish(allowDuplicate = false) {
     if (
       savingRef.current ||
       createdAgentId ||
@@ -627,6 +636,10 @@ function Setup({
       return;
     if (nameConflict) {
       setError(`An active agent named "${name.trim()}" already exists. Choose a different name.`);
+      return;
+    }
+    if (selectedRoleProfile && !allowDuplicate) {
+      setDuplicateProfileConfirmationOpen(true);
       return;
     }
     savingRef.current = true;
@@ -676,6 +689,13 @@ function Setup({
           : {}),
         ...(connection?.applyStoredClaudeLogin
           ? { applyStoredClaudeLogin: true }
+          : {}),
+        ...(selectedRoleProfile
+          ? {
+              roleProfileId: selectedRoleProfile.id,
+              roleProfileRevisionId: selectedRoleProfile.revision.id,
+              ...(allowDuplicate ? { allowDuplicate: true } : {}),
+            }
           : {}),
       });
       hired = true;
@@ -1011,6 +1031,30 @@ function Setup({
                     </h2>
                     <fieldset disabled={busy} className="space-y-8">
                       <section className="space-y-5">
+                        <Field label="Role Profile">
+                          <select
+                            aria-label="Role Profile"
+                            className={controlClass}
+                            value={roleProfileId}
+                            onChange={(event) => setRoleProfileId(event.target.value)}
+                          >
+                            <option value="">No Profile</option>
+                            {(roleProfiles.data ?? []).filter((profile) => !profile.readOnly).map((profile) => (
+                              <option key={profile.id} value={profile.id}>
+                                {profile.name}
+                              </option>
+                            ))}
+                          </select>
+                          {roleProfiles.error && <p role="alert" className="text-xs text-destructive">Could not load Role Profiles. Create the agent without one or retry.</p>}
+                          {selectedRoleProfile && (
+                            <div className="space-y-2 rounded-md border border-border bg-card p-3">
+                              <p className="text-xs text-muted-foreground">Revision {selectedRoleProfile.revision.number} initial files</p>
+                              <ul className="space-y-1 font-mono text-xs">
+                                {Object.keys(selectedRoleProfile.revision.managedFiles).sort().map((path) => <li key={path}>{path}</li>)}
+                              </ul>
+                            </div>
+                          )}
+                        </Field>
                         {isDot && <>
                           <p className="text-sm text-muted-foreground">Create this agent, then copy its pairing prompt to your Dot.</p>
                           {experimental.data?.enablePublicMcp !== true && <p className="text-sm text-muted-foreground">Enable Assistant connections (MCP) in Experimental settings before pairing.</p>}
@@ -1414,6 +1458,22 @@ function Setup({
             </AnimatePresence>
           </div>
         </div>
+        <AlertDialog open={duplicateProfileConfirmationOpen} onOpenChange={setDuplicateProfileConfirmationOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Create another agent with this Profile?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This copies revision {selectedRoleProfile?.revision.number} of {selectedRoleProfile?.name} into a separate agent. Later Profile changes will not change either agent.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction onClick={(event) => { event.preventDefault(); setDuplicateProfileConfirmationOpen(false); void finish(true); }}>
+                Create duplicate agent
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </MotionConfig>
   );

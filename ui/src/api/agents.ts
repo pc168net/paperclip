@@ -81,6 +81,27 @@ export interface AgentHireResponse {
   approval: Approval | null;
 }
 
+export interface AgentRoleProfileAdoption {
+  profileId: string;
+  appliedRevisionId: string;
+  managedPaths: string[];
+  createdAt: string | Date;
+  updatedAt: string | Date;
+  profile: { id: string; name: string; key: string };
+  revision: { id: string; number: number; managedFiles: Record<string, string> };
+}
+
+export interface AgentRoleProfileDiff {
+  adoption: AgentRoleProfileAdoption;
+  revision: { id: string; number: number; managedFiles: Record<string, string> };
+  files: Array<{
+    path: string;
+    status: "unchanged" | "added" | "changed" | "removed";
+    currentContent: string | null;
+    profileContent: string | null;
+  }>;
+}
+
 export interface AgentPermissionUpdate {
   canCreateAgents: boolean;
   canCreateSkills: boolean;
@@ -221,6 +242,12 @@ export const agentsApi = {
   ) => api.post<AgentSkillSnapshot>(agentPath(id, companyId, "/skills/sync"), { desiredSkills, mode }),
   createKey: (id: string, name: string, companyId?: string, scope?: AgentApiKeyScope) =>
     api.post<AgentKeyCreated>(agentPath(id, companyId, "/keys"), { name, ...(scope ? { scope } : {}) }),
+  roleProfile: (id: string, companyId?: string) =>
+    api.get<AgentRoleProfileAdoption | null>(agentPath(id, companyId, "/role-profile")),
+  roleProfileDiff: (id: string, companyId?: string, revisionId?: string) =>
+    api.get<AgentRoleProfileDiff>(agentPath(id, companyId, `/role-profile/diff${revisionId ? `?revisionId=${encodeURIComponent(revisionId)}` : ""}`)),
+  restoreRoleProfile: (id: string, data: { roleProfileRevisionId?: string; confirm: true }, companyId?: string) =>
+    api.post<AgentRoleProfileDiff>(agentPath(id, companyId, "/role-profile/restore"), data),
   revokeKey: (agentId: string, keyId: string, companyId?: string) =>
     api.delete<{ ok: true }>(agentPath(agentId, companyId, `/keys/${encodeURIComponent(keyId)}`)),
   runtimeState: (id: string, companyId?: string) =>

@@ -19,6 +19,7 @@ import {
   type ClaudeLoginResult,
   type AgentPermissionUpdate,
 } from "../api/agents";
+import { agentRoleProfilesApi } from "../api/agentRoleProfiles";
 import { builtInAgentsApi, type BuiltInManagedResourceKind } from "../api/builtInAgents";
 import { companySkillsApi } from "../api/companySkills";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -72,6 +73,7 @@ import { formatDate, relativeTime, formatTokens, visibleRunCostUsd, visibleRunTo
 import { cn } from "../lib/utils";
 import { RunRetryDetails } from "../components/RunRetryDetails";
 import { Button } from "@/components/ui/button";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Tabs } from "@/components/ui/tabs";
 import { PageTabBar } from "../components/PageTabBar";
 import { AuditFeed } from "./audit/AuditFeed";
@@ -2257,6 +2259,9 @@ export function PromptsTab({
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [filePanelWidth, setFilePanelWidth] = useState(260);
   const [instructionPaneWidth, setInstructionPaneWidth] = useState<number | null>(null);
+  const [showProfileDiff, setShowProfileDiff] = useState(false);
+  const [restoreProfileOpen, setRestoreProfileOpen] = useState(false);
+  const [restoreRevisionId, setRestoreRevisionId] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
   const [awaitingRefresh, setAwaitingRefresh] = useState(false);
   const lastFileVersionRef = useRef<string | null>(null);
@@ -2305,6 +2310,35 @@ export function PromptsTab({
     queryFn: () => agentsApi.instructionsBundle(agent.id, companyId),
     enabled: Boolean(companyId && isLocal),
     refetchInterval: draft === null ? 5000 : false,
+  });
+  const roleProfile = useQuery({
+    queryKey: ["agents", agent.id, "role-profile"],
+    queryFn: () => agentsApi.roleProfile(agent.id, companyId),
+    enabled: Boolean(companyId),
+    retry: false,
+  });
+  const profileRevisions = useQuery({
+    queryKey: queryKeys.agentRoleProfiles.revisions(companyId ?? "", roleProfile.data?.profileId ?? ""),
+    queryFn: () => agentRoleProfilesApi.revisions(companyId!, roleProfile.data!.profileId),
+    enabled: Boolean(companyId && roleProfile.data),
+    retry: false,
+  });
+  const selectedProfileRevisionId = restoreRevisionId || roleProfile.data?.appliedRevisionId;
+  const roleProfileDiff = useQuery({
+    queryKey: ["agents", agent.id, "role-profile", "diff", selectedProfileRevisionId ?? ""],
+    queryFn: () => agentsApi.roleProfileDiff(agent.id, companyId, selectedProfileRevisionId),
+    enabled: Boolean(companyId && roleProfile.data && showProfileDiff),
+    retry: false,
+  });
+  const restoreRoleProfile = useMutation({
+    mutationFn: () => agentsApi.restoreRoleProfile(agent.id, { roleProfileRevisionId: selectedProfileRevisionId, confirm: true }, companyId),
+    onSuccess: () => {
+      setRestoreProfileOpen(false);
+      setShowProfileDiff(true);
+      void queryClient.invalidateQueries({ queryKey: ["agents", agent.id, "role-profile"] });
+      void queryClient.invalidateQueries({ queryKey: ["agents", agent.id, "role-profile", "diff"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
+    },
   });
 
   const persistedMode = bundle?.mode ?? "managed";
@@ -2691,6 +2725,69 @@ export function PromptsTab({
 
   return (
     <div className="space-y-6">
+      {roleProfile.error && <p role="alert" className="text-sm text-destructive">Could not load Role Profile provenance.</p>}
+      {roleProfile.data && (
+        <section className="space-y-3 rounded-lg border border-border bg-card p-4" aria-label="Role Profile">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold">Role Profile</h3>
+              <p className="text-sm text-muted-foreground">
+                {roleProfile.data.profile.name} · revision {roleProfile.data.revision.number}
+              </p>
+              <p className="text-xs text-muted-foreground">Applied {formatDate(roleProfile.data.createdAt)}</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" size="sm" variant="outline" onClick={() => setShowProfileDiff((open) => !open)}>
+                {showProfileDiff ? "Hide differences" : "View differences"}
+              </Button>
+              <Button type="button" size="sm" variant="outline" onClick={() => setRestoreProfileOpen(true)}>
+                Restore Profile
+              </Button>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">Managed files</p>
+          <ul className="space-y-1 font-mono text-xs">
+            {roleProfile.data.managedPaths.map((path) => <li key={path}>{path}</li>)}
+          </ul>
+          {showProfileDiff && (
+            <div className="space-y-2 rounded-md border border-border bg-background p-3">
+              {roleProfileDiff.isLoading && <p className="text-sm text-muted-foreground">Loading differences…</p>}
+              {roleProfileDiff.error && <p role="alert" className="text-sm text-destructive">Could not load Profile differences.</p>}
+              {roleProfileDiff.data?.files.every((file) => file.status === "unchanged") && <p className="text-sm text-muted-foreground">No managed files have changed.</p>}
+              {roleProfileDiff.data?.files.filter((file) => file.status !== "unchanged").map((file) => (
+                <p key={file.path} className="text-sm"><span className="font-mono">{file.path}</span> · {file.status}</p>
+              ))}
+            </div>
+          )}
+          <AlertDialog open={restoreProfileOpen} onOpenChange={setRestoreProfileOpen}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Restore Profile initial values?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Only the Profile-managed files below can be overwritten or deleted. Other agent files and configuration stay unchanged.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              {profileRevisions.error && <p role="alert" className="text-sm text-destructive">Could not load Profile revisions. Restore the adopted revision or retry.</p>}
+              <label className="space-y-1 text-sm">
+                <span className="text-xs text-muted-foreground">Profile revision</span>
+                <select aria-label="Profile revision" className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm" value={selectedProfileRevisionId ?? ""} onChange={(event) => setRestoreRevisionId(event.target.value)}>
+                  {(profileRevisions.data ?? [roleProfile.data.revision]).map((revision) => <option key={revision.id} value={revision.id}>Revision {revision.number}</option>)}
+                </select>
+              </label>
+              <ul className="space-y-1 rounded-md border border-border bg-muted/40 p-3 font-mono text-xs">
+                {roleProfile.data.managedPaths.map((path) => <li key={path}>{path}</li>)}
+              </ul>
+              {restoreRoleProfile.error && <p role="alert" className="text-sm text-destructive">{restoreRoleProfile.error instanceof Error ? restoreRoleProfile.error.message : "Could not restore the Role Profile."}</p>}
+              <AlertDialogFooter>
+                <AlertDialogCancel disabled={restoreRoleProfile.isPending}>Cancel</AlertDialogCancel>
+                <AlertDialogAction disabled={restoreRoleProfile.isPending} onClick={(event) => { event.preventDefault(); restoreRoleProfile.mutate(); }}>
+                  Restore managed files
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </section>
+      )}
       {(bundle?.warnings ?? []).length > 0 && (
         <div className="space-y-2">
           {(bundle?.warnings ?? []).map((warning) => (
