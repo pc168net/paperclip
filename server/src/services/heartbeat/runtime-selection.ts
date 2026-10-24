@@ -59,7 +59,10 @@ import {
   resolvePaperclipRunnerNativeProviderInput,
 } from "../native-runtime/provider-profile.js";
 import { readRemoteCodexModelCliVersion } from "../native-runtime/codex-model-fallback.js";
-import { readConfiguredFallbackModel } from "../native-runtime/native-provider-capacity-retry.js";
+import {
+  isNativeProviderCapacityRetryCode,
+  readConfiguredFallbackModel,
+} from "../native-runtime/native-provider-capacity-retry.js";
 import {
   describeRunnerdNativeSessionBackend,
   parseNativeExecutionInput,
@@ -713,9 +716,9 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         instructionWorkingCopy: instructionCopy ? { rootPath: instructionCopy.executionRoot, entryPath: instructionCopy.entryFile, ...(isAgentDirectoryCopy(instructionCopy) ? { kind: "agent_files" as const } : {}) } : undefined,
       });
       getNativeFreshSessionHandoff = nativeReviewRequest ? undefined : getFreshSessionHandoff;
-       const configuredRateLimitFallback = run.scheduledRetryReason === "native_provider_overloaded"
-         ? readConfiguredFallbackModel(agent.adapterConfig)
-         : null;
+        const configuredRateLimitFallback = isNativeProviderCapacityRetryCode(run.scheduledRetryReason)
+          ? readConfiguredFallbackModel(agent.adapterConfig)
+          : null;
        const nativeProviderConfig = nativeRuntimeResolution.profile.backend === "codex_app_server"
          || nativeRuntimeResolution.profile.backend === "opencode_server"
          ? projectPaperclipRunnerTaskConfig(
