@@ -80,6 +80,10 @@ if (!support.supported) console.warn(`Role Profile adoption database tests unava
       .post(`/api/companies/${companyId}/agent-role-profiles`)
       .send({ name: "Hire research", managedFiles: { "AGENTS.md": "Hire instructions", "SOUL.md": "Investigate" } })
       .expect(201);
+    await request(api)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({ name: "Chief", role: "ceo", adapterType: "claude_local" })
+      .expect(201);
 
     const hired = await request(api)
       .post(`/api/companies/${companyId}/agent-hires`)
@@ -111,6 +115,20 @@ if (!support.supported) console.warn(`Role Profile adoption database tests unava
     await request(api)
       .post(`/api/companies/${companyId}/agent-hires`)
       .send({ name: "Chief", role: "ceo", adapterType: "claude_local", roleProfileId: profile.body.id })
+      .expect(422);
+  });
+
+  it("rejects Profile application for the first hire even when the request omits role", async () => {
+    const companyId = await createCompany();
+    const api = app(companyId);
+    const profile = await request(api)
+      .post(`/api/companies/${companyId}/agent-role-profiles`)
+      .send({ name: "First hire attempt", managedFiles: { "AGENTS.md": "Not first-agent instructions" } })
+      .expect(201);
+
+    await request(api)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({ name: "First teammate", adapterType: "claude_local", roleProfileId: profile.body.id })
       .expect(422);
   });
 

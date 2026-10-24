@@ -4282,7 +4282,11 @@ export function agentRoutes(
     if (hireRoleProfileId && req.actor.type !== "board") {
       throw forbidden("Only board users can apply a Role Profile");
     }
-    if (hireRoleProfileId && hireInput.role === "ceo") {
+    // The first hire is the CEO flow even when the client omits or lies about
+    // `role`; derive that from the same company agent roster used by the hire
+    // flow rather than trusting request input.
+    const isFirstHire = (await svc.list(companyId)).length === 0;
+    if (hireRoleProfileId && (hireInput.role === "ceo" || isFirstHire)) {
       throw unprocessable("The CEO Role Profile is informational and cannot change CEO instructions");
     }
     const selectedHireRoleProfile = hireRoleProfileId
