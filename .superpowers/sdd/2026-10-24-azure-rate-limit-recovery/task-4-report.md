@@ -94,3 +94,34 @@ passed
 - The batch projection only reads connection metadata, grants/audience through the existing connection listing service, deployment metadata, and installs. It does not resolve credentials or call a vault.
 - Router model selection remains execution/task-specific, so the read model does not claim a configured model is effective when no safe selected member exists.
 - Restricted responses calculate the projection from the persisted row before redaction but return only the two credential-free fields.
+
+## Review-fix round 2
+
+### Fixed regression
+
+The batched projection now requires the parsed binding's `provider` and `method` to match the accessible account metadata, and requires `shared` bindings to use organization/shared grants while `delegated` bindings use personal grants. These mirror the runtime selector's binding identity and ownership gates while retaining the fixed three-read batch shape.
+
+### RED evidence
+
+```text
+pnpm --filter @paperclipai/server exec vitest run src/__tests__/agent-effective-model-routes.test.ts
+FAIL: an anthropic binding pointed at the OpenAI account and was returned as
+{ effectiveModel: "gpt-5.6-terra", modelSource: "verified_deployment" }
+```
+
+### GREEN evidence
+
+```text
+pnpm --filter @paperclipai/server exec vitest run src/__tests__/agent-effective-model-routes.test.ts
+Test Files  1 passed (1)
+Tests       1 passed (1)
+
+pnpm --filter @paperclipai/server exec tsc --noEmit
+passed
+```
+
+### Regression coverage
+
+- An explicit provider mismatch falls back to `adapterConfig.model`.
+- A `delegated` binding targeting a shared/organization grant also falls back.
+- Both checks run inside the existing batched eligibility pass; no per-agent selector query was reintroduced.

@@ -119,6 +119,8 @@ describe("agent effective model routes", () => {
     const failedAgentId = randomUUID();
     const noConnectionAgentId = randomUUID();
     const routerAgentId = randomUUID();
+    const incompatibleBindingAgentId = randomUUID();
+    const wrongOwnershipAgentId = randomUUID();
     await db.insert(agents).values([
       {
         id: verifiedAgentId,
@@ -159,6 +161,22 @@ describe("agent effective model routes", () => {
         adapterConfig: { provider: "codex", model: "gpt-5.6-sol" },
         runtimeConfig: { aiConnection: { mode: "router", connectionId: randomUUID() } },
       },
+      {
+        id: incompatibleBindingAgentId,
+        companyId,
+        name: "Incompatible binding runner",
+        adapterType: "paperclip_runner",
+        adapterConfig: { provider: "codex", model: "gpt-5.6-sol" },
+        runtimeConfig: { aiConnection: { provider: "anthropic", method: "api_key", mode: "shared", connectionId: connected.connectionId, grantId: connected.grantId, deploymentId } },
+      },
+      {
+        id: wrongOwnershipAgentId,
+        companyId,
+        name: "Wrong ownership runner",
+        adapterType: "paperclip_runner",
+        adapterConfig: { provider: "openai", model: "gpt-5.6-sol" },
+        runtimeConfig: { aiConnection: { provider: "openai", method: "api_key", mode: "delegated", connectionId: connected.connectionId, grantId: connected.grantId, deploymentId } },
+      },
     ]);
 
     const list = await request(app()).get(`/api/companies/${companyId}/agents`);
@@ -183,6 +201,14 @@ describe("agent effective model routes", () => {
       effectiveModel: null,
       modelSource: "adapter_default",
     }));
+    expect(list.body.find((agent: { id: string }) => agent.id === incompatibleBindingAgentId)).toMatchObject({
+      effectiveModel: "gpt-5.6-sol",
+      modelSource: "agent_config",
+    });
+    expect(list.body.find((agent: { id: string }) => agent.id === wrongOwnershipAgentId)).toMatchObject({
+      effectiveModel: "gpt-5.6-sol",
+      modelSource: "agent_config",
+    });
 
     const detail = await request(app()).get(`/api/agents/${verifiedAgentId}`);
     expect(detail.status, JSON.stringify(detail.body)).toBe(200);

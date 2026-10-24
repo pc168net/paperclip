@@ -1408,10 +1408,14 @@ export function agentRoutes(
         adapterConfig.provider,
         adapterConfig.acpxAgent,
       );
+      const bindingMatchesAccount = account?.provider === binding.provider
+        && account.method === binding.method
+        && (binding.mode === "shared" ? account.ownership === "shared" : account.ownership === "personal");
       const hasInstall = installed.has(`${binding.connectionId}:company:${companyId}`)
         || installed.has(`${binding.connectionId}:agent:${agent.id}`);
       if (
         account?.status === "connected" &&
+        bindingMatchesAccount &&
         compatible &&
         hasInstall &&
         deployment?.status === "verified" &&
