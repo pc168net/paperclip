@@ -1663,6 +1663,7 @@ function LatestRunCard({
   const summaryRaw = run
     ? run.resultJson
       ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
+      : run.errorCode === "native_provider_rate_limited" ? ""
       : run.error ?? ""
     : "";
 
@@ -3109,6 +3110,7 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
   const metrics = runMetrics(run);
   const summary = run.resultJson
     ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
+    : run.errorCode === "native_provider_rate_limited" ? ""
     : run.error ?? "";
   const sourceResolvedFold = readSourceResolvedWatchdogFold(run.resultJson);
 
@@ -3500,7 +3502,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 )}
               </div>
             )}
-            {run.error && (
+            {run.error && run.errorCode !== "native_provider_rate_limited" && (
               <div className="text-xs">
                 <span className="text-red-600 dark:text-red-400">{run.error}</span>
                 {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}

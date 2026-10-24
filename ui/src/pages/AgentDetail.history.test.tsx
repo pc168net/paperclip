@@ -42,12 +42,15 @@ it("shows the server-projected connection deployment model in the agent overview
   } finally { await act(async () => root.unmount()); client.clear(); element.remove(); }
 });
 
-it("shows a safe rate-limit retry with its scheduled time and configured fallback", async () => {
+it.each([
+  ["streamlined", RunsTab],
+  ["production", ProductionRunsTab],
+] as const)("shows a safe rate-limit retry with its scheduled time and configured fallback in the %s runs view", async (_variant, Tab) => {
   const run = {
     id: "rate-limited-run", companyId: "company-1", agentId: "agent-1", status: "scheduled_retry", invocationSource: "automation",
     createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", usageJson: null, resultJson: null,
     contextSnapshot: { rateLimitRecovery: { fallbackModel: { model: "gpt-5.6-sol" } } }, exitCode: null,
-    error: "Selected model is rate limited.", errorCode: "native_provider_rate_limited", logRef: null,
+    error: "Azure provider payload: rate limit for deployment eastus-private", errorCode: "native_provider_rate_limited", logRef: null,
     startedAt: null, finishedAt: null, scheduledRetryReason: "native_provider_rate_limited",
     scheduledRetryAt: "2026-01-01T00:05:00Z", scheduledRetryAttempt: 1, retryOfRunId: null,
   } as unknown as HeartbeatRun;
@@ -57,11 +60,13 @@ it("shows a safe rate-limit retry with its scheduled time and configured fallbac
   const root = createRoot(element);
   try {
     await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter><PanelProvider><ToastProvider>
-      <RunsTab runs={[run]} companyId="company-1" agentId="agent-1" agentRouteId="agent-1" selectedRunId="rate-limited-run" adapterType="codex_local" adapterConfig={{}} />
+      <Tab runs={[run]} companyId="company-1" agentId="agent-1" agentRouteId="agent-1" selectedRunId="rate-limited-run" adapterType="codex_local" adapterConfig={{}} />
     </ToastProvider></PanelProvider></MemoryRouter></QueryClientProvider>));
     await vi.waitFor(async () => { await act(async () => {}); expect(element.textContent).toContain("Model rate limited"); });
     expect(element.textContent).toContain("Next retry");
     expect(element.textContent).toContain("gpt-5.6-sol");
+    expect(element.textContent).not.toContain("Azure provider payload");
+    expect(element.textContent).not.toContain("native_provider_rate_limited");
   } finally { await act(async () => root.unmount()); client.clear(); element.remove(); }
 });
 
