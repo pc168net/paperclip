@@ -1319,6 +1319,7 @@ export function agentRoutes(
   async function buildAgentDetail(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
     options?: { restricted?: boolean },
+    viewerUserId: string | null = null,
   ) {
     const [chainOfCommand, accessState] = await Promise.all([
       svc.getChainOfCommand(agent.id),
@@ -1328,12 +1329,64 @@ export function agentRoutes(
     const baseAgent = redactAgentRowForResponse(
       options?.restricted ? redactForRestrictedAgentView(agent) : agent,
     );
+    const modelProjection = await resolveAgentModelProjection(agent, viewerUserId);
 
     return {
       ...baseAgent,
+      ...modelProjection,
       chainOfCommand,
       access: accessState,
     };
+  }
+
+  type AgentModelProjection = {
+    effectiveModel: string | null;
+    modelSource: "verified_deployment" | "agent_config" | "adapter_default";
+  };
+
+  async function resolveAgentModelProjection(
+    agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
+    userId: string | null,
+  ): Promise<AgentModelProjection> {
+    const adapterConfig = agent.adapterConfig as Record<string, unknown>;
+    const configuredModel = typeof adapterConfig.model === "string" && adapterConfig.model.trim()
+      ? adapterConfig.model.trim()
+      : null;
+    const fallback: AgentModelProjection = configuredModel
+      ? { effectiveModel: configuredModel, modelSource: "agent_config" }
+      : { effectiveModel: null, modelSource: "adapter_default" };
+
+    // The restricted view intentionally strips runtimeConfig from its response.
+    // Resolve from the persisted row before that redaction, then expose only this
+    // credential-free projection.
+    const binding = aiConnectionBindingSchema.safeParse(
+      (agent.runtimeConfig as Record<string, unknown> | null)?.aiConnection,
+    );
+    if (!binding.success || binding.data.mode === "responsible_user" || !binding.data.deploymentId) {
+      return fallback;
+    }
+
+    try {
+      const selection = await aiConnectionService(db).select({
+        companyId: agent.companyId,
+        agentId: agent.id,
+        userId,
+        adapterType: agent.adapterType,
+        binding: binding.data,
+        model: configuredModel ?? undefined,
+        runnerProvider: typeof adapterConfig.provider === "string" ? adapterConfig.provider : undefined,
+        acpxAgent: typeof adapterConfig.acpxAgent === "string" ? adapterConfig.acpxAgent : undefined,
+      });
+      return selection.deployment
+        ? { effectiveModel: selection.deployment.modelId, modelSource: "verified_deployment" }
+        : fallback;
+    } catch (error) {
+      // Connection/deployment state and access can change independently from the
+      // agent record. A display read must fail closed to the configured/default
+      // model instead of presenting an unusable deployment as effective.
+      if (error instanceof HttpError && [403, 422].includes(error.status)) return fallback;
+      throw error;
+    }
   }
 
   async function resolveAgentSelfTrustPreset(req: Request, agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) {
@@ -3860,11 +3913,21 @@ export function agentRoutes(
     }
     const result = await filterAgentsForActor(req, await svc.list(companyId));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
+    const projected = await Promise.all(result.map(async (agent) => ({
+      agent,
+      modelProjection: await resolveAgentModelProjection(agent, responsibleUserForAiRequest(req)),
+    })));
     if (canReadConfigs) {
-      res.json(result.map((agent) => redactAgentRowForResponse(agent)));
+      res.json(projected.map(({ agent, modelProjection }) => ({
+        ...redactAgentRowForResponse(agent),
+        ...modelProjection,
+      })));
       return;
     }
-    res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
+    res.json(projected.map(({ agent, modelProjection }) => ({
+      ...redactForRestrictedAgentView(agent),
+      ...modelProjection,
+    })));
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
@@ -4004,7 +4067,7 @@ export function agentRoutes(
       res.json(buildLowTrustSelfView(agent));
       return;
     }
-    res.json(await buildAgentDetail(agent));
+    res.json(await buildAgentDetail(agent, undefined, responsibleUserForAiRequest(req)));
   });
 
   router.get("/agents/me/inbox-lite", async (req, res) => {
@@ -4101,10 +4164,10 @@ export function agentRoutes(
       ? true
       : await actorCanReadConfigurationsForCompany(req, agent.companyId);
     if (!canReadSensitiveDetail) {
-      res.json(await buildAgentDetail(agent, { restricted: true }));
+      res.json(await buildAgentDetail(agent, { restricted: true }, responsibleUserForAiRequest(req)));
       return;
     }
-    res.json(await buildAgentDetail(agent));
+    res.json(await buildAgentDetail(agent, undefined, responsibleUserForAiRequest(req)));
   });
 
   router.get("/agents/:id/configuration", async (req, res) => {
@@ -4913,7 +4976,7 @@ export function agentRoutes(
       },
     });
 
-    res.json(await buildAgentDetail(agent));
+    res.json(await buildAgentDetail(agent, undefined, responsibleUserForAiRequest(req)));
   });
 
   router.patch("/agents/:id/instructions-path", validate(updateAgentInstructionsPathSchema), async (req, res) => {
