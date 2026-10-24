@@ -1772,7 +1772,7 @@ function LatestRunCard({
 
 /* ---- Agent Overview (main single-page view) ---- */
 
-function AgentOverview({
+export function AgentOverview({
   agent,
   runs,
   assignedIssues,
