@@ -673,16 +673,18 @@ Primary configuration references consulted:
 [Hermes providers](https://hermes-agent.nousresearch.com/docs/integrations/providers).
 
 Validation includes negative company/owner/revocation/protocol checks, no-auth
-vault behavior, immutable reconnect destinations, credential projection, Codex
-probe isolation, and new-runner home/environment boundaries. The isolated local
+vault behavior, reconnect routing updates that preserve connection identity and
+access while marking verified deployments stale for re-verification, credential
+projection, Codex probe isolation, and new-runner home/environment boundaries. The isolated local
 test-drive exercised live OpenRouter requests using the Codex and Claude CLI
 probes, then completed real tasks using Codex, Claude, and OpenCode New Runner.
 The app walkthrough verified connection selection, saving, and completed tasks.
 A follow-up Codex/OpenRouter acceptance test ran a shell calculation, completed
 the task, then resumed from a new user message and completed a second shell
 calculation with the prior context. Reconnect coverage round-trips routing
-through PostgreSQL JSONB and verifies that credential rotation retains identity
-and agent access.
+through PostgreSQL JSONB and verifies that credential rotation or a routing
+endpoint change retains identity and agent access while invalidating verified
+deployments.
 General AWS access keys are not accepted or forwarded to Claude; use a Bedrock
 API key. Support for AWS roles requires a credential broker before it can ship.
 The initial OpenCode tool-use check was denied terminal access. The native driver

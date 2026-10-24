@@ -18844,6 +18844,7 @@ export function toolAccessService(
       connectionId: string,
       input: PutToolConnectionInstalls,
       actor?: ActorInfo,
+      transaction?: DbTransaction,
     ): Promise<ToolConnectionInstallSnapshot> => {
       const connection = await getConnectionRow(connectionId);
       const requested = new Map(
@@ -18873,7 +18874,7 @@ export function toolAccessService(
         targetId: string;
         profileId: string;
       }> = [];
-      await db.transaction(async (tx) => {
+      const writeInstalls = async (tx: ToolAccessMutationDb) => {
         await lockToolConnectionRuntimeInputs(tx, connection.companyId, connection.id);
         if (markMcpAccessConfigured) {
           // Preserve an explicit zero-agent selection through OAuth. Merge the
@@ -19024,7 +19025,9 @@ export function toolAccessService(
             },
           });
         }
-      });
+      };
+      if (transaction) await writeInstalls(transaction);
+      else await db.transaction(writeInstalls);
       for (const extension of accessExtensions) {
         await logActivity(db, {
           companyId: connection.companyId,
