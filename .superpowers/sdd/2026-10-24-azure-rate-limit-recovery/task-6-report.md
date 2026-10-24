@@ -32,3 +32,12 @@ Vitest emitted a non-failing Vite warning about future native config loading and
 - Documentation requires an explicit fallback model and does not imply inferred model substitution.
 - Documentation describes the saved-versus-effective/deployment model distinction without connection identifiers, credentials, or raw provider errors.
 - Only Task 6 documentation and report artifacts are staged for this commit; unrelated untracked plan artifacts remain untouched.
+
+## Follow-up: plan artifacts committed
+
+On 2026-10-25, verified the two approved untracked plan artifacts against the Task 6 design and implementation plan, then committed them without content edits:
+
+- `doc/plans/2026-10-24-azure-rate-limit-recovery-design.md` — SHA-256 `33201d388a20475e16f10182b50f069bfff3693afaba512e66a61017f255f5ff`
+- `doc/plans/2026-10-24-azure-rate-limit-recovery.md` — SHA-256 `5694b184f69426d6bc43a95b3d488d60dd1216986b753e8b8c944ee5ff57e9f3`
+
+This follow-up stages only these approved plan artifacts and this amended Task 6 report.
