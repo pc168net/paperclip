@@ -424,7 +424,10 @@ describe("claude execute", () => {
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
           engine: "cli", model, command: commandPath, cwd: workspace,
-          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            ANTHROPIC_MODEL: "",
+          },
         },
         context: {}, onLog: async () => {},
       });
