@@ -4,11 +4,11 @@
 
 讓使用 Azure Responses 連線的 Codex Paperclip Runner，在 Azure 回傳 token rate limit 時，顯示可行動的限流狀態、使用既有受限重試與已設定的 fallback model；同時讓 Agent Overview 與 Agents 清單顯示實際會被執行期連線覆寫後使用的模型。
 
-此次事件的原始 Codex 終端訊息為：`rate_limit_exceeded`，內容指出 `gpt-5.6-terra` 在 `eastus` 超過 token rate limit。現行程式只將 `serverOverloaded` 視為 provider capacity failure，因此此訊息退化為 `adapter_failed`，且不會進入既有的 capacity retry/fallback 流程。
+曾觀察到 provider token rate limit。現行程式只將 `serverOverloaded` 視為 provider capacity failure，因此此類失敗退化為 `adapter_failed`，且不會進入既有的 capacity retry/fallback 流程。
 
 ## Goals
 
-- 將 Codex provider 的 `rate_limit_exceeded` 納入安全且有界的 capacity/rate-limit 分類。
+- 將已辨識的 Codex provider token rate limit 納入安全且有界的 capacity/rate-limit 分類。
 - 對該分類使用既有的兩次延遲重試：第一次 5 分鐘、第二次 15 分鐘。
 - 當 Agent 已設定 `fallbackModel` 時，讓 scheduled retry 使用指定的 provider/model；沒有設定時保留原模型。
 - 對操作員顯示簡短的「Provider rate limited」狀態與下一步，而不保存或顯示未受限的 Azure 錯誤文字。
@@ -36,7 +36,7 @@
 
 ### A. 完整修正：結構化限流分類、既有重試／fallback、有效模型顯示（選定）
 
-在 native provider failure observation 中加入已知的 Codex `rate_limit_exceeded` 分類，映射到新的封閉診斷與使用者訊息。使 native finalization 將它交給現有 capacity retry materialization；既有服務負責延遲、上限、wake request、狀態與 fallback model。新增伺服器提供的 effective-model 顯示欄位，供 Overview 與 Agents 清單使用。
+在 native provider failure observation 中加入已辨識的 Codex token rate-limit 分類，映射到新的封閉診斷與使用者訊息。使 native finalization 將它交給現有 capacity retry materialization；既有服務負責延遲、上限、wake request、狀態與 fallback model。新增伺服器提供的 effective-model 顯示欄位，供 Overview 與 Agents 清單使用。
 
 **優點：** 解決實際可用性與可見性問題；重用已存在的可審計重試基礎設施。
 
@@ -46,7 +46,7 @@
 
 只分類與重試/fallback，不改變 Overview 或 Agents 清單。
 
-**不選用原因：** 操作員仍會看到 `gpt-5.6-sol`，但執行 Terra，持續造成錯誤診斷混亂。
+**不選用原因：** 操作員仍會看到已儲存的模型，而非實際執行的 deployment model，持續造成錯誤診斷混亂。
 
 ### C. 僅改善 UI 訊息
 
@@ -60,7 +60,7 @@
 
 在 `server/src/services/native-runtime/native-provider-failure.ts` 擴充封閉的 Codex failure 觀察：
 
-- 辨識 provider 的 `rate_limit_exceeded` 訊號。
+- 辨識已辨識的 provider token rate-limit 訊號。
 - 僅持久化新的封閉診斷，例如 `{ provider: "codex", category: "rate_limited" }`。
 - 回傳穩定 error code 與文案，例如 `native_provider_rate_limited` 和 `Selected model is rate limited. Paperclip will retry after the provider capacity window.`。
 - 不保存原始 Azure message、region、deployment 細節或任意 provider response。
@@ -118,7 +118,7 @@ native rate-limit run 與 scheduled retry 顯示：
 
 ## Verification
 
-1. 單元測試確認 `rate_limit_exceeded` 產生封閉 rate-limit 診斷，且任意 Azure message 不會持久化。
+1. 單元測試確認已辨識的 token rate-limit 訊號產生封閉 rate-limit 診斷，且任意 Azure message 不會持久化。
 2. native integration test 確認限流失敗建立一次 5 分鐘的 scheduled retry，並在第二次失敗後建立一次 15 分鐘 retry，第三次不再排程。
 3. integration test 確認 configured fallback model 會覆寫 retry 的 provider/model；未設定時保留原 provider/model。
 4. integration test 確認重試仍遵守 task ownership、pause、預算與現有 recovery fencing。

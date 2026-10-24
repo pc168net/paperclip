@@ -41,3 +41,9 @@ On 2026-10-25, verified the two approved untracked plan artifacts against the Ta
 - `doc/plans/2026-10-24-azure-rate-limit-recovery.md` — SHA-256 `5694b184f69426d6bc43a95b3d488d60dd1216986b753e8b8c944ee5ff57e9f3`
 
 This follow-up stages only these approved plan artifacts and this amended Task 6 report.
+
+## Follow-up review fix: incident-detail redaction
+
+On 2026-10-25, removed the raw provider incident details from the approved design document: the exact provider signal, model/deployment values, and region. The document now states only that a provider token rate limit was observed and that current handling downgrades it to `adapter_failed`. The design’s bounded recovery and effective-model contracts remain intact.
+
+Verification: searched the design document for the removed signal, model/deployment values, and region; no matches remained. This documentation-only correction did not require test execution.
