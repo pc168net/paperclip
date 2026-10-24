@@ -314,5 +314,24 @@ describe("agent effective model routes", () => {
       expect(JSON.stringify(projected)).not.toContain("fixture-api-key");
       expect(JSON.stringify(projected)).not.toContain("must not be projected");
     }
+
+    const unattributedAgentActor: Express.Request["actor"] = {
+      type: "agent",
+      source: "agent_jwt",
+      agentId: restrictedAgentId,
+      companyId,
+    };
+    const unattributedList = await request(app(unattributedAgentActor)).get(`/api/companies/${companyId}/agents`);
+    const unattributedDetail = await request(app(unattributedAgentActor)).get(`/api/agents/${verifiedAgentId}`);
+    for (const response of [unattributedList, unattributedDetail]) {
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      const projected = Array.isArray(response.body)
+        ? response.body.find((agent: { id: string }) => agent.id === verifiedAgentId)
+        : response.body;
+      expect({ effectiveModel: projected.effectiveModel, modelSource: projected.modelSource }).toEqual({
+        effectiveModel: null,
+        modelSource: "adapter_default",
+      });
+    }
   }, 90_000);
 });

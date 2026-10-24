@@ -156,3 +156,58 @@ passed
 - Stale and failed explicit deployments also fail closed to the same null projection.
 - The ordinary no-connection agent remains distinct and projects its configured model.
 - The existing integration harness does not expose a stable query-counter boundary without asserting SQL/query-builder internals. The resolver remains batched: it calls the account-list service once and makes two set-based reads for all explicit bindings; it does not invoke `aiConnectionService.select` per agent.
+
+## Review-fix round 4
+
+### Fixed remaining null-responsible-user fallback
+
+The explicit deployment binding classification and fail-closed override now run
+before the `!userId` return. An agent request without `onBehalfOfUserId` cannot
+run the account/grant eligibility checks, so an explicit saved deployment binding
+now projects `{ effectiveModel: null, modelSource: "adapter_default" }` rather
+than falling back to `adapterConfig.model`. Agents with no explicit deployment
+binding still keep the existing configured/default display behavior.
+
+### RED evidence
+
+Added a real embedded-Postgres route regression using an agent actor with no
+`onBehalfOfUserId`; it exercises both list and detail reads for a verified,
+explicit deployment binding. Before the ordering correction:
+
+```text
+$ pnpm --filter @paperclipai/server exec vitest run src/__tests__/agent-effective-model-routes.test.ts
+FAIL  src/__tests__/agent-effective-model-routes.test.ts > agent effective model routes > projects only a verified selected deployment as an agent's effective model
+AssertionError: expected { effectiveModel: 'gpt-5.6-sol', …(1) } to deeply equal { effectiveModel: null, …(1) }
+
+- Expected
++ Received
+  {
+-   "effectiveModel": null,
+-   "modelSource": "adapter_default",
++   "effectiveModel": "gpt-5.6-sol",
++   "modelSource": "agent_config",
+  }
+
+Test Files  1 failed (1)
+Tests       1 failed (1)
+```
+
+### GREEN evidence
+
+After moving the existing early return below the fail-closed override:
+
+```text
+$ pnpm --filter @paperclipai/server exec vitest run src/__tests__/agent-effective-model-routes.test.ts
+Test Files  1 passed (1)
+Tests       1 passed (1)
+
+$ pnpm --filter @paperclipai/server exec tsc --noEmit
+(no output; exit 0)
+```
+
+### Scope and concern
+
+- The correction only reorders the existing explicit-deployment fail-closed
+  override; it adds no dependency calls and preserves the batched selector path.
+- The focused test covers both public list and detail route projections. The full
+  repository suite was not run because this is an ordering-only route regression.

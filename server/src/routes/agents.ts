@@ -1370,8 +1370,6 @@ export function agentRoutes(
     const fallbacks = parsed.map(({ agent, binding }) =>
       agentModelFallback(agent, binding.success && binding.data.mode === "router"),
     );
-    if (!userId) return fallbacks;
-
     const explicit = parsed.flatMap(({ agent, binding }, index) =>
       binding.success && binding.data.mode !== "router" && binding.data.mode !== "responsible_user" && binding.data.deploymentId
         ? [{ agent, binding: binding.data, index }]
@@ -1385,6 +1383,7 @@ export function agentRoutes(
     for (const { index } of explicit) {
       fallbacks[index] = { effectiveModel: null, modelSource: "adapter_default" };
     }
+    if (!userId) return fallbacks;
 
     // Resolve account audience and deployments once for the company. The list
     // surface can contain hundreds of agents; selecting each binding separately
