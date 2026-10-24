@@ -140,12 +140,12 @@
 - Modify: `doc/plans/2026-10-24-role-profiles-implementation.md`
 
 - [x] Run `pnpm -r typecheck`, `pnpm test:run`, `pnpm build`, and `pnpm check:token-gates`.
-  `pnpm check:token-gates` passed. `pnpm -r typecheck` and `pnpm build` both
-  reached the Runner Rust stage but could not finish because `cargo` is not
-  installed. `pnpm test:run` exceeded the 20-minute local bound before a final
-  summary; it had reported 18 failures in the unrelated
-  `agent-hire-ai-connections.test.ts` file. See the Task 6 report for exact
-  command evidence.
+  `pnpm check:token-gates` passed. Fresh `pnpm -r typecheck` and `pnpm build`
+  both passed; Runner Rust/Vite warnings were non-failing environment/toolchain
+  warnings. Fresh `pnpm test:run` exceeded the 25-minute harness timeout before
+  a final Vitest summary. It emitted no `FAIL` or failed-test markers, but this
+  incomplete run is not full-suite success. See the Task 6 report for the
+  preserved historical and fresh command evidence.
 - [x] Exercise acceptance behavior with focused automated coverage:
   `pnpm exec vitest run server/src/__tests__/agent-role-profile-adoption.test.ts ui/src/pages/RoleProfiles.test.tsx ui/src/components/new-agent/NewAgentSetup.deployment.test.tsx ui/src/pages/AgentDetail.instructions.test.tsx`
   passed 30 tests. It covers adoption by two agents after confirmation,
@@ -158,7 +158,7 @@
 ## Task 6 verification status (2026-10-24)
 
 The Role Profiles-focused acceptance coverage and token gates are green. Full
-repository verification is incomplete in this environment: install Rust/Cargo
-and rerun typecheck/build, then rerun the full test suite to completion and
-perform the documented browser walkthrough before treating this as full
-end-to-end acceptance.
+repository verification is incomplete in this environment: fresh typecheck and
+build passed, but rerun the full test suite to a final summary and perform the
+documented browser walkthrough before treating this as full end-to-end
+acceptance.
