@@ -383,6 +383,19 @@ error instead. If termination cannot be verified, the adapter keeps ownership
 until the outstanding operation settles, and Stop is not acknowledged as complete.
 Local execution and cancellation of an already-running agent turn are unchanged.
 
+### Native provider rate-limit recovery
+
+For Paperclip Runner native execution, a recognized provider token rate limit
+uses the bounded capacity-recovery path: Paperclip schedules retries after five
+minutes and then fifteen minutes. A retry uses a fallback model only when the
+agent explicitly configures one; Paperclip does not infer a substitute model.
+Unknown provider errors are not automatically retried. The scheduled state uses
+safe Paperclip status text rather than raw provider error content.
+
+Agent lists and Overview show the effective model selected for execution. A
+verified connection deployment can therefore be shown instead of the agent's
+saved model; the model source identifies that distinction.
+
 ## Legacy adoption
 
 Migration `0273` indexes only explicitly owned personal secrets with a recognized

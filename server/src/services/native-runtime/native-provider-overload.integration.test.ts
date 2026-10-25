@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, companies, completionContracts, createDb, environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, statusDecisionEffects, statusDecisions } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, companies, completionContracts, createDb, environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, statusDecisionEffects, statusDecisions } from "@paperclipai/db";
 import type { ControlPlanePort, NativeExecutionInputV1, PrpEvent, PrpTerminalState } from "@paperclipai/paperclip-runner";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { CONTROL_PLANE_CONFORMANCE_RESULT } from "../../vendor/paperclip-runner/testing.js";
@@ -15,7 +15,10 @@ import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { readPersistedNativeProviderFailure } from "./native-provider-failure-evidence.js";
-import { NATIVE_PROVIDER_OVERLOADED_MESSAGE } from "./native-provider-failure.js";
+import {
+  NATIVE_PROVIDER_OVERLOADED_MESSAGE,
+  NATIVE_PROVIDER_RATE_LIMITED_MESSAGE,
+} from "./native-provider-failure.js";
 import { readConfiguredFallbackModel } from "./native-provider-capacity-retry.js";
 import { heartbeatService } from "../heartbeat.js";
 import { createPostgresWakeQueueAdapter } from "../../modules/wake-queue/adapters/postgres.js";
@@ -31,7 +34,7 @@ describe("durable native provider capacity retry", () => {
     db = createDb(temporary.connectionString);
     await db.insert(companies).values({ id: companyId, name: "Capacity regression", issuePrefix: "CAP" });
     await db.insert(agents).values([
-      { id: agentId, companyId, name: "Capacity worker", status: "active", adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "test-model" } },
+      { id: agentId, companyId, name: "Capacity worker", status: "active", adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "test-model", fallbackModel: { provider: "codex", model: "safe-fallback" } } },
       { id: otherAgentId, companyId, name: "New owner", status: "active", adapterType: "paperclip_runner" },
     ]);
   });
@@ -43,7 +46,20 @@ describe("durable native provider capacity retry", () => {
   });
   afterAll(async () => { await temporary?.cleanup(); });
 
-  async function acceptCapacityFailure(runId: string, issueId: string, mutateOwner = false) {
+  async function acceptCapacityFailure(
+    runId: string,
+    issueId: string,
+    mutateOwner = false,
+    fixture: {
+      codexErrorInfo: "serverOverloaded" | "rate_limit_exceeded";
+      errorCode: "native_provider_overloaded" | "native_provider_rate_limited";
+      errorMessage: string;
+    } = {
+      codexErrorInfo: "serverOverloaded",
+      errorCode: "native_provider_overloaded",
+      errorMessage: NATIVE_PROVIDER_OVERLOADED_MESSAGE,
+    },
+  ) {
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     const [run] = await db.update(heartbeatRuns).set({ status: "running", runtimeMode: "native", nativeIssueId: issueId, error: null, errorCode: null }).where(eq(heartbeatRuns.id, runId)).returning();
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
@@ -63,8 +79,8 @@ describe("durable native provider capacity retry", () => {
     await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, runId));
     const event: PrpEvent = {
       schema: "paperclip.prp.event.v1", runId, normalizedSessionId: native.normalizedSessionId, turnId: native.turnId,
-      sourceInstanceId: native.runnerInstanceId, sourceEventId: "overload", sourceSeq: 1, sourceKind: "runner", eventType: "turn.failed", schemaVersion: 1, priority: 0, emittedAt: new Date().toISOString(),
-      payload: { status: "failed", error: { codexErrorInfo: "serverOverloaded", message: NATIVE_PROVIDER_OVERLOADED_MESSAGE } },
+      sourceInstanceId: native.runnerInstanceId, sourceEventId: fixture.codexErrorInfo, sourceSeq: 1, sourceKind: "runner", eventType: "turn.failed", schemaVersion: 1, priority: 0, emittedAt: new Date().toISOString(),
+      payload: { status: "failed", error: { codexErrorInfo: fixture.codexErrorInfo, message: fixture.errorMessage } },
     };
     const terminal: PrpTerminalState = { schema: "paperclip.prp.terminal.v1", turnTerminalState: "failed", runTerminalState: "failed", reportedWorkDisposition: "needs_review" };
     const result = { ...CONTROL_PLANE_CONFORMANCE_RESULT, reportedWorkDisposition: "needs_review" as const,
@@ -77,16 +93,16 @@ describe("durable native provider capacity retry", () => {
     });
     const unexpected = async () => { throw new Error("Unexpected provider call"); };
     const adapter = await executePaperclipNativeSession({ db, execution, runnerInstanceId: native.runnerInstanceId, backend: { descriptor: unexpected, openSession: unexpected } });
-    expect(adapter).toMatchObject({ errorCode: "native_provider_overloaded", errorMessage: NATIVE_PROVIDER_OVERLOADED_MESSAGE });
+    expect(adapter).toMatchObject({ errorCode: fixture.errorCode, errorMessage: fixture.errorMessage });
     const [persisted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(persisted.errorCode).toBeNull(); // Restart before adapter metadata is saved.
-    expect(await readPersistedNativeProviderFailure(db, persisted, native.turnId, terminal)).toMatchObject({ errorCode: "native_provider_overloaded" });
+    expect(await readPersistedNativeProviderFailure(db, persisted, native.turnId, terminal)).toMatchObject({ errorCode: fixture.errorCode });
     expect(await readPersistedNativeProviderFailure(db, { ...persisted, runnerProfileJson: null }, native.turnId, terminal)).toBeNull();
     expect(await readPersistedNativeProviderFailure(db, persisted, "different-turn", terminal)).toBeNull();
     if (mutateOwner) await db.update(issues).set({ assigneeAgentId: otherAgentId, executionRunId: null }).where(eq(issues.id, issueId));
     for (let replay = 0; replay < 2; replay++) await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
     expect(provider.execute).toHaveBeenCalledTimes(1);
-    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]).toMatchObject({ status: "failed", error: NATIVE_PROVIDER_OVERLOADED_MESSAGE, errorCode: "native_provider_overloaded" });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]).toMatchObject({ status: "failed", error: fixture.errorMessage, errorCode: fixture.errorCode });
     expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId))).toHaveLength(1);
   }
 
@@ -135,6 +151,82 @@ describe("durable native provider capacity retry", () => {
       runId = retry.id;
     }
     expect(unexpected).not.toHaveBeenCalled();
+  });
+
+  it("routes rate_limit_exceeded through bounded capacity recovery", async () => {
+    const issueId = randomUUID(), originalRunId = randomUUID();
+    const rateLimitFixture = {
+      codexErrorInfo: "rate_limit_exceeded" as const,
+      errorCode: "native_provider_rate_limited" as const,
+      errorMessage: NATIVE_PROVIDER_RATE_LIMITED_MESSAGE,
+    };
+    await db.insert(issues).values({ id: issueId, companyId, title: "Rate-limited task", status: "in_progress", assigneeAgentId: agentId, responsibleUserId: "capacity-owner" });
+    await db.insert(heartbeatRuns).values({ id: originalRunId, companyId, agentId, responsibleUserId: "capacity-owner", contextSnapshot: { issueId } });
+    let runId: string = originalRunId;
+    for (let failure = 0; failure <= 2; failure++) {
+      const before = Date.now();
+      await acceptCapacityFailure(runId, issueId, false, rateLimitFixture);
+      const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)));
+      if (failure === 2) {
+        expect(successors).toHaveLength(0);
+        expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "blocked", unblockDescriptor: { action: expect.stringContaining("Automatic retries exhausted") } });
+        const notices = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+        expect(notices).toHaveLength(1);
+        expect(notices[0]).toMatchObject({ ownerType: "board", cause: "native_provider_rate_limited_exhausted", evidence: { agentId, issueId, retryAttempts: 2, originalError: NATIVE_PROVIDER_RATE_LIMITED_MESSAGE } });
+        expect(notices[0]?.evidence).not.toHaveProperty("provider");
+        expect(notices[0]?.evidence).not.toHaveProperty("model");
+        expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(1);
+        break;
+      }
+      expect(successors).toHaveLength(1);
+      const retry = successors[0]!;
+      expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: failure + 1, scheduledRetryReason: "native_provider_rate_limited", error: NATIVE_PROVIDER_RATE_LIMITED_MESSAGE, errorCode: "native_provider_rate_limited" });
+      expect(retry.contextSnapshot).toMatchObject({
+        retryReason: "native_provider_rate_limited",
+        wakeReason: "native_provider_rate_limited",
+        executionRetryAccounting: { version: 1, failureRetries: failure + 1, maxTurnContinuations: 0 },
+      });
+      expect(retry.contextSnapshot?.rateLimitRecovery).not.toHaveProperty("model");
+      expect(retry.contextSnapshot?.rateLimitRecovery).not.toHaveProperty("originalModel");
+       expect(retry.contextSnapshot?.rateLimitRecovery).toMatchObject({
+         fallbackModel: { provider: "codex", model: "safe-fallback" },
+       });
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.runId, retry.id));
+      expect(wake).toMatchObject({
+        reason: "native_provider_rate_limited",
+        payload: {
+          retryReason: "native_provider_rate_limited",
+          wakeReason: "native_provider_rate_limited",
+          executionRetryAccounting: { version: 1, failureRetries: failure + 1, maxTurnContinuations: 0 },
+        },
+      });
+      const activities = await db.select().from(activityLog).where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.runId, runId),
+        eq(activityLog.action, "heartbeat.rate_limit_retry_scheduled"),
+      ));
+      expect(activities).toMatchObject([{
+        details: {
+          cause: "native_provider_rate_limited",
+          message: NATIVE_PROVIDER_RATE_LIMITED_MESSAGE,
+          category: "provider_capacity",
+          retryCount: failure + 1,
+        },
+      }]);
+      expect(activities[0]?.details).not.toHaveProperty("model");
+      expect(activities[0]?.details).not.toHaveProperty("originalModel");
+       expect(activities[0]?.details).toMatchObject({ fallbackModel: { provider: "codex", model: "safe-fallback" } });
+      const delay = failure === 0 ? 5 * 60_000 : 15 * 60_000;
+      expect(retry.scheduledRetryAt!.getTime() - before).toBeGreaterThanOrEqual(delay);
+      expect(retry.scheduledRetryAt!.getTime() - Date.now()).toBeLessThanOrEqual(delay);
+      runId = retry.id;
+    }
+
+    const reassignedIssueId = randomUUID(), reassignedRunId = randomUUID();
+    await db.insert(issues).values({ id: reassignedIssueId, companyId, title: "Reassigned rate-limited task", status: "in_progress", assigneeAgentId: agentId, responsibleUserId: "capacity-owner" });
+    await db.insert(heartbeatRuns).values({ id: reassignedRunId, companyId, agentId, responsibleUserId: "capacity-owner", contextSnapshot: { issueId: reassignedIssueId } });
+    await acceptCapacityFailure(reassignedRunId, reassignedIssueId, true, rateLimitFixture);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, reassignedRunId))).toHaveLength(0);
   });
 
   it("uses failed-run history without lending a resumed task's consumed continuation receipt", async () => {

@@ -78,6 +78,7 @@ import {
   isNativeRunnerOwnershipHeld,
   nativeRunnerOwnershipNotHeldCondition,
 } from "./native-runner-ownership.js";
+import { isNativeProviderCapacityRetryCode } from "./native-provider-capacity-retry.js";
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -1365,7 +1366,8 @@ export async function finalizeNativeRun(input: {
       hasPendingChildCompletion,
       providerModelRejected: providerFailure?.errorCode === "native_provider_model_rejected" && ownsProviderFailureDecision,
       providerOverloaded: providerFailure?.errorCode === "native_provider_overloaded" && ownsProviderFailureDecision,
-      providerFailureSuperseded: providerFailure?.errorCode === "native_provider_overloaded" && !ownsProviderFailureDecision,
+      providerRateLimited: providerFailure?.errorCode === "native_provider_rate_limited" && ownsProviderFailureDecision,
+      providerFailureSuperseded: isNativeProviderCapacityRetryCode(providerFailure?.errorCode) && !ownsProviderFailureDecision,
       failureRetryCount: executionFailureRetryCount(run),
       ...(reviewContext ? { nativeReviewOutcome: nativeReview
         ? nativeReview.interaction.status === "pending" ? "pending" as const : "resolved" as const
@@ -1459,7 +1461,9 @@ export async function finalizeNativeRun(input: {
         requireModelRejectionOwner: decision.reasonCode === "native_provider_model_rejected"
           ? { agentId: run.agentId, reviewContext }
           : undefined,
-        requireProviderFailureOwner: decision.reasonCode?.startsWith("native_provider_overloaded")
+        requireProviderFailureOwner: decision.reasonCode && isNativeProviderCapacityRetryCode(
+          decision.reasonCode.replace(/_(?:held|exhausted)$/, ""),
+        )
           ? { agentId: run.agentId, reviewContext } : undefined,
         requireBoardResponseWaitSource:
           decision.reasonCode === "board_response_waiting" || repairBoardResponseWait

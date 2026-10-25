@@ -99,6 +99,9 @@ export interface Agent {
   adapterType: AgentAdapterType;
   adapterConfig: Record<string, unknown>;
   runtimeConfig: AgentRuntimeConfig;
+  /** Server-derived display model; never includes connection or credential metadata. */
+  effectiveModel?: string | null;
+  modelSource?: "verified_deployment" | "agent_config" | "adapter_default";
   defaultEnvironmentId?: string | null;
   budgetMonthlyCents: number;
   spentMonthlyCents: number;

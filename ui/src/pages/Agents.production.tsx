@@ -107,6 +107,22 @@ function getConfiguredModel(agent: Agent): string | null {
   return model.length > 0 ? model : null;
 }
 
+function getDisplayedModel(agent: Agent): { model: string | null; sourceHint: string | null } {
+  const configuredModel = getConfiguredModel(agent);
+  const effectiveModel = typeof agent.effectiveModel === "string" && agent.effectiveModel.trim()
+    ? agent.effectiveModel.trim()
+    : null;
+  if (!effectiveModel) return { model: configuredModel, sourceHint: null };
+  if (effectiveModel === configuredModel) return { model: effectiveModel, sourceHint: null };
+  if (agent.modelSource === "verified_deployment") {
+    return {
+      model: effectiveModel,
+      sourceHint: configuredModel ? `Connection deployment · ${configuredModel} configured` : "Connection deployment",
+    };
+  }
+  return { model: effectiveModel, sourceHint: null };
+}
+
 function formatEnvironmentDriver(driver: Environment["driver"]): string {
   if (driver === "ssh") return "SSH";
   return driver.charAt(0).toUpperCase() + driver.slice(1);
@@ -717,7 +733,7 @@ function AgentMetaColumns({
   environment: EnvironmentDescriptor;
   showEnvironment: boolean;
 }) {
-  const model = getConfiguredModel(agent);
+  const { model, sourceHint } = getDisplayedModel(agent);
   const adapterLabel = getAdapterLabel(agent.adapterType);
   return (
     <>
@@ -728,9 +744,8 @@ function AgentMetaColumns({
         >
           {model ?? "—"}
         </div>
-        <div className="truncate font-mono text-(length:--text-micro) text-muted-foreground/70" title={adapterLabel}>
-          {adapterLabel}
-        </div>
+        {sourceHint && <div className="truncate text-(length:--text-micro) text-muted-foreground/70" title={sourceHint}>{sourceHint}</div>}
+        <div className="truncate font-mono text-(length:--text-micro) text-muted-foreground/70" title={adapterLabel}>{adapterLabel}</div>
       </div>
       {showEnvironment && (
         <div className="w-44 min-w-0 leading-tight">

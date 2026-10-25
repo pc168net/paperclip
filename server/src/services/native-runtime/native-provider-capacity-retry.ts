@@ -2,10 +2,36 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { agentWakeupRequests, agents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { accountingForScheduledRetry, executionFailureRetryCount } from "../execution-recovery-attempt.js";
-import { NATIVE_PROVIDER_CAPACITY_MAX_RETRIES, NATIVE_PROVIDER_OVERLOADED_CODE, NATIVE_PROVIDER_OVERLOADED_MESSAGE } from "./native-provider-failure.js";
+import {
+  NATIVE_PROVIDER_CAPACITY_MAX_RETRIES,
+  NATIVE_PROVIDER_OVERLOADED_CODE,
+  NATIVE_PROVIDER_OVERLOADED_MESSAGE,
+  NATIVE_PROVIDER_RATE_LIMITED_CODE,
+  NATIVE_PROVIDER_RATE_LIMITED_MESSAGE,
+} from "./native-provider-failure.js";
 import { logActivity } from "../activity-log.js";
 
 export type ConfiguredFallbackModel = { provider: string; model: string };
+export type NativeProviderCapacityRetryCode =
+  | typeof NATIVE_PROVIDER_OVERLOADED_CODE
+  | typeof NATIVE_PROVIDER_RATE_LIMITED_CODE;
+
+export function isNativeProviderCapacityRetryCode(
+  value: unknown,
+): value is NativeProviderCapacityRetryCode {
+  return (
+    value === NATIVE_PROVIDER_OVERLOADED_CODE ||
+    value === NATIVE_PROVIDER_RATE_LIMITED_CODE
+  );
+}
+
+export function nativeProviderCapacityRetryMessage(
+  code: NativeProviderCapacityRetryCode,
+) {
+  return code === NATIVE_PROVIDER_RATE_LIMITED_CODE
+    ? NATIVE_PROVIDER_RATE_LIMITED_MESSAGE
+    : NATIVE_PROVIDER_OVERLOADED_MESSAGE;
+}
 
 /** Fallbacks are opt-in. Never infer a sibling/default model from a provider. */
 export function readConfiguredFallbackModel(value: unknown): ConfiguredFallbackModel | null {
@@ -25,16 +51,13 @@ export async function materializeNativeProviderCapacityRetry(input: {
   issueId: string;
   runId: string;
   agentId: string;
+  cause: NativeProviderCapacityRetryCode;
 }) {
   const [run] = await input.tx.select().from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
     eq(heartbeatRuns.agentId, input.agentId), eq(heartbeatRuns.nativeIssueId, input.issueId),
   )).for("update");
   if (!run || run.runtimeMode !== "native") throw new Error("native_capacity_retry_run_binding_mismatch");
-  const [agent] = await input.tx.select({ adapterConfig: agents.adapterConfig }).from(agents).where(and(
-    eq(agents.companyId, input.companyId), eq(agents.id, input.agentId),
-  )).limit(1);
-  const fallback = readConfiguredFallbackModel(agent?.adapterConfig);
   // Share the predecessor claim with every other failure-retry lane.
   const [existing] = await input.tx.select().from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.retryOfRunId, run.id),
@@ -58,42 +81,34 @@ export async function materializeNativeProviderCapacityRetry(input: {
     "paperclipWake", "paperclipWakeComment", "paperclipTaskMarkdown", "paperclipTaskMarkdownCompact",
     "paperclipTaskMarkdownAssignment", "paperclipTaskMarkdownAssignmentCompact", "paperclipTurnContext",
   ]) delete predecessorContext[key];
-  const originalProvider = typeof (run.runnerProfileJson?.nativeExecutionInput as Record<string, unknown> | undefined)?.provider === "object"
-    ? ((run.runnerProfileJson?.nativeExecutionInput as Record<string, unknown>).provider as Record<string, unknown>).kind
-    : typeof (run.runnerProfileJson?.adapterDispatch as Record<string, unknown> | undefined)?.provider === "string"
-      ? (run.runnerProfileJson?.adapterDispatch as Record<string, unknown>).provider : null;
-  const originalModel = typeof (run.runnerProfileJson?.nativeExecutionInput as Record<string, unknown> | undefined)?.provider === "object"
-    ? ((run.runnerProfileJson?.nativeExecutionInput as Record<string, unknown>).provider as Record<string, unknown>).model
-    : typeof (run.runnerProfileJson?.adapterDispatch as Record<string, unknown> | undefined)?.model === "string"
-      ? (run.runnerProfileJson?.adapterDispatch as Record<string, unknown>).model : null;
-  const originalError = run.error ?? run.resultJson?.error ?? run.errorCode ?? NATIVE_PROVIDER_OVERLOADED_MESSAGE;
+  const errorMessage = nativeProviderCapacityRetryMessage(input.cause);
+  const [agent] = await input.tx.select({ adapterConfig: agents.adapterConfig }).from(agents).where(and(
+    eq(agents.companyId, run.companyId), eq(agents.id, run.agentId),
+  )).limit(1);
+  const fallbackModel = readConfiguredFallbackModel(agent?.adapterConfig);
   const contextSnapshot = {
     ...predecessorContext,
     issueId: input.issueId,
     taskId: input.issueId,
     forceFreshSession: true,
     retryOfRunId: run.id,
-    retryReason: NATIVE_PROVIDER_OVERLOADED_CODE,
-    wakeReason: NATIVE_PROVIDER_OVERLOADED_CODE,
+    retryReason: input.cause,
+    wakeReason: input.cause,
     scheduledRetryAttempt: attempt,
     scheduledRetryAt: dueAt.toISOString(),
-    executionRetryAccounting: accountingForScheduledRetry(run, NATIVE_PROVIDER_OVERLOADED_CODE, attempt),
+    executionRetryAccounting: accountingForScheduledRetry(run, input.cause, attempt),
     rateLimitRecovery: {
-      provider: typeof originalProvider === "string" ? originalProvider : "codex",
-      model: typeof originalModel === "string" ? originalModel : null,
-      originalProvider: typeof originalProvider === "string" ? originalProvider : "codex",
-      originalModel: typeof originalModel === "string" ? originalModel : null,
-      originalError,
-      fallbackProvider: fallback?.provider ?? null,
-      fallbackModel: fallback?.model ?? null,
+      cause: input.cause,
+      message: errorMessage,
       category: "provider_capacity",
       retryCount: attempt,
       scheduledRetryAt: dueAt.toISOString(),
+      ...(fallbackModel ? { fallbackModel } : {}),
     },
   };
   const [wake] = await input.tx.insert(agentWakeupRequests).values({
     companyId: run.companyId, agentId: run.agentId, source: "automation", triggerDetail: "system",
-    reason: NATIVE_PROVIDER_OVERLOADED_CODE, status: "queued", runId: retryId,
+    reason: input.cause, status: "queued", runId: retryId,
     idempotencyKey: `native-capacity:${run.companyId}:${run.id}`,
     requestedByActorType: "system", requestedByActorId: "native_finalizer",
     payload: contextSnapshot,
@@ -102,9 +117,9 @@ export async function materializeNativeProviderCapacityRetry(input: {
     id: retryId, companyId: run.companyId, agentId: run.agentId,
     invocationSource: "automation", triggerDetail: "system", status: "scheduled_retry",
     responsibleUserId: run.responsibleUserId, wakeupRequestId: wake.id,
-    retryOfRunId: run.id, scheduledRetryReason: NATIVE_PROVIDER_OVERLOADED_CODE,
+    retryOfRunId: run.id, scheduledRetryReason: input.cause,
     scheduledRetryAttempt: attempt, scheduledRetryAt: dueAt,
-    error: NATIVE_PROVIDER_OVERLOADED_MESSAGE, errorCode: NATIVE_PROVIDER_OVERLOADED_CODE,
+    error: errorMessage, errorCode: input.cause,
     contextSnapshot,
   });
   await logActivity(input.tx, {

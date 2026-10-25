@@ -44,6 +44,23 @@ function arbitrate(
 }
 
 describe("native status authority", () => {
+  it("carries the closed capacity cause to an exhausted board blocker", () => {
+    const decision = arbitrate({
+      terminalState: "failed",
+      providerRateLimited: true,
+      failureRetryCount: 2,
+    });
+    expect(decision).toMatchObject({
+      statusAction: "blocked",
+      reasonCode: "native_provider_rate_limited_exhausted",
+      effects: [expect.objectContaining({
+        kind: "bind_blocker",
+        owner: "board",
+        cause: "native_provider_rate_limited",
+      })],
+    });
+  });
+
   it("keeps a verified accepted Cursor plan passive without completing or replaying work", () => {
     const passive = assessment({ reportedDisposition: "yielded", objectiveSatisfied: false,
       allCriteriaSatisfied: false, hasBlockingRemainingWork: true,

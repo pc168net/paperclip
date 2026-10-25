@@ -49,9 +49,15 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     });
   });
 
-  async function fixture(adapterType = "paperclip_runner") {
+  async function fixture(
+    adapterType = "paperclip_runner",
+    adapterConfig: Record<string, unknown> = {
+      provider: "codex",
+      model: "gpt-5.6-luna",
+    },
+  ) {
     const [company] = await db.insert(companies).values({ name: "Runtime selection", issuePrefix: "SEL" }).returning();
-    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Selecting agent", status: "running", adapterType, adapterConfig: { provider: "codex", model: "gpt-5.6-luna" } }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Selecting agent", status: "running", adapterType, adapterConfig }).returning();
     const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Complete this task", description: "Preserve the requested work", assigneeAgentId: agent.id }).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, issueId: issue.id, scopeKind: "issue", status: "running" }).returning();
     const now = new Date();
@@ -73,6 +79,66 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
   const coordinators = (id: string) => db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, id));
   const sandbox = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", reusableLeaseConfigured: false };
+
+  it.each([
+    {
+      name: "normal run",
+      scheduledRetryReason: null,
+      adapterConfig: {
+        provider: "codex",
+        model: "gpt-5.6-terra",
+        fallbackModel: { provider: "codex", model: "gpt-5.6-sol" },
+      },
+      expectedModel: "gpt-5.6-terra",
+    },
+    {
+      name: "overloaded retry",
+      scheduledRetryReason: "native_provider_overloaded",
+      adapterConfig: {
+        provider: "codex",
+        model: "gpt-5.6-terra",
+        fallbackModel: { provider: "codex", model: "gpt-5.6-sol" },
+      },
+      expectedModel: "gpt-5.6-sol",
+    },
+    {
+      name: "rate-limited retry",
+      scheduledRetryReason: "native_provider_rate_limited",
+      adapterConfig: {
+        provider: "codex",
+        model: "gpt-5.6-terra",
+        fallbackModel: { provider: "codex", model: "gpt-5.6-sol" },
+      },
+      expectedModel: "gpt-5.6-sol",
+    },
+    {
+      name: "rate-limited retry without configured fallback",
+      scheduledRetryReason: "native_provider_rate_limited",
+      adapterConfig: { provider: "codex", model: "gpt-5.6-terra" },
+      expectedModel: "gpt-5.6-terra",
+    },
+  ])("uses the configured fallback model only for a $name", async ({
+    scheduledRetryReason,
+    adapterConfig,
+    expectedModel,
+  }) => {
+    const { input, run } = await fixture("paperclip_runner", adapterConfig);
+    if (scheduledRetryReason) {
+      const [scheduledRun] = await db
+        .update(heartbeatRuns)
+        .set({ scheduledRetryReason })
+        .where(eq(heartbeatRuns.id, run.id))
+        .returning();
+      input.run = scheduledRun;
+    }
+
+    const selected = await selectHeartbeatRuntime(db, input);
+
+    expect(selected).toMatchObject({
+      selected: true,
+      nativeExecution: { provider: { kind: "codex", model: expectedModel } },
+    });
+  });
 
   it("persists the native input, completion contract, and coordinator before transferring cleanup ownership", async () => {
     const { input, run } = await fixture();

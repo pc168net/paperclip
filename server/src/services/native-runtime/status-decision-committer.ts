@@ -29,7 +29,6 @@ import {
   type NativeStatusEffect,
 } from "./status-arbiter.js";
 import { nativeSha256 } from "./canonical.js";
-import { NATIVE_PROVIDER_OVERLOADED_MESSAGE } from "./native-provider-failure.js";
 import { getNativeReviewAssignment, type NativeReviewAssignmentContext } from "./native-review-participant.js";
 import {
   readNativeBoardResponseWaitSource,
@@ -55,8 +54,11 @@ import {
   type ActivityPublication,
 } from "../activity-log.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
-import { materializeNativeProviderCapacityRetry } from "./native-provider-capacity-retry.js";
-import { NATIVE_PROVIDER_OVERLOADED_CODE } from "./native-provider-failure.js";
+import {
+  isNativeProviderCapacityRetryCode,
+  materializeNativeProviderCapacityRetry,
+  nativeProviderCapacityRetryMessage,
+} from "./native-provider-capacity-retry.js";
 
 export class NativeStatusRaceError extends Error {
   readonly code = "native_status_race" as const;
@@ -778,19 +780,16 @@ async function materializeDecisionEffect(input: {
     // Exhaustion is a board-visible incident, not another retry opportunity.
     // Keep the action source-scoped and keyed by the committed decision so a
     // replay of the same terminal decision cannot create duplicate notices.
-    if (effect.owner === "board" && /automatic retries exhausted/i.test(effect.action)) {
+    if (effect.owner === "board" && isNativeProviderCapacityRetryCode(effect.cause)) {
+      const capacityCode = effect.cause;
       const [run] = await input.tx.select({
         agentId: heartbeatRuns.agentId,
         scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
         error: heartbeatRuns.error,
         errorCode: heartbeatRuns.errorCode,
-        runnerProfileJson: heartbeatRuns.runnerProfileJson,
       }).from(heartbeatRuns).where(and(
         eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
       )).limit(1);
-      const profile = record(run?.runnerProfileJson);
-      const nativeInput = record(profile.nativeExecutionInput);
-      const provider = record(nativeInput.provider);
       await issueRecoveryActionService(input.tx).upsertSourceScoped({
         companyId: input.companyId,
         sourceIssueId: input.issue.id,
@@ -798,17 +797,15 @@ async function materializeDecisionEffect(input: {
         ownerType: "board",
         ownerAgentId: null,
         returnOwnerAgentId: run?.agentId ?? null,
-        cause: "native_provider_overloaded_exhausted",
-        fingerprint: nativeSha256({ runId: input.runId, decisionId: input.decisionId, cause: "native_provider_overloaded_exhausted" }),
+        cause: `${capacityCode}_exhausted`,
+        fingerprint: nativeSha256({ runId: input.runId, decisionId: input.decisionId, cause: `${capacityCode}_exhausted` }),
         evidence: {
           runId: input.runId,
           decisionId: input.decisionId,
           agentId: run?.agentId ?? null,
           issueId: input.issue.id,
-          provider: typeof provider.kind === "string" ? provider.kind : null,
-          model: typeof provider.model === "string" ? provider.model : null,
           retryAttempts: run?.scheduledRetryAttempt ?? 0,
-          originalError: run?.error ?? run?.errorCode ?? NATIVE_PROVIDER_OVERLOADED_MESSAGE,
+          originalError: nativeProviderCapacityRetryMessage(capacityCode),
         },
         nextAction: "Choose a configured fallback provider/model or retry manually after confirming provider capacity. No further automatic retries will be scheduled.",
         wakePolicy: null,
@@ -840,10 +837,11 @@ async function materializeDecisionEffect(input: {
   }
   if (effect.kind === "schedule_retry") {
     failAt("continuation_materialization", input.failpoint);
-    if (effect.cause === NATIVE_PROVIDER_OVERLOADED_CODE) {
+    if (isNativeProviderCapacityRetryCode(effect.cause)) {
       const retryId = await materializeNativeProviderCapacityRetry({
         tx: input.tx as unknown as Db, companyId: input.companyId,
         issueId: input.issue.id, runId: input.runId, agentId: effect.agentId,
+        cause: effect.cause,
       });
       return { effectKind: effect.kind, targetType: "heartbeat_run", targetId: retryId,
         payload: { cause: effect.cause, summary: effect.summary } };
@@ -1616,7 +1614,12 @@ export async function commitNativeStatusDecision(input: {
   if (reasonCode === "native_provider_model_rejected" && !input.requireModelRejectionOwner) {
     throw new Error("native_model_rejection_owner_required");
   }
-  if (reasonCode.startsWith("native_provider_overloaded") && !input.requireProviderFailureOwner) {
+  if (
+    isNativeProviderCapacityRetryCode(
+      reasonCode.replace(/_(?:held|exhausted)$/, ""),
+    ) &&
+    !input.requireProviderFailureOwner
+  ) {
     throw new Error("native_provider_failure_owner_required");
   }
   const publications: ActivityPublication[] = [];

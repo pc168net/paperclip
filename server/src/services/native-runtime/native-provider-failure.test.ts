@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PrpEvent, PrpTerminalState } from "../../vendor/paperclip-runner/index.js";
-import { createNativeProviderFailureObservation, NATIVE_MODEL_REJECTION_DIAGNOSTIC, NATIVE_MODEL_REJECTION_MESSAGE, NATIVE_PROVIDER_OVERLOADED_MESSAGE, readNativeTurnFailureDiagnostic } from "./native-provider-failure.js";
+import { createNativeProviderFailureObservation, NATIVE_MODEL_REJECTION_DIAGNOSTIC, NATIVE_MODEL_REJECTION_MESSAGE, NATIVE_PROVIDER_OVERLOADED_MESSAGE, NATIVE_PROVIDER_RATE_LIMITED_MESSAGE, readNativeTurnFailureDiagnostic } from "./native-provider-failure.js";
 
 const model = "test-model";
 const response = {
@@ -25,6 +25,30 @@ describe("native provider failure observation", () => {
     expect(observed.forTerminal("turn", terminal)).toEqual({ errorCode: "native_provider_overloaded", errorMessage: NATIVE_PROVIDER_OVERLOADED_MESSAGE, diagnostic: { provider: "codex", category: "server_overloaded" } });
     expect(observed.forTerminal("different-turn", terminal)).toBeNull();
     expect(observed.forTerminal("turn", { ...terminal, runTerminalState: "succeeded" })).toBeNull();
+  });
+
+  it("classifies authoritative structured Codex rate-limit evidence without retaining provider text", () => {
+    const providerMessage = "Azure eastus deployment private-deployment exceeded its token limit";
+    const observed = observation();
+    observed.observe({ ...event, payload: { status: "failed", error: { codexErrorInfo: "rate_limit_exceeded", message: providerMessage } } });
+
+    const result = observed.forTerminal("turn", terminal);
+    expect(result).toEqual({
+      errorCode: "native_provider_rate_limited",
+      errorMessage: NATIVE_PROVIDER_RATE_LIMITED_MESSAGE,
+      diagnostic: { provider: "codex", category: "rate_limited" },
+    });
+    expect(JSON.stringify(result)).not.toContain(providerMessage);
+    expect(observed.forTerminal("different-turn", terminal)).toBeNull();
+    expect(observed.forTerminal("turn", { ...terminal, runTerminalState: "succeeded" })).toBeNull();
+
+    const recoverable = observation();
+    recoverable.observe({ ...event, payload: { status: "failed", recoverable: true, error: { codexErrorInfo: "rate_limit_exceeded", message: providerMessage } } });
+    expect(recoverable.forTerminal("turn", terminal)).toBeNull();
+
+    const arbitraryText = observation();
+    arbitraryText.observe({ ...event, payload: { status: "failed", error: { message: "rate_limit_exceeded in Azure eastus" } } });
+    expect(arbitraryText.forTerminal("turn", terminal)).toBeNull();
   });
 
   it.each(["usageLimitExceeded", "other", "unauthorized", undefined])("does not retry unrelated provider errors (%s)", (codexErrorInfo) => {

@@ -1606,7 +1606,8 @@ function LatestRunCard({
   });
 
   const summaryRaw = run
-    ? run.resultJson
+    ? run.errorCode === "native_provider_rate_limited" ? ""
+      : run.resultJson
       ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
       : run.error ?? ""
     : "";
@@ -1744,6 +1745,10 @@ export function AgentOverview({
     ?? asNonEmptyString(agent.adapterConfig?.modelName)
     ?? asNonEmptyString(agent.runtimeConfig?.model)
     ?? "Adapter default";
+  const effectiveModel = asNonEmptyString(agent.effectiveModel) ?? configuredModel;
+  const modelSourceHint = effectiveModel !== configuredModel && agent.modelSource === "verified_deployment"
+    ? `Connection deployment · ${configuredModel} configured`
+    : null;
   const lastRun = runs[0] ?? null;
   const identity = useQuery({
     queryKey: [...queryKeys.agents.identity(agent.id), lastRun?.id, lastRun?.status],
@@ -1807,7 +1812,7 @@ export function AgentOverview({
           </div>
           <div className="space-y-3">
             <SummaryRow label="Adapter"><span className="text-sm">{getAdapterDisplay(agentDisplayAdapterType(agent)).label}</span></SummaryRow>
-            {agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "grok_bot" ? <><SummaryRow label="Execution"><span className="text-sm">Runs in Grok Bot</span></SummaryRow><SummaryRow label="Usage"><span className="text-sm">Not reported</span></SummaryRow></> : <SummaryRow label="Model"><span className="max-w-64 truncate text-sm font-mono">{configuredModel}</span></SummaryRow>}
+            {agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "grok_bot" ? <><SummaryRow label="Execution"><span className="text-sm">Runs in Grok Bot</span></SummaryRow><SummaryRow label="Usage"><span className="text-sm">Not reported</span></SummaryRow></> : <SummaryRow label="Model"><span className="max-w-64 truncate text-sm font-mono">{effectiveModel}</span>{modelSourceHint && <span className="text-xs text-muted-foreground">{modelSourceHint}</span>}</SummaryRow>}
             <SummaryRow label="Session"><span className="max-w-64 truncate text-sm font-mono">{runtimeState?.sessionDisplayId ?? runtimeState?.sessionId ?? "No session"}</span></SummaryRow>
             <SummaryRow label="Last run">
               <span className="text-sm">{lastRun ? `${lastRun.status} · ${relativeTime(lastRun.createdAt)}` : "No runs"}</span>
@@ -3371,7 +3376,9 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
   const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
   const StatusIcon = statusInfo.icon;
   const metrics = runMetrics(run);
-  const summary = run.resultJson
+  const summary = run.errorCode === "native_provider_rate_limited"
+    ? ""
+    : run.resultJson
     ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
     : run.error ?? "";
   const sourceResolvedFold = readSourceResolvedWatchdogFold(run.resultJson);
@@ -3892,7 +3899,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
               </div>
             )}
             <AgentFileRunNotice resultJson={run.resultJson} />
-            {run.error && (
+            {run.error && run.errorCode !== "native_provider_rate_limited" && (
               <div className="text-xs">
                 <span className="text-red-600 dark:text-red-400">{run.error}</span>
                 {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}
@@ -4687,7 +4694,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
         <div ref={logEndRef} />
       </div>
 
-      {(run.status === "failed" || run.status === "timed_out") && (
+      {(run.status === "failed" || run.status === "timed_out") && run.errorCode !== "native_provider_rate_limited" && (
         <div className="rounded-lg border border-red-300 dark:border-red-500/30 bg-red-50 dark:bg-red-950/20 p-3 space-y-2">
           <div className="text-xs font-medium text-red-700 dark:text-red-300">Failure details</div>
           {run.error && (

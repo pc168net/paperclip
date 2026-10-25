@@ -2,11 +2,13 @@ import { formatDateTime } from "./utils";
 
 type RetryAwareRun = {
   status: string;
+  errorCode?: string | null;
   retryOfRunId?: string | null;
   scheduledRetryAt?: string | Date | null;
   scheduledRetryAttempt?: number | null;
   scheduledRetryReason?: string | null;
   retryExhaustedReason?: string | null;
+  contextSnapshot?: Record<string, unknown> | null;
 };
 
 export type RunRetryStateSummary = {
@@ -20,6 +22,7 @@ export type RunRetryStateSummary = {
 
 const RETRY_REASON_LABELS: Record<string, string> = {
   native_provider_overloaded: "Model at capacity",
+  native_provider_rate_limited: "Model rate limited",
   ai_connection_pool_wait: "Waiting for pool usage to recover",
   transient_failure: "Transient failure",
   missing_issue_comment: "Missing task comment",
@@ -36,6 +39,14 @@ function readNonEmptyString(value: unknown) {
 function joinFragments(parts: Array<string | null>) {
   const filtered = parts.filter((part): part is string => Boolean(part));
   return filtered.length > 0 ? filtered.join(" · ") : null;
+}
+
+function readConfiguredFallbackModel(contextSnapshot: Record<string, unknown> | null | undefined) {
+  const recovery = contextSnapshot?.rateLimitRecovery;
+  if (typeof recovery !== "object" || recovery === null || Array.isArray(recovery)) return null;
+  const fallback = (recovery as Record<string, unknown>).fallbackModel;
+  if (typeof fallback !== "object" || fallback === null || Array.isArray(fallback)) return null;
+  return readNonEmptyString((fallback as Record<string, unknown>).model);
 }
 
 export function formatRetryReason(reason: string | null | undefined) {
@@ -55,6 +66,9 @@ export function describeRunRetryState(run: RetryAwareRun): RunRetryStateSummary 
   const exhaustedReason = readNonEmptyString(run.retryExhaustedReason);
   const dueAt = run.scheduledRetryAt ? formatDateTime(run.scheduledRetryAt) : null;
   const isMaxTurnContinuation = run.scheduledRetryReason === "max_turns_continuation";
+  const isRateLimited = run.errorCode === "native_provider_rate_limited"
+    || run.scheduledRetryReason === "native_provider_rate_limited";
+  const fallbackModel = isRateLimited ? readConfiguredFallbackModel(run.contextSnapshot) : null;
   const hasRetryMetadata =
     Boolean(retryOfRunId)
     || Boolean(reasonLabel)
@@ -67,13 +81,16 @@ export function describeRunRetryState(run: RetryAwareRun): RunRetryStateSummary 
   if (run.status === "scheduled_retry") {
     return {
       kind: "scheduled",
-      badgeLabel: run.scheduledRetryReason === "ai_connection_pool_wait" ? "Pool exhausted" : isMaxTurnContinuation ? "Continuation scheduled" : "Retry scheduled",
+      badgeLabel: run.scheduledRetryReason === "ai_connection_pool_wait" ? "Pool exhausted" : isRateLimited ? "Model rate limited" : isMaxTurnContinuation ? "Continuation scheduled" : "Retry scheduled",
       tone: "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300",
       detail: joinFragments([attemptLabel, reasonLabel]),
-      secondary: dueAt
-        ? `${isMaxTurnContinuation ? "Next continuation" : "Next retry"} ${dueAt}`
-        : `${isMaxTurnContinuation ? "Next continuation" : "Next retry"} pending schedule`,
-      retryOfRunId,
+      secondary: joinFragments([
+        dueAt
+          ? `${isMaxTurnContinuation ? "Next continuation" : "Next retry"} ${dueAt}`
+          : `${isMaxTurnContinuation ? "Next continuation" : "Next retry"} pending schedule`,
+        fallbackModel ? `Fallback model: ${fallbackModel}` : null,
+      ]),
+      retryOfRunId: isRateLimited ? null : retryOfRunId,
     };
   }
 
