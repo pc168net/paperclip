@@ -14,6 +14,7 @@ const mockAgentsApi = vi.hoisted(() => ({
   instructionsFile: vi.fn(),
   updateInstructionsBundle: vi.fn(),
   saveInstructionsFile: vi.fn(),
+  uploadInstructionsFiles: vi.fn(),
   deleteInstructionsFile: vi.fn(),
   instructionHistory: vi.fn(),
   instructionCandidates: vi.fn(),
@@ -687,5 +688,25 @@ describe("PromptsTab instruction editor", () => {
     await act(async () => { buttonByText(container, "Restore Profile").click(); });
     await waitFor(() => expect(document.body.textContent).toContain("Could not load Profile revisions"));
     expect(Array.from(document.querySelectorAll("button")).some((button) => button.textContent === "Retry Profile revisions")).toBe(true);
+  });
+
+  it("renders upload button and opens upload dialog", async () => {
+    const summary = makeSummary("AGENTS.md", "AGENTS.md");
+    await renderPromptsTab(makeBundle("AGENTS.md", [summary]), { "AGENTS.md": makeDetail(summary) });
+
+    const uploadButton = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.getAttribute("aria-label") === "Upload wiki or files",
+    );
+    expect(uploadButton).toBeDefined();
+
+    await act(async () => {
+      uploadButton!.click();
+    });
+
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("Upload Wiki or Files to Instructions"),
+    );
+    expect(document.body.textContent).toContain("Select Folder (Wiki)");
+    expect(document.body.textContent).toContain("Select .zip Archive");
   });
 });

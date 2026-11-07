@@ -98,7 +98,9 @@ import {
   HelpCircle,
   FolderOpen,
   AlertTriangle,
+  Upload,
 } from "lucide-react";
+import { UploadInstructionsDialog } from "../components/UploadInstructionsDialog";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
@@ -2260,6 +2262,7 @@ export function PromptsTab({
   } | null>(null);
   const [newFilePath, setNewFilePath] = useState("");
   const [showNewFileInput, setShowNewFileInput] = useState(false);
+  const [showUploadDialog, setShowUploadDialog] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<string[]>([]);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [filePanelWidth, setFilePanelWidth] = useState(260);
@@ -2982,16 +2985,30 @@ export function PromptsTab({
             <h4 className="text-sm font-medium">Files</h4>
             <div className="flex items-center gap-1">
               {!showNewFileInput && (
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="outline"
-                  className="h-7 w-7"
-                  aria-label="Add agent file"
-                  onClick={() => setShowNewFileInput(true)}
-                >
-                  +
-                </Button>
+                <>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="outline"
+                    className="h-7 w-7"
+                    aria-label="Upload wiki or files"
+                    title="Upload wiki or files"
+                    onClick={() => setShowUploadDialog(true)}
+                  >
+                    <Upload className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="outline"
+                    className="h-7 w-7"
+                    aria-label="Add agent file"
+                    title="Add agent file"
+                    onClick={() => setShowNewFileInput(true)}
+                  >
+                    +
+                  </Button>
+                </>
               )}
               {isMobile && (
                 <Button
@@ -3312,6 +3329,21 @@ export function PromptsTab({
         </div>
       </div>
 
+      <UploadInstructionsDialog
+        open={showUploadDialog}
+        onOpenChange={setShowUploadDialog}
+        agentId={agent.id}
+        companyId={companyId}
+        onSuccess={(uploadedFiles) => {
+          void queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
+          if (uploadedFiles.length > 0) {
+            const firstFile = uploadedFiles[0]!;
+            setSelectedFile(firstFile);
+            setInstructionMode("read");
+            if (isMobile) setShowFilePanel(false);
+          }
+        }}
+      />
     </div>
   );
 }

@@ -21,6 +21,7 @@ const mockAgentInstructionsService = vi.hoisted(() => ({
   updateBundle: vi.fn(),
   writeFile: vi.fn(),
   deleteFile: vi.fn(),
+  uploadFiles: vi.fn(),
   exportFiles: vi.fn(),
   ensureManagedBundle: vi.fn(),
   materializeManagedBundle: vi.fn(),
@@ -808,6 +809,38 @@ describe("agent instructions bundle routes", () => {
     expect(res.body.adapterConfig.instructionsRootPath).toBeUndefined();
     expect(res.body.adapterConfig.instructionsEntryFile).toBeUndefined();
     expect(res.body.adapterConfig.instructionsFilePath).toBeUndefined();
+  });
+
+  it("uploads batch instruction files and logs activity", async () => {
+    mockAgentInstructionsService.uploadFiles.mockResolvedValue({
+      bundle: { files: [{ path: "wiki/getting-started.md", size: 100 }] },
+      uploadedCount: 1,
+      files: ["wiki/getting-started.md"],
+    });
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/upload")
+      .send({
+        files: [
+          { path: "wiki/getting-started.md", content: "# Getting Started\n" },
+        ],
+        overwrite: true,
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.uploadedCount).toBe(1);
+    expect(mockAgentInstructionsService.uploadFiles).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "11111111-1111-4111-8111-111111111111" }),
+      [{ path: "wiki/getting-started.md", content: "# Getting Started\n" }],
+      { overwrite: true },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "agent.instructions_files_uploaded",
+        entityId: "11111111-1111-4111-8111-111111111111",
+      }),
+    );
   });
 });
 

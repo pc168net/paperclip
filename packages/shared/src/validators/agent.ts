@@ -40,6 +40,16 @@ export const upsertAgentInstructionsFileSchema = z.object({
   clearLegacyPromptTemplate: z.boolean().optional().default(false),
 }).strict();
 
+export const uploadAgentInstructionsFilesSchema = z.object({
+  files: z.array(
+    z.object({
+      path: z.string().min(1).max(512),
+      content: z.string().max(1024 * 1024),
+    }),
+  ).min(1).max(1000),
+  overwrite: z.boolean().optional().default(true),
+}).strict();
+
 export const restoreAgentInstructionSchema = z.object({
   path: z.string().min(1).max(512),
   revisionId: z.string().uuid(),
@@ -47,6 +57,7 @@ export const restoreAgentInstructionSchema = z.object({
 }).strict();
 
 export type UpsertAgentInstructionsFile = z.infer<typeof upsertAgentInstructionsFileSchema>;
+export type UploadAgentInstructionsFiles = z.infer<typeof uploadAgentInstructionsFilesSchema>;
 
 const adapterConfigSchema = z.record(z.string(), z.unknown()).superRefine((value, ctx) => {
   const envValue = value.env;

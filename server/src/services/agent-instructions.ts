@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { agentInstructionHeads, agents, type Db } from "@paperclipai/db";
-import { instructionPath, assertInstructionPathSafe, instructionBytes, readInstructionBytes } from "./agent-instruction-files.js";
+import { instructionPath, assertInstructionPathSafe, instructionBytes, readInstructionBytes, materializeInstructionBytes } from "./agent-instruction-files.js";
 import { notFound, unprocessable } from "../errors.js";
 import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
 
@@ -707,13 +707,13 @@ export function agentInstructionsService(db?: Db) {
 
   // Reload configuration under the commit lock: a previously supporting file
   // may have become the configured entry since the route loaded its agent.
-  async function withCurrentAgent<T>(agent: AgentLike, relativePath: string, operation: (current: AgentLike) => Promise<T>) {
+  async function withCurrentAgent<T>(agent: AgentLike, relativePath: string | null, operation: (current: AgentLike) => Promise<T>) {
     if (!db) return operation(agent);
     return db.transaction(async (tx) => {
       const [current] = await tx.select().from(agents)
         .where(and(eq(agents.id, agent.id), eq(agents.companyId, agent.companyId))).for("update");
       if (!current) throw notFound("Agent not found");
-      if (relativePath !== LEGACY_PROMPT_TEMPLATE_PATH) {
+      if (relativePath && relativePath !== LEGACY_PROMPT_TEMPLATE_PATH) {
         // Historical entries also remain projections if the configured entry changes.
         await assertUnversionedEntry(current, normalizeRelativeFilePath(relativePath), tx);
       }
@@ -725,6 +725,48 @@ export function agentInstructionsService(db?: Db) {
   }
   async function deleteFile(...args: Parameters<typeof deleteFileUnversioned>) {
     return withCurrentAgent(args[0], args[1], (current) => deleteFileUnversioned(current, args[1]));
+  }
+
+  async function uploadFilesUnversioned(
+    agent: AgentLike,
+    incomingFiles: Array<{ path: string; content: string }>,
+    options?: { overwrite?: boolean },
+  ): Promise<{
+    bundle: AgentInstructionsBundle;
+    uploadedCount: number;
+    files: string[];
+  }> {
+    const current = deriveBundleState(agent);
+    const configured = await recoverManagedBundleState(agent, current);
+    const prepared = await ensureWritableBundle(agent);
+    const rootPath = prepared.state.rootPath!;
+    const writtenFiles: string[] = [];
+
+    for (const file of incomingFiles) {
+      const normalizedPath = normalizeRelativeFilePath(file.path);
+      if (normalizedPath === configured.entryFile || normalizedPath === prepared.state.entryFile) {
+        continue;
+      }
+      if (configured.mode !== "external") {
+        agentFilePath(normalizedPath);
+      }
+      instructionBytes(file.content);
+      const absolutePath = await assertInstructionPathSafe(rootPath, normalizedPath);
+      const existingStat = await statIfExists(absolutePath);
+      if (existingStat?.isFile() && options?.overwrite === false) {
+        continue;
+      }
+      await materializeInstructionBytes(rootPath, normalizedPath, Buffer.from(file.content, "utf8"));
+      writtenFiles.push(normalizedPath);
+    }
+
+    const nextAgent = { ...agent, adapterConfig: prepared.adapterConfig };
+    const bundle = await getBundle(nextAgent);
+    return { bundle, uploadedCount: writtenFiles.length, files: writtenFiles };
+  }
+
+  async function uploadFiles(...args: Parameters<typeof uploadFilesUnversioned>) {
+    return withCurrentAgent(args[0], null, (current) => uploadFilesUnversioned(current, args[1], args[2]));
   }
 
   async function exportFiles(agent: AgentLike, options?: { rejectSymlinks?: boolean }): Promise<{
@@ -829,6 +871,7 @@ export function agentInstructionsService(db?: Db) {
     updateBundle,
     writeFile,
     deleteFile,
+    uploadFiles,
     exportFiles,
     ensureManagedBundle: ensureWritableBundle,
     materializeManagedBundle,

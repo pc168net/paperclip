@@ -64,6 +64,7 @@ import {
   type AgentSkillSnapshot,
   type InstanceSchedulerHeartbeatAgent,
   upsertAgentInstructionsFileSchema,
+  uploadAgentInstructionsFilesSchema,
   restoreAgentInstructionSchema,
   resolveAgentInstructionCandidateSchema,
   updateAgentInstructionsBundleSchema,
@@ -5387,6 +5388,37 @@ export function agentRoutes(
     });
 
     res.json(result.file);
+  });
+
+  router.post("/agents/:id/instructions-bundle/upload", validate(uploadAgentInstructionsFilesSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!existing) return;
+    await assertCanManageInstructionsPath(req, existing);
+    assertExternalInstructionsAdmin(req, existing);
+
+    const actor = getActorInfo(req);
+    const result = await instructions.uploadFiles(existing, req.body.files, {
+      overwrite: req.body.overwrite,
+    });
+
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "agent.instructions_files_uploaded",
+      entityType: "agent",
+      entityId: existing.id,
+      details: {
+        fileCount: result.uploadedCount,
+        paths: result.files.slice(0, 50),
+      },
+    });
+
+    res.json(result);
   });
 
   router.get("/agents/:id/instructions-bundle/candidates", async (req, res) => {

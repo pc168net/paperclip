@@ -205,6 +205,19 @@ export const agentsApi = {
     data: { path: string; content: string; baseRevisionId?: string | null; baseHash?: string | null; clearLegacyPromptTemplate?: boolean },
     companyId?: string,
   ) => api.put<AgentInstructionsFileDetail>(agentPath(id, companyId, "/instructions-bundle/file"), data),
+  uploadInstructionsFiles: (
+    id: string,
+    data: {
+      files: Array<{ path: string; content: string }>;
+      overwrite?: boolean;
+    },
+    companyId?: string,
+  ) =>
+    api.post<{
+      bundle: AgentInstructionsBundle;
+      uploadedCount: number;
+      files: string[];
+    }>(agentPath(id, companyId, "/instructions-bundle/upload"), data),
   instructionCandidates: (id: string, companyId?: string) =>
     api.get<AgentInstructionCandidate[]>(agentPath(id, companyId, "/instructions-bundle/candidates")),
   resolveInstructionCandidate: (id: string, runId: string, data: ResolveAgentInstructionCandidate, companyId?: string) =>

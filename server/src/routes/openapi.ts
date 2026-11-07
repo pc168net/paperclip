@@ -46,6 +46,7 @@ import {
   updateAgentInstructionsPathSchema,
   updateAgentInstructionsBundleSchema,
   upsertAgentInstructionsFileSchema,
+  uploadAgentInstructionsFilesSchema,
   restoreAgentInstructionSchema,
   resolveAgentInstructionCandidateSchema,
   createAgentKeySchema,
@@ -3829,6 +3830,18 @@ registry.registerPath({
     body: jsonBody(upsertAgentInstructionsFileSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/instructions-bundle/upload",
+  tags: ["agents"],
+  summary: "Batch upload multiple files into the agent instructions bundle",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(uploadAgentInstructionsFilesSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 422: r.unprocessable },
 });
 
 for (const operation of [
