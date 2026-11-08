@@ -70,3 +70,52 @@ describe("authApi.signOut", () => {
     });
   });
 });
+
+describe("authApi.changePassword", () => {
+  it("sends POST to /api/auth/change-password with credentials and JSON payload", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ status: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await authApi.changePassword({
+      currentPassword: "old-password",
+      newPassword: "new-password-123",
+      revokeOtherSessions: true,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/auth/change-password",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          currentPassword: "old-password",
+          newPassword: "new-password-123",
+          revokeOtherSessions: true,
+        }),
+      }),
+    );
+  });
+
+  it("throws AuthApiError when the request fails with 400/401", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: "Invalid password" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      authApi.changePassword({
+        currentPassword: "wrong",
+        newPassword: "new-password-123",
+      }),
+    ).rejects.toThrow("Invalid password");
+  });
+});

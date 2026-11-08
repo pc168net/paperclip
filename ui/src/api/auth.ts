@@ -22,6 +22,12 @@ export interface SignOutResult {
   redirectTo?: string;
 }
 
+export interface ChangePasswordInput {
+  currentPassword: string;
+  newPassword: string;
+  revokeOtherSessions?: boolean;
+}
+
 export class AuthApiError extends Error {
   status: number;
   code: string | null;
@@ -195,6 +201,10 @@ export const authApi = {
 
   updateProfile: async (input: UpdateCurrentUserProfile): Promise<CurrentUserProfile> =>
     authPatch("/profile", input, (payload) => currentUserProfileSchema.parse(payload)),
+
+  changePassword: async (input: ChangePasswordInput): Promise<void> => {
+    await authPost("/change-password", input as unknown as Record<string, unknown>);
+  },
 
   signOut: async (): Promise<SignOutResult | null> => {
     const payload = await authPost("/sign-out", {});
