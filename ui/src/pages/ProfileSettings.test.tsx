@@ -13,7 +13,12 @@ const mockAuthApi = vi.hoisted(() => ({
   signUpEmail: vi.fn(),
   getProfile: vi.fn(),
   updateProfile: vi.fn(),
+  changePassword: vi.fn(),
   signOut: vi.fn(),
+}));
+
+const mockHealthApi = vi.hoisted(() => ({
+  get: vi.fn(),
 }));
 
 const mockAssetsApi = vi.hoisted(() => ({
@@ -25,6 +30,10 @@ const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/auth", () => ({
   authApi: mockAuthApi,
+}));
+
+vi.mock("@/api/health", () => ({
+  healthApi: mockHealthApi,
 }));
 
 vi.mock("@/api/assets", () => ({
@@ -54,10 +63,29 @@ async function flushReact() {
   });
 }
 
+const inputValueSetter = Object.getOwnPropertyDescriptor(
+  HTMLInputElement.prototype,
+  "value",
+)?.set;
+
+function setInputValue(input: HTMLInputElement, value: string) {
+  inputValueSetter!.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 describe("ProfileSettings", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
     container = document.createElement("div");
     document.body.appendChild(container);
 
@@ -80,6 +108,11 @@ describe("ProfileSettings", () => {
       email: "jane@example.com",
       image: input.image,
     }));
+    mockHealthApi.get.mockResolvedValue({
+      status: "ok",
+      deploymentMode: "authenticated",
+    });
+    mockAuthApi.changePassword.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -196,6 +229,202 @@ describe("ProfileSettings", () => {
       name: "Jane Example",
       image: "/api/assets/asset-1/content",
     });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders change password form in authenticated self-hosted deployment", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><ProfileSettings /></QueryClientProvider>);
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Change password");
+    expect(container.querySelector("#current-password")).not.toBeNull();
+    expect(container.querySelector("#new-password")).not.toBeNull();
+    expect(container.querySelector("#confirm-password")).not.toBeNull();
+    expect(container.querySelector("#revoke-other-sessions")).not.toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("hides change password form when deploymentMode is local_trusted or cloud", async () => {
+    mockHealthApi.get.mockResolvedValueOnce({
+      status: "ok",
+      deploymentMode: "local_trusted",
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><ProfileSettings /></QueryClientProvider>);
+    });
+    await flushReact();
+
+    expect(container.querySelector("#current-password")).toBeNull();
+    expect(container.textContent).not.toContain("Change password");
+
+    await act(async () => {
+      root.unmount();
+    });
+
+    mockHealthApi.get.mockResolvedValueOnce({
+      status: "ok",
+      deploymentMode: "authenticated",
+      cloud: { enabled: true },
+    });
+
+    const rootCloud = createRoot(container);
+    const queryClientCloud = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      rootCloud.render(<QueryClientProvider client={queryClientCloud}><ProfileSettings /></QueryClientProvider>);
+    });
+    await flushReact();
+
+    expect(container.querySelector("#current-password")).toBeNull();
+
+    await act(async () => {
+      rootCloud.unmount();
+    });
+  });
+
+  it("validates password mismatch before calling API", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><ProfileSettings /></QueryClientProvider>);
+    });
+    await flushReact();
+
+    const currentInput = container.querySelector("#current-password") as HTMLInputElement;
+    const newInput = container.querySelector("#new-password") as HTMLInputElement;
+    const confirmInput = container.querySelector("#confirm-password") as HTMLInputElement;
+
+    await act(async () => {
+      setInputValue(currentInput, "current-secret");
+      setInputValue(newInput, "new-secret-123");
+      setInputValue(confirmInput, "different-secret-456");
+    });
+
+    const passwordForm = currentInput.closest("form") as HTMLFormElement;
+    await act(async () => {
+      passwordForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flushReact();
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("New passwords do not match.");
+    expect(mockAuthApi.changePassword).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("validates password length (< 8 chars)", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><ProfileSettings /></QueryClientProvider>);
+    });
+    await flushReact();
+
+    const currentInput = container.querySelector("#current-password") as HTMLInputElement;
+    const newInput = container.querySelector("#new-password") as HTMLInputElement;
+    const confirmInput = container.querySelector("#confirm-password") as HTMLInputElement;
+
+    await act(async () => {
+      setInputValue(currentInput, "current-secret");
+      setInputValue(newInput, "short");
+      setInputValue(confirmInput, "short");
+    });
+
+    const passwordForm = currentInput.closest("form") as HTMLFormElement;
+    await act(async () => {
+      passwordForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flushReact();
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("New password must be at least 8 characters long.");
+    expect(mockAuthApi.changePassword).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("submits change password successfully and clears fields", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><ProfileSettings /></QueryClientProvider>);
+    });
+    await flushReact();
+
+    const currentInput = container.querySelector("#current-password") as HTMLInputElement;
+    const newInput = container.querySelector("#new-password") as HTMLInputElement;
+    const confirmInput = container.querySelector("#confirm-password") as HTMLInputElement;
+
+    await act(async () => {
+      setInputValue(currentInput, "current-secret");
+      setInputValue(newInput, "brand-new-secret-123");
+      setInputValue(confirmInput, "brand-new-secret-123");
+    });
+
+    const passwordForm = currentInput.closest("form") as HTMLFormElement;
+    await act(async () => {
+      passwordForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flushReact();
+
+    expect(mockAuthApi.changePassword).toHaveBeenCalledWith({
+      currentPassword: "current-secret",
+      newPassword: "brand-new-secret-123",
+      revokeOtherSessions: true,
+    });
+
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Password changed successfully.");
+    expect(currentInput.value).toBe("");
+    expect(newInput.value).toBe("");
+    expect(confirmInput.value).toBe("");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("handles API errors gracefully", async () => {
+    mockAuthApi.changePassword.mockRejectedValueOnce(new Error("Incorrect current password."));
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><ProfileSettings /></QueryClientProvider>);
+    });
+    await flushReact();
+
+    const currentInput = container.querySelector("#current-password") as HTMLInputElement;
+    const newInput = container.querySelector("#new-password") as HTMLInputElement;
+    const confirmInput = container.querySelector("#confirm-password") as HTMLInputElement;
+
+    await act(async () => {
+      setInputValue(currentInput, "wrong-pass");
+      setInputValue(newInput, "brand-new-secret-123");
+      setInputValue(confirmInput, "brand-new-secret-123");
+    });
+
+    const passwordForm = currentInput.closest("form") as HTMLFormElement;
+    await act(async () => {
+      passwordForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flushReact();
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Incorrect current password.");
 
     await act(async () => {
       root.unmount();
