@@ -1,9 +1,10 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Camera, LoaderCircle, Save, Trash2, UserRoundPen } from "lucide-react";
+import { Camera, KeyRound, LoaderCircle, Save, Trash2, UserRoundPen } from "lucide-react";
 import type { AuthSession, CurrentUserProfile, UpdateCurrentUserProfile } from "@paperclipai/shared";
 import { authApi } from "@/api/auth";
 import { assetsApi } from "@/api/assets";
+import { healthApi } from "@/api/health";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -11,6 +12,7 @@ import { InboxAgentPolicyControl } from "@/components/InboxAgentPolicyControl";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
@@ -34,6 +36,20 @@ export function ProfileSettings() {
     queryFn: () => authApi.getSession(),
     retry: false,
   });
+  const healthQuery = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    retry: false,
+  });
+  const showPasswordChange =
+    healthQuery.data?.deploymentMode === "authenticated" && !healthQuery.data?.cloud;
+
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [revokeOtherSessions, setRevokeOtherSessions] = useState(true);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [passwordSuccess, setPasswordSuccess] = useState<string | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([
@@ -116,6 +132,38 @@ export function ProfileSettings() {
     },
     onError: (error) => {
       setActionError(error instanceof Error ? error.message : "Failed to remove avatar.");
+    },
+  });
+
+  const changePasswordMutation = useMutation({
+    mutationFn: async () => {
+      setPasswordError(null);
+      setPasswordSuccess(null);
+      if (!currentPassword) {
+        throw new Error("Current password is required.");
+      }
+      if (newPassword.length < 8) {
+        throw new Error("New password must be at least 8 characters long.");
+      }
+      if (newPassword !== confirmPassword) {
+        throw new Error("New passwords do not match.");
+      }
+      await authApi.changePassword({
+        currentPassword,
+        newPassword,
+        revokeOtherSessions,
+      });
+    },
+    onSuccess: () => {
+      setPasswordError(null);
+      setPasswordSuccess("Password changed successfully.");
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+    },
+    onError: (error) => {
+      setPasswordSuccess(null);
+      setPasswordError(error instanceof Error ? error.message : "Failed to change password.");
     },
   });
 
@@ -269,6 +317,111 @@ export function ProfileSettings() {
             </Button>
           </div>
         </form>
+
+        {showPasswordChange ? (
+          <Card className="rounded-(--rad-28) border-border/70 p-6 space-y-6">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <KeyRound className="h-5 w-5 text-muted-foreground" />
+                <h2 className="text-base font-semibold">Change password</h2>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                Update your account password. Choose a secure password with at least 8 characters.
+              </p>
+            </div>
+
+            {passwordError ? (
+              <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                {passwordError}
+              </div>
+            ) : null}
+
+            {passwordSuccess ? (
+              <div role="status" className="rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-foreground">
+                {passwordSuccess}
+              </div>
+            ) : null}
+
+            <form
+              className="space-y-4 max-w-2xl"
+              onSubmit={(event) => {
+                event.preventDefault();
+                changePasswordMutation.mutate();
+              }}
+            >
+              <div className="space-y-2">
+                <Label htmlFor="current-password">Current password</Label>
+                <Input
+                  id="current-password"
+                  type="password"
+                  autoComplete="current-password"
+                  value={currentPassword}
+                  onChange={(event) => setCurrentPassword(event.target.value)}
+                  required
+                />
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="new-password">New password</Label>
+                  <Input
+                    id="new-password"
+                    type="password"
+                    autoComplete="new-password"
+                    value={newPassword}
+                    onChange={(event) => setNewPassword(event.target.value)}
+                    minLength={8}
+                    required
+                  />
+                  <p className="text-xs text-muted-foreground">At least 8 characters.</p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="confirm-password">Confirm new password</Label>
+                  <Input
+                    id="confirm-password"
+                    type="password"
+                    autoComplete="new-password"
+                    value={confirmPassword}
+                    onChange={(event) => setConfirmPassword(event.target.value)}
+                    minLength={8}
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center space-x-2 pt-1">
+                <Checkbox
+                  id="revoke-other-sessions"
+                  checked={revokeOtherSessions}
+                  onCheckedChange={(checked) => setRevokeOtherSessions(checked === true)}
+                />
+                <Label htmlFor="revoke-other-sessions" className="text-sm font-normal cursor-pointer">
+                  Sign out of other sessions
+                </Label>
+              </div>
+
+              <div className="flex justify-end pt-2">
+                <Button
+                  type="submit"
+                  disabled={
+                    changePasswordMutation.isPending ||
+                    !currentPassword ||
+                    !newPassword ||
+                    !confirmPassword
+                  }
+                >
+                  {changePasswordMutation.isPending ? (
+                    <LoaderCircle className="size-4 animate-spin" />
+                  ) : (
+                    <KeyRound className="size-4" />
+                  )}
+                  {changePasswordMutation.isPending ? "Updating password..." : "Update password"}
+                </Button>
+              </div>
+            </form>
+          </Card>
+        ) : null}
 
         <InboxAgentPolicyControl companyId={selectedCompanyId} />
       </section>
