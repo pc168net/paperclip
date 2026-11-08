@@ -139,10 +139,10 @@ export function ProfileSettings() {
     mutationFn: async () => {
       setPasswordError(null);
       setPasswordSuccess(null);
-      if (!currentPassword) {
+      if (!currentPassword.trim()) {
         throw new Error("Current password is required.");
       }
-      if (newPassword.length < 8) {
+      if (newPassword.trim().length < 8) {
         throw new Error("New password must be at least 8 characters long.");
       }
       if (newPassword !== confirmPassword) {
@@ -343,6 +343,7 @@ export function ProfileSettings() {
             ) : null}
 
             <form
+              noValidate
               className="space-y-4 max-w-2xl"
               onSubmit={(event) => {
                 event.preventDefault();
@@ -356,7 +357,10 @@ export function ProfileSettings() {
                   type="password"
                   autoComplete="current-password"
                   value={currentPassword}
-                  onChange={(event) => setCurrentPassword(event.target.value)}
+                  onChange={(event) => {
+                    setPasswordSuccess(null);
+                    setCurrentPassword(event.target.value);
+                  }}
                   required
                 />
               </div>
@@ -369,7 +373,10 @@ export function ProfileSettings() {
                     type="password"
                     autoComplete="new-password"
                     value={newPassword}
-                    onChange={(event) => setNewPassword(event.target.value)}
+                    onChange={(event) => {
+                      setPasswordSuccess(null);
+                      setNewPassword(event.target.value);
+                    }}
                     minLength={8}
                     required
                   />
@@ -383,14 +390,17 @@ export function ProfileSettings() {
                     type="password"
                     autoComplete="new-password"
                     value={confirmPassword}
-                    onChange={(event) => setConfirmPassword(event.target.value)}
+                    onChange={(event) => {
+                      setPasswordSuccess(null);
+                      setConfirmPassword(event.target.value);
+                    }}
                     minLength={8}
                     required
                   />
                 </div>
               </div>
 
-              <div className="flex items-center space-x-2 pt-1">
+              <div className="flex items-center gap-2 pt-1">
                 <Checkbox
                   id="revoke-other-sessions"
                   checked={revokeOtherSessions}
@@ -406,9 +416,9 @@ export function ProfileSettings() {
                   type="submit"
                   disabled={
                     changePasswordMutation.isPending ||
-                    !currentPassword ||
-                    !newPassword ||
-                    !confirmPassword
+                    !currentPassword.trim() ||
+                    !newPassword.trim() ||
+                    !confirmPassword.trim()
                   }
                 >
                   {changePasswordMutation.isPending ? (

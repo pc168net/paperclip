@@ -358,6 +358,56 @@ describe("ProfileSettings", () => {
     });
   });
 
+  it("rejects whitespace-only passwords before calling API", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><ProfileSettings /></QueryClientProvider>);
+    });
+    await flushReact();
+
+    const currentInput = container.querySelector("#current-password") as HTMLInputElement;
+    const newInput = container.querySelector("#new-password") as HTMLInputElement;
+    const confirmInput = container.querySelector("#confirm-password") as HTMLInputElement;
+
+    // Whitespace current password
+    await act(async () => {
+      setInputValue(currentInput, "   ");
+      setInputValue(newInput, "validsecret123");
+      setInputValue(confirmInput, "validsecret123");
+    });
+
+    const passwordForm = currentInput.closest("form") as HTMLFormElement;
+    expect(passwordForm.noValidate).toBe(true);
+
+    await act(async () => {
+      passwordForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flushReact();
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Current password is required.");
+    expect(mockAuthApi.changePassword).not.toHaveBeenCalled();
+
+    // Whitespace-only new password (8 spaces)
+    await act(async () => {
+      setInputValue(currentInput, "current-secret");
+      setInputValue(newInput, "        ");
+      setInputValue(confirmInput, "        ");
+    });
+
+    await act(async () => {
+      passwordForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flushReact();
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("New password must be at least 8 characters long.");
+    expect(mockAuthApi.changePassword).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("submits change password successfully and clears fields", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -425,6 +475,9 @@ describe("ProfileSettings", () => {
     await flushReact();
 
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("Incorrect current password.");
+    expect(currentInput.value).toBe("wrong-pass");
+    expect(newInput.value).toBe("brand-new-secret-123");
+    expect(confirmInput.value).toBe("brand-new-secret-123");
 
     await act(async () => {
       root.unmount();
