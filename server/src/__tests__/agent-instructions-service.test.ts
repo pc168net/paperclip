@@ -444,7 +444,7 @@ describe("agent instructions service", () => {
     expect(bundle.files.map((f) => f.path)).toEqual(["AGENTS.md"]);
   });
 
-  it("rejects deleting a directory that contains the entry file", async () => {
+  it("deletes a directory that contains the entry file and resets entry file to AGENTS.md", async () => {
     const root = await makeTempDir("delete-entry-dir-test-");
     cleanupDirs.add(root);
     await fs.mkdir(path.join(root, "wiki"), { recursive: true });
@@ -457,10 +457,18 @@ describe("agent instructions service", () => {
       instructionsEntryFile: "wiki/README.md",
     });
 
-    await expect(svc.deleteDirectory(agent, "wiki")).rejects.toMatchObject({
-      status: 422,
-      message: "The configured instruction entry cannot be deleted",
-    });
+    const result = await svc.deleteDirectory(agent, "wiki");
+    expect(result.deletedFilesCount).toBe(1);
+    expect(result.deletedFiles).toEqual(["wiki/README.md"]);
+    expect(result.entryReset).toBe(true);
+
+    expect(result.bundle.entryFile).toBe("AGENTS.md");
+    expect(result.bundle.files.map((f) => f.path)).toEqual(["AGENTS.md"]);
+    expect(await fs.readFile(path.join(root, "AGENTS.md"), "utf8")).toBe("# Instructions\n");
+
+    const bundle = await svc.getBundle({ ...agent, adapterConfig: result.adapterConfig });
+    expect(bundle.entryFile).toBe("AGENTS.md");
+    expect(bundle.files.map((f) => f.path)).toEqual(["AGENTS.md"]);
   });
 
   it("rejects deleting a non-existent directory", async () => {

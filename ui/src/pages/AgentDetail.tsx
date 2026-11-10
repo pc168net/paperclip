@@ -3118,8 +3118,6 @@ export function PromptsTab({
             wrapLabels
             renderNodeExtra={(node) => {
               if (node.kind !== "dir") return null;
-              const containsEntry = currentEntryFile === node.path || currentEntryFile.startsWith(`${node.path}/`);
-              if (containsEntry) return null;
               return (
                 <Button
                   type="button"
@@ -3401,7 +3399,10 @@ export function PromptsTab({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete folder &ldquo;{folderToDelete?.name}&rdquo;?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete the folder &ldquo;{folderToDelete?.path}&rdquo; and all files inside it. This action cannot be undone.
+              This will permanently delete the folder &ldquo;{folderToDelete?.path}&rdquo; and all files inside it.
+              {folderToDelete && (currentEntryFile === folderToDelete.path || currentEntryFile.startsWith(`${folderToDelete.path}/`))
+                ? " The entry file will be reset to AGENTS.md."
+                : ""} This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

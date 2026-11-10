@@ -707,7 +707,11 @@ export function agentInstructionsService(db?: Db) {
 
   // Reload configuration under the commit lock: a previously supporting file
   // may have become the configured entry since the route loaded its agent.
-  async function withCurrentAgent<T>(agent: AgentLike, relativePath: string | null, operation: (current: AgentLike) => Promise<T>) {
+  async function withCurrentAgent<T>(
+    agent: AgentLike,
+    relativePath: string | null,
+    operation: (current: AgentLike, tx?: Db | Parameters<Parameters<Db["transaction"]>[0]>[0]) => Promise<T>,
+  ) {
     if (!db) return operation(agent);
     return db.transaction(async (tx) => {
       const [current] = await tx.select().from(agents)
@@ -717,7 +721,7 @@ export function agentInstructionsService(db?: Db) {
         // Historical entries also remain projections if the configured entry changes.
         await assertUnversionedEntry(current, normalizeRelativeFilePath(relativePath), tx);
       }
-      return operation(current);
+      return operation(current, tx);
     });
   }
   async function writeFile(...args: Parameters<typeof writeFileUnversioned>) {
@@ -735,6 +739,7 @@ export function agentInstructionsService(db?: Db) {
     adapterConfig: Record<string, unknown>;
     deletedFilesCount: number;
     deletedFiles: string[];
+    entryReset?: boolean;
   }> {
     const derived = deriveBundleState(agent);
     const state = await recoverManagedBundleState(agent, derived);
@@ -742,10 +747,6 @@ export function agentInstructionsService(db?: Db) {
 
     const cleanPath = dirPath.trim().replace(/^\/+|\/+$/g, "");
     const normalizedDir = normalizeRelativeFilePath(cleanPath);
-
-    if (state.entryFile === normalizedDir || state.entryFile.startsWith(`${normalizedDir}/`)) {
-      throw unprocessable("The configured instruction entry cannot be deleted");
-    }
 
     if (state.mode !== "external") {
       agentFilePath(normalizedDir);
@@ -761,32 +762,69 @@ export function agentInstructionsService(db?: Db) {
 
     await fs.rm(absolutePath, { recursive: true, force: true });
 
-    const adapterConfig = buildPersistedBundleConfig(derived, state);
+    const isEntryDeleted = state.entryFile === normalizedDir || state.entryFile.startsWith(`${normalizedDir}/`);
+    let adapterConfig: Record<string, unknown>;
+
+    if (isEntryDeleted) {
+      const nextEntryFile = ENTRY_FILE_DEFAULT;
+      const entryAbsPath = resolvePathWithinRoot(state.rootPath, nextEntryFile);
+      const entryStat = await statIfExists(entryAbsPath);
+      if (!entryStat?.isFile()) {
+        await fs.mkdir(path.dirname(entryAbsPath), { recursive: true });
+        await fs.writeFile(entryAbsPath, "# Instructions\n", "utf8");
+      }
+      adapterConfig = applyBundleConfig(state.config, {
+        mode: state.mode ?? "managed",
+        rootPath: state.rootPath,
+        entryFile: nextEntryFile,
+      });
+    } else {
+      adapterConfig = buildPersistedBundleConfig(derived, state);
+    }
+
     const bundle = await getBundle({ ...agent, adapterConfig });
     return {
       bundle,
       adapterConfig,
       deletedFilesCount: deletedFiles.length,
       deletedFiles,
+      entryReset: isEntryDeleted,
     };
   }
 
   async function deleteDirectory(...args: Parameters<typeof deleteDirectoryUnversioned>) {
-    return withCurrentAgent(args[0], null, async (current) => {
+    return withCurrentAgent(args[0], null, async (current, tx) => {
       const cleanPath = args[1].trim().replace(/^\/+|\/+$/g, "");
       const normalizedDir = normalizeRelativeFilePath(cleanPath);
-      if (db) {
-        const heads = await db
+      const conn = tx ?? db;
+      if (conn) {
+        const heads = await conn
           .select({ entryFile: agentInstructionHeads.entryFile })
           .from(agentInstructionHeads)
           .where(and(eq(agentInstructionHeads.companyId, current.companyId), eq(agentInstructionHeads.agentId, current.id)));
-        for (const head of heads) {
-          if (head.entryFile === normalizedDir || head.entryFile.startsWith(`${normalizedDir}/`)) {
-            throw unprocessable("This directory contains entries with revision history", { code: "INSTRUCTION_REVISION_REQUIRED" });
-          }
+        const headsToDelete = heads
+          .filter((h) => h.entryFile === normalizedDir || h.entryFile.startsWith(`${normalizedDir}/`))
+          .map((h) => h.entryFile);
+        for (const entryFile of headsToDelete) {
+          await conn
+            .delete(agentInstructionHeads)
+            .where(
+              and(
+                eq(agentInstructionHeads.companyId, current.companyId),
+                eq(agentInstructionHeads.agentId, current.id),
+                eq(agentInstructionHeads.entryFile, entryFile),
+              ),
+            );
         }
       }
-      return deleteDirectoryUnversioned(current, args[1]);
+      const result = await deleteDirectoryUnversioned(current, args[1]);
+      if (conn && result.entryReset) {
+        await conn
+          .update(agents)
+          .set({ adapterConfig: result.adapterConfig })
+          .where(and(eq(agents.id, current.id), eq(agents.companyId, current.companyId)));
+      }
+      return result;
     });
   }
 

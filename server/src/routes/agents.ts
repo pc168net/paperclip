@@ -5535,6 +5535,24 @@ export function agentRoutes(
 
     const actor = getActorInfo(req);
     const result = await instructions.deleteDirectory(existing, relativePath);
+    if (result.entryReset) {
+      const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
+        existing.companyId,
+        result.adapterConfig,
+        { strictMode: strictSecretsMode, adapterType: existing.adapterType },
+      );
+      await svc.update(
+        id,
+        { adapterConfig: normalizedAdapterConfig },
+        {
+          recordRevision: {
+            createdByAgentId: actor.agentId,
+            createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+            source: "instructions_directory_deleted",
+          },
+        },
+      );
+    }
     await logActivity(db, {
       companyId: existing.companyId,
       actorType: actor.actorType,

@@ -757,7 +757,7 @@ describe("PromptsTab instruction editor", () => {
     });
   });
 
-  it("does not render delete folder button if folder contains the entry file", async () => {
+  it("renders delete folder button even if folder contains the entry file and shows entry reset note", async () => {
     const wikiEntry = makeSummary("wiki/README.md", "wiki/README.md");
     const wikiNotes = makeSummary("wiki/notes.md", "wiki/README.md");
 
@@ -772,6 +772,14 @@ describe("PromptsTab instruction editor", () => {
     const deleteFolderButton = Array.from(container.querySelectorAll("button")).find(
       (b) => b.getAttribute("aria-label") === "Delete folder wiki",
     );
-    expect(deleteFolderButton).toBeUndefined();
+    expect(deleteFolderButton).toBeDefined();
+
+    await act(async () => {
+      deleteFolderButton!.click();
+    });
+
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("The entry file will be reset to AGENTS.md"),
+    );
   });
 });
