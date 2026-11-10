@@ -55,6 +55,7 @@ export function instructionBytes(content: string | Uint8Array): Buffer {
 export async function assertInstructionPathSafe(
   root: string,
   entryFile: string,
+  options?: { allowDirectory?: boolean },
 ) {
   instructionPath(entryFile);
   let absolute = path.resolve(root, entryFile);
@@ -81,9 +82,11 @@ export async function assertInstructionPathSafe(
         throw error;
       });
     if (!stat) continue;
+    const isLeaf = i === parts.length - 1;
+    const isLeafValid = options?.allowDirectory ? stat.isDirectory() || stat.isFile() : stat.isFile();
     if (
       stat.isSymbolicLink() ||
-      (i < parts.length - 1 ? !stat.isDirectory() : !stat.isFile())
+      (!isLeaf ? !stat.isDirectory() : !isLeafValid)
     ) {
       throw unprocessable(
         "Instructions require regular files and directories without symlinks",
@@ -92,6 +95,13 @@ export async function assertInstructionPathSafe(
     }
   }
   return absolute;
+}
+
+export async function assertInstructionDirectoryPathSafe(
+  root: string,
+  dirPath: string,
+) {
+  return assertInstructionPathSafe(root, dirPath, { allowDirectory: true });
 }
 
 export async function readInstructionBytes(

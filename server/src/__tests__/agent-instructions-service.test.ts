@@ -417,4 +417,67 @@ describe("agent instructions service", () => {
     ]);
     expect(exported.files).toEqual({ "AGENTS.md": "# Managed Agent\n" });
   });
+
+  it("deletes a directory and its files, returning updated bundle", async () => {
+    const root = await makeTempDir("delete-directory-test-");
+    cleanupDirs.add(root);
+    await fs.writeFile(path.join(root, "AGENTS.md"), "# Agent\n", "utf8");
+    await fs.mkdir(path.join(root, "wiki"), { recursive: true });
+    await fs.writeFile(path.join(root, "wiki", "doc1.md"), "Doc 1\n", "utf8");
+    await fs.writeFile(path.join(root, "wiki", "doc2.md"), "Doc 2\n", "utf8");
+
+    const svc = agentInstructionsService();
+    const agent = makeAgent({
+      instructionsBundleMode: "external",
+      instructionsRootPath: root,
+      instructionsEntryFile: "AGENTS.md",
+    });
+
+    const result = await svc.deleteDirectory(agent, "wiki");
+    expect(result.deletedFilesCount).toBe(2);
+    expect(result.deletedFiles.sort()).toEqual(["wiki/doc1.md", "wiki/doc2.md"]);
+
+    const stat = await fs.stat(path.join(root, "wiki")).catch(() => null);
+    expect(stat).toBeNull();
+
+    const bundle = await svc.getBundle(agent);
+    expect(bundle.files.map((f) => f.path)).toEqual(["AGENTS.md"]);
+  });
+
+  it("rejects deleting a directory that contains the entry file", async () => {
+    const root = await makeTempDir("delete-entry-dir-test-");
+    cleanupDirs.add(root);
+    await fs.mkdir(path.join(root, "wiki"), { recursive: true });
+    await fs.writeFile(path.join(root, "wiki", "README.md"), "# Entry\n", "utf8");
+
+    const svc = agentInstructionsService();
+    const agent = makeAgent({
+      instructionsBundleMode: "external",
+      instructionsRootPath: root,
+      instructionsEntryFile: "wiki/README.md",
+    });
+
+    await expect(svc.deleteDirectory(agent, "wiki")).rejects.toMatchObject({
+      status: 422,
+      message: "The configured instruction entry cannot be deleted",
+    });
+  });
+
+  it("rejects deleting a non-existent directory", async () => {
+    const root = await makeTempDir("delete-nonexistent-dir-test-");
+    cleanupDirs.add(root);
+    await fs.writeFile(path.join(root, "AGENTS.md"), "# Agent\n", "utf8");
+
+    const svc = agentInstructionsService();
+    const agent = makeAgent({
+      instructionsBundleMode: "external",
+      instructionsRootPath: root,
+      instructionsEntryFile: "AGENTS.md",
+    });
+
+    await expect(svc.deleteDirectory(agent, "nonexistent")).rejects.toMatchObject({
+      status: 404,
+      message: "Instructions directory not found",
+    });
+  });
 });

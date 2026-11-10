@@ -21,6 +21,7 @@ const mockAgentInstructionsService = vi.hoisted(() => ({
   updateBundle: vi.fn(),
   writeFile: vi.fn(),
   deleteFile: vi.fn(),
+  deleteDirectory: vi.fn(),
   uploadFiles: vi.fn(),
   exportFiles: vi.fn(),
   ensureManagedBundle: vi.fn(),
@@ -841,6 +842,43 @@ describe("agent instructions bundle routes", () => {
         entityId: "11111111-1111-4111-8111-111111111111",
       }),
     );
+  });
+
+  it("deletes a directory and logs activity", async () => {
+    mockAgentInstructionsService.deleteDirectory.mockResolvedValue({
+      bundle: { files: [{ path: "AGENTS.md", size: 100 }] },
+      deletedFilesCount: 2,
+      deletedFiles: ["wiki/doc1.md", "wiki/doc2.md"],
+    });
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .delete("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/directory?path=wiki"));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentInstructionsService.deleteDirectory).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "11111111-1111-4111-8111-111111111111" }),
+      "wiki",
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "agent.instructions_directory_deleted",
+        entityId: "11111111-1111-4111-8111-111111111111",
+        details: expect.objectContaining({
+          path: "wiki",
+          count: 2,
+          files: ["wiki/doc1.md", "wiki/doc2.md"],
+        }),
+      }),
+    );
+  });
+
+  it("rejects directory deletion when path parameter is missing", async () => {
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .delete("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/directory"));
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("path");
   });
 });
 

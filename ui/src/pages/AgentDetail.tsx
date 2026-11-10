@@ -99,6 +99,7 @@ import {
   FolderOpen,
   AlertTriangle,
   Upload,
+  Trash2,
 } from "lucide-react";
 import { UploadInstructionsDialog } from "../components/UploadInstructionsDialog";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
@@ -2507,6 +2508,29 @@ export function PromptsTab({
     onError: () => setAwaitingRefresh(false),
   });
 
+  const [folderToDelete, setFolderToDelete] = useState<{ path: string; name: string } | null>(null);
+
+  const deleteDirectory = useMutation({
+    mutationFn: (dirPath: string) => agentsApi.deleteInstructionsDirectory(agent.id, dirPath, companyId),
+    onMutate: () => {
+      editorInteractedRef.current = false;
+      setAwaitingRefresh(true);
+    },
+    onSuccess: (_, dirPath) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
+      queryClient.removeQueries({ queryKey: ["agents", agent.id, "instructions-file"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+      const currentSelected = selectedOrEntryFile;
+      if (currentSelected === dirPath || currentSelected.startsWith(`${dirPath}/`)) {
+        setSelectedFile(currentEntryFile);
+        setDraft(null);
+      }
+      setFolderToDelete(null);
+    },
+    onError: () => setAwaitingRefresh(false),
+  });
+
   const uploadMarkdownImage = useMutation({
     mutationFn: async ({ file, namespace }: { file: File; namespace: string }) => {
       if (!selectedCompanyId) throw new Error("Select an organization to upload images");
@@ -3092,6 +3116,28 @@ export function PromptsTab({
             onToggleCheck={() => {}}
             showCheckboxes={false}
             wrapLabels
+            renderNodeExtra={(node) => {
+              if (node.kind !== "dir") return null;
+              const containsEntry = currentEntryFile === node.path || currentEntryFile.startsWith(`${node.path}/`);
+              if (containsEntry) return null;
+              return (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  className="h-6 w-6 opacity-0 group-hover:opacity-100 focus:opacity-100 text-muted-foreground hover:text-destructive transition-opacity"
+                  aria-label={`Delete folder ${node.name}`}
+                  title={`Delete folder ${node.name}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setFolderToDelete({ path: node.path, name: node.name });
+                  }}
+                  disabled={deleteDirectory.isPending}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              );
+            }}
             renderFileExtra={(node) => {
               const file = bundle?.files.find((entry) => entry.path === node.path);
               if (!file) return null;
@@ -3344,6 +3390,37 @@ export function PromptsTab({
           }
         }}
       />
+
+      <AlertDialog
+        open={Boolean(folderToDelete)}
+        onOpenChange={(open) => {
+          if (!open && !deleteDirectory.isPending) setFolderToDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete folder &ldquo;{folderToDelete?.name}&rdquo;?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete the folder &ldquo;{folderToDelete?.path}&rdquo; and all files inside it. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteDirectory.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deleteDirectory.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={(event) => {
+                event.preventDefault();
+                if (folderToDelete) {
+                  deleteDirectory.mutate(folderToDelete.path);
+                }
+              }}
+            >
+              {deleteDirectory.isPending ? "Deleting…" : "Delete folder"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

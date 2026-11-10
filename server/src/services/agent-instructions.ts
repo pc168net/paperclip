@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { agentInstructionHeads, agents, type Db } from "@paperclipai/db";
-import { instructionPath, assertInstructionPathSafe, instructionBytes, readInstructionBytes, materializeInstructionBytes } from "./agent-instruction-files.js";
+import { instructionPath, assertInstructionPathSafe, assertInstructionDirectoryPathSafe, instructionBytes, readInstructionBytes, materializeInstructionBytes } from "./agent-instruction-files.js";
 import { notFound, unprocessable } from "../errors.js";
 import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
 
@@ -727,6 +727,69 @@ export function agentInstructionsService(db?: Db) {
     return withCurrentAgent(args[0], args[1], (current) => deleteFileUnversioned(current, args[1]));
   }
 
+  async function deleteDirectoryUnversioned(
+    agent: AgentLike,
+    dirPath: string,
+  ): Promise<{
+    bundle: AgentInstructionsBundle;
+    adapterConfig: Record<string, unknown>;
+    deletedFilesCount: number;
+    deletedFiles: string[];
+  }> {
+    const derived = deriveBundleState(agent);
+    const state = await recoverManagedBundleState(agent, derived);
+    if (!state.rootPath) throw notFound("Agent instructions bundle is not configured");
+
+    const cleanPath = dirPath.trim().replace(/^\/+|\/+$/g, "");
+    const normalizedDir = normalizeRelativeFilePath(cleanPath);
+
+    if (state.entryFile === normalizedDir || state.entryFile.startsWith(`${normalizedDir}/`)) {
+      throw unprocessable("The configured instruction entry cannot be deleted");
+    }
+
+    if (state.mode !== "external") {
+      agentFilePath(normalizedDir);
+    }
+
+    const absolutePath = await assertInstructionDirectoryPathSafe(state.rootPath, normalizedDir);
+    const stat = await statIfExists(absolutePath);
+    if (!stat) throw notFound("Instructions directory not found");
+    if (!stat.isDirectory()) throw unprocessable("Path is not a directory");
+
+    const allFiles = await listFilesRecursive(absolutePath);
+    const deletedFiles = allFiles.map((file) => `${normalizedDir}/${file}`);
+
+    await fs.rm(absolutePath, { recursive: true, force: true });
+
+    const adapterConfig = buildPersistedBundleConfig(derived, state);
+    const bundle = await getBundle({ ...agent, adapterConfig });
+    return {
+      bundle,
+      adapterConfig,
+      deletedFilesCount: deletedFiles.length,
+      deletedFiles,
+    };
+  }
+
+  async function deleteDirectory(...args: Parameters<typeof deleteDirectoryUnversioned>) {
+    return withCurrentAgent(args[0], null, async (current) => {
+      const cleanPath = args[1].trim().replace(/^\/+|\/+$/g, "");
+      const normalizedDir = normalizeRelativeFilePath(cleanPath);
+      if (db) {
+        const heads = await db
+          .select({ entryFile: agentInstructionHeads.entryFile })
+          .from(agentInstructionHeads)
+          .where(and(eq(agentInstructionHeads.companyId, current.companyId), eq(agentInstructionHeads.agentId, current.id)));
+        for (const head of heads) {
+          if (head.entryFile === normalizedDir || head.entryFile.startsWith(`${normalizedDir}/`)) {
+            throw unprocessable("This directory contains entries with revision history", { code: "INSTRUCTION_REVISION_REQUIRED" });
+          }
+        }
+      }
+      return deleteDirectoryUnversioned(current, args[1]);
+    });
+  }
+
   async function uploadFilesUnversioned(
     agent: AgentLike,
     incomingFiles: Array<{ path: string; content: string }>,
@@ -871,6 +934,7 @@ export function agentInstructionsService(db?: Db) {
     updateBundle,
     writeFile,
     deleteFile,
+    deleteDirectory,
     uploadFiles,
     exportFiles,
     ensureManagedBundle: ensureWritableBundle,

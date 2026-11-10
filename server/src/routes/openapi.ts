@@ -3888,6 +3888,15 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "delete",
+  path: "/api/agents/{id}/instructions-bundle/directory",
+  tags: ["agents"],
+  summary: "Delete instructions directory and its contents",
+  request: { params: z.object({ id: z.string() }), query: z.object({ path: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/agents/{id}/configuration",
   tags: ["agents"],

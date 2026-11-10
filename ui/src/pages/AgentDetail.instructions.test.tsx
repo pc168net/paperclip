@@ -16,6 +16,7 @@ const mockAgentsApi = vi.hoisted(() => ({
   saveInstructionsFile: vi.fn(),
   uploadInstructionsFiles: vi.fn(),
   deleteInstructionsFile: vi.fn(),
+  deleteInstructionsDirectory: vi.fn(),
   instructionHistory: vi.fn(),
   instructionCandidates: vi.fn(),
   resolveInstructionCandidate: vi.fn(),
@@ -708,5 +709,69 @@ describe("PromptsTab instruction editor", () => {
     );
     expect(document.body.textContent).toContain("Select Folder (Wiki)");
     expect(document.body.textContent).toContain("Select .zip Archive");
+  });
+
+  it("renders delete folder button for folders and confirms deletion", async () => {
+    const agentsSummary = makeSummary("AGENTS.md", "AGENTS.md");
+    const bankerIndex = makeSummary("banker/index.md", "AGENTS.md");
+    const bankerLog = makeSummary("banker/log.md", "AGENTS.md");
+    mockAgentsApi.deleteInstructionsDirectory.mockResolvedValue(makeBundle("AGENTS.md", [agentsSummary]));
+
+    await renderPromptsTab(
+      makeBundle("AGENTS.md", [agentsSummary, bankerIndex, bankerLog]),
+      {
+        "AGENTS.md": makeDetail(agentsSummary),
+        "banker/index.md": makeDetail(bankerIndex),
+        "banker/log.md": makeDetail(bankerLog),
+      },
+    );
+
+    const deleteFolderButton = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.getAttribute("aria-label") === "Delete folder banker",
+    );
+    expect(deleteFolderButton).toBeDefined();
+
+    await act(async () => {
+      deleteFolderButton!.click();
+    });
+
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("Delete folder “banker”?"),
+    );
+
+    const confirmButton = Array.from(document.querySelectorAll("button")).find(
+      (b) => b.textContent === "Delete folder",
+    );
+    expect(confirmButton).toBeDefined();
+
+    await act(async () => {
+      confirmButton!.click();
+    });
+
+    await waitFor(() => {
+      expect(mockAgentsApi.deleteInstructionsDirectory).toHaveBeenCalledWith(
+        "agent-1",
+        "banker",
+        "company-1",
+      );
+    });
+  });
+
+  it("does not render delete folder button if folder contains the entry file", async () => {
+    const wikiEntry = makeSummary("wiki/README.md", "wiki/README.md");
+    const wikiNotes = makeSummary("wiki/notes.md", "wiki/README.md");
+
+    await renderPromptsTab(
+      makeBundle("wiki/README.md", [wikiEntry, wikiNotes]),
+      {
+        "wiki/README.md": makeDetail(wikiEntry),
+        "wiki/notes.md": makeDetail(wikiNotes),
+      },
+    );
+
+    const deleteFolderButton = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.getAttribute("aria-label") === "Delete folder wiki",
+    );
+    expect(deleteFolderButton).toBeUndefined();
   });
 });

@@ -5520,6 +5520,41 @@ export function agentRoutes(
     res.json(result.bundle);
   });
 
+  router.delete("/agents/:id/instructions-bundle/directory", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!existing) return;
+    await assertCanManageInstructionsPath(req, existing);
+    assertExternalInstructionsAdmin(req, existing);
+
+    const relativePath = typeof req.query.path === "string" ? req.query.path : "";
+    if (!relativePath.trim()) {
+      res.status(422).json({ error: "Query parameter 'path' is required" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const result = await instructions.deleteDirectory(existing, relativePath);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "agent.instructions_directory_deleted",
+      entityType: "agent",
+      entityId: existing.id,
+      details: {
+        path: relativePath,
+        count: result.deletedFilesCount,
+        files: result.deletedFiles,
+      },
+    });
+
+    res.json(result.bundle);
+  });
+
   router.post("/agents/:id/connection-intents/:interactionId/adopt", validate(completeConnectionIntentSchema), async (req, res) => {
     assertBoard(req);
     const agent = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
