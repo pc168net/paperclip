@@ -186,4 +186,111 @@ describe("custom HTTP adapter", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
+
+  it("captures LiteLLM spend from response header x-litellm-response-cost", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      id: "resp-header-1",
+      output: [{ content: [{ text: "done" }] }],
+      usage: {
+        input_tokens: 50,
+        output_tokens: 15,
+      },
+    }), {
+      status: 200,
+      headers: { "x-litellm-response-cost": "0.00345" },
+    })));
+
+    const result = await executeCustom(context("responses"));
+
+    expect(result).toMatchObject({
+      exitCode: 0,
+      usage: { inputTokens: 50, outputTokens: 15, totalTokens: 65 },
+      costUsd: 0.00345,
+      costUsdExact: "0.00345",
+      costStatus: "reported",
+      pricingProvenance: {
+        source: "provider_reported",
+        version: "litellm-header/v1",
+        evidence: "x-litellm-response-cost",
+      },
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("queries POST /spend/calculate when response contains usage but no cost or spend", async () => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "https://gateway.example/v1/responses") {
+        return new Response(JSON.stringify({
+          id: "resp-calc-1",
+          output: [{ content: [{ text: "done" }] }],
+          usage: {
+            input_tokens: 80,
+            output_tokens: 20,
+          },
+        }), { status: 200 });
+      }
+      if (url === "https://gateway.example/v1/spend/calculate") {
+        const body = JSON.parse(String(init?.body));
+        expect(body).toEqual({
+          model: "gpt-5.6-luna",
+          prompt_tokens: 80,
+          completion_tokens: 20,
+        });
+        expect(init?.headers).toMatchObject({ "api-key": "secret-value" });
+        return new Response(JSON.stringify({ spend: "0.001234" }), { status: 200 });
+      }
+      return new Response(null, { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await executeCustom(context("responses"));
+
+    expect(result).toMatchObject({
+      exitCode: 0,
+      usage: { inputTokens: 80, outputTokens: 20, totalTokens: 100 },
+      costUsd: 0.001234,
+      costUsdExact: "0.001234",
+      costStatus: "reported",
+      pricingProvenance: {
+        source: "provider_reported",
+        version: "litellm/spend-calculate",
+        evidence: "https://gateway.example/v1/spend/calculate",
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    vi.unstubAllGlobals();
+  });
+
+  it("safely falls back to unpriced when POST /spend/calculate returns 404", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === "https://gateway.example/v1/responses") {
+        return new Response(JSON.stringify({
+          id: "resp-calc-404",
+          output: [{ content: [{ text: "done" }] }],
+          usage: {
+            input_tokens: 80,
+            output_tokens: 20,
+          },
+        }), { status: 200 });
+      }
+      if (url === "https://gateway.example/v1/spend/calculate") {
+        return new Response("Not found", { status: 404 });
+      }
+      return new Response(null, { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await executeCustom(context("responses"));
+
+    expect(result).toMatchObject({
+      exitCode: 0,
+      usage: { inputTokens: 80, outputTokens: 20, totalTokens: 100 },
+    });
+    expect(result).not.toHaveProperty("costUsd");
+    expect(result).not.toHaveProperty("costUsdExact");
+    expect(result).not.toHaveProperty("costStatus");
+    expect(result).not.toHaveProperty("pricingProvenance");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    vi.unstubAllGlobals();
+  });
 });

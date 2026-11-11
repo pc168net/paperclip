@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCustomProviderUsage } from "./custom-local-usage.js";
+import { parseCustomProviderUsage, parseSpendCalculateResponse } from "./custom-local-usage.js";
 
 describe("parseCustomProviderUsage", () => {
   it("preserves Responses token usage and a provider-reported decimal cost", () => {
@@ -56,6 +56,69 @@ describe("parseCustomProviderUsage", () => {
     });
   });
 
+  it("preserves LiteLLM usage.spend when cost is not present", () => {
+    expect(parseCustomProviderUsage({
+      usage: {
+        input_tokens: 100,
+        output_tokens: 20,
+        spend: "0.00456",
+      },
+    })).toEqual(expect.objectContaining({
+      usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
+      costUsd: 0.00456,
+      costUsdExact: "0.00456",
+      costStatus: "reported",
+      pricingProvenance: { source: "provider_reported", version: "litellm-spend/v1", evidence: "litellm_spend" },
+    }));
+  });
+
+  it("preserves LiteLLM top-level spend when usage.spend is not present", () => {
+    expect(parseCustomProviderUsage({
+      spend: 0.003,
+      usage: {
+        prompt_tokens: 50,
+        completion_tokens: 10,
+      },
+    })).toEqual(expect.objectContaining({
+      usage: { inputTokens: 50, outputTokens: 10, totalTokens: 60 },
+      costUsd: 0.003,
+      costUsdExact: "0.003",
+      costStatus: "reported",
+      pricingProvenance: { source: "provider_reported", version: "litellm-spend/v1", evidence: "litellm_spend" },
+    }));
+  });
+
+  it("extracts cost from x-litellm-response-cost header when response body has no cost or spend", () => {
+    const headers = new Headers({ "x-litellm-response-cost": "0.00123" });
+    expect(parseCustomProviderUsage({
+      usage: { prompt_tokens: 40, completion_tokens: 10 },
+    }, headers)).toEqual(expect.objectContaining({
+      usage: { inputTokens: 40, outputTokens: 10, totalTokens: 50 },
+      costUsd: 0.00123,
+      costUsdExact: "0.00123",
+      costStatus: "reported",
+      pricingProvenance: { source: "provider_reported", version: "litellm-header/v1", evidence: "x-litellm-response-cost" },
+    }));
+  });
+
+  it("prefers explicit cost over spend and headers", () => {
+    const headers = new Headers({ "x-litellm-response-cost": "0.009" });
+    expect(parseCustomProviderUsage({
+      spend: 0.005,
+      usage: {
+        prompt_tokens: 40,
+        completion_tokens: 10,
+        cost: "0.002",
+        spend: "0.003",
+      },
+    }, headers)).toEqual(expect.objectContaining({
+      costUsd: 0.002,
+      costUsdExact: "0.002",
+      costStatus: "reported",
+      pricingProvenance: { source: "provider_reported", version: "custom-openai-compatible/v1", evidence: "provider_cost" },
+    }));
+  });
+
   it.each([
     ["missing", undefined],
     ["negative number", -0.01],
@@ -75,5 +138,35 @@ describe("parseCustomProviderUsage", () => {
     expect(result).not.toHaveProperty("costUsdExact");
     expect(result).not.toHaveProperty("costStatus");
     expect(result).not.toHaveProperty("pricingProvenance");
+  });
+
+  describe("parseSpendCalculateResponse", () => {
+    it("parses a bare number response", () => {
+      expect(parseSpendCalculateResponse(0.00123)).toEqual({
+        costUsd: 0.00123,
+        costUsdExact: "0.00123",
+      });
+    });
+
+    it("parses an object with spend", () => {
+      expect(parseSpendCalculateResponse({ spend: "0.0045" })).toEqual({
+        costUsd: 0.0045,
+        costUsdExact: "0.0045",
+      });
+    });
+
+    it("parses an object with cost", () => {
+      expect(parseSpendCalculateResponse({ cost: 0.0078 })).toEqual({
+        costUsd: 0.0078,
+        costUsdExact: "0.0078",
+      });
+    });
+
+    it("returns undefined for invalid or negative spend responses", () => {
+      expect(parseSpendCalculateResponse(null)).toBeUndefined();
+      expect(parseSpendCalculateResponse({})).toBeUndefined();
+      expect(parseSpendCalculateResponse(-0.01)).toBeUndefined();
+      expect(parseSpendCalculateResponse({ spend: "invalid" })).toBeUndefined();
+    });
   });
 });

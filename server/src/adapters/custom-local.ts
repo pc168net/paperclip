@@ -13,7 +13,7 @@ import {
   selectPaperclipPromptSections,
 } from "@paperclipai/adapter-utils/server-utils";
 import { testCustomEnvironment } from "./custom-local-test.js";
-import { parseCustomProviderUsage } from "./custom-local-usage.js";
+import { parseCustomProviderUsage, parseSpendCalculateResponse } from "./custom-local-usage.js";
 
 const sessionCodec: AdapterSessionCodec = {
   deserialize(raw) {
@@ -140,6 +140,49 @@ async function callMcpTool(ctx: AdapterExecutionContext, tool: McpTool, args: Re
   return mcpRequest(server, "tools/call", { name: tool.name, arguments: args });
 }
 
+async function tryCalculateSpend(
+  baseUrl: string,
+  model: string,
+  tokens: { prompt_tokens: number; completion_tokens: number },
+  headers: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<{ costUsd: number; costUsdExact: string } | undefined> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    const onAbort = () => controller.abort(signal?.reason);
+    if (signal?.aborted) controller.abort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
+
+    try {
+      const response = await fetch(`${baseUrl}/spend/calculate`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...headers },
+        body: JSON.stringify({
+          model,
+          prompt_tokens: tokens.prompt_tokens,
+          completion_tokens: tokens.completion_tokens,
+        }),
+        signal: controller.signal,
+      });
+      if (!response.ok) return undefined;
+      const text = await response.text();
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = text;
+      }
+      return parseSpendCalculateResponse(parsed);
+    } finally {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
+    }
+  } catch {
+    return undefined;
+  }
+}
+
 export async function executeCustom(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   let route: ReturnType<typeof resolveRoute>;
   try {
@@ -206,7 +249,29 @@ export async function executeCustom(ctx: AdapterExecutionContext): Promise<Adapt
         : (() => { const message = Array.isArray(parsed.choices) && parsed.choices[0] && typeof parsed.choices[0] === "object" ? (parsed.choices[0] as Record<string, unknown>).message : null; return message && typeof message === "object" && Array.isArray((message as Record<string, unknown>).tool_calls) ? (message as Record<string, unknown>).tool_calls as Array<Record<string, unknown>> : []; })();
       if (calls.length === 0) {
         const text = responseText(parsed);
-        const parsedUsage = parseCustomProviderUsage(parsed);
+        const parsedUsage = parseCustomProviderUsage(parsed, response.headers);
+        if (parsedUsage.costUsd == null && parsedUsage.usage && (parsedUsage.usage.inputTokens > 0 || parsedUsage.usage.outputTokens > 0)) {
+          const authHeaders: Record<string, string> = {};
+          if (route.auth === "api_key" && credential) authHeaders["api-key"] = credential;
+          else if (route.auth === "bearer" && credential) authHeaders["authorization"] = `Bearer ${credential}`;
+          const calculated = await tryCalculateSpend(
+            route.baseUrl,
+            model,
+            { prompt_tokens: parsedUsage.usage.inputTokens, completion_tokens: parsedUsage.usage.outputTokens },
+            authHeaders,
+            controller.signal,
+          );
+          if (calculated) {
+            parsedUsage.costUsd = calculated.costUsd;
+            parsedUsage.costUsdExact = calculated.costUsdExact;
+            parsedUsage.costStatus = "reported";
+            parsedUsage.pricingProvenance = {
+              source: "provider_reported",
+              version: "litellm/spend-calculate",
+              evidence: `${route.baseUrl}/spend/calculate`,
+            };
+          }
+        }
         await ctx.onLog("stdout", `${text || "[custom] provider completed without text output."}\n`);
         return { exitCode: 0, signal: null, timedOut: false, summary: text, resultJson: parsed, sessionParams: responseId ? { responseId } : session, sessionDisplayId: responseId, model, provider: "custom", biller: "custom", usageBasis: "per_run", ...parsedUsage };
       }

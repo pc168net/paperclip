@@ -15,7 +15,7 @@ function record(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" ? value as Record<string, unknown> : undefined;
 }
 
-function parseCost(value: unknown): { costUsd: number; costUsdExact: string } | undefined {
+export function parseCost(value: unknown): { costUsd: number; costUsdExact: string } | undefined {
   let cost: { costUsd: number; costUsdExact: string } | undefined;
   if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
     cost = { costUsd: value, costUsdExact: String(value) };
@@ -31,7 +31,23 @@ function parseCost(value: unknown): { costUsd: number; costUsdExact: string } | 
   }
 }
 
-export function parseCustomProviderUsage(body: Record<string, unknown>): CustomProviderUsageResult {
+export function parseSpendCalculateResponse(data: unknown): { costUsd: number; costUsdExact: string } | undefined {
+  if (data == null) return undefined;
+  if (typeof data === "number" || typeof data === "string") {
+    return parseCost(data);
+  }
+  if (typeof data === "object") {
+    const obj = data as Record<string, unknown>;
+    const raw = obj.spend ?? obj.cost ?? obj.response_cost;
+    return parseCost(raw);
+  }
+  return undefined;
+}
+
+export function parseCustomProviderUsage(
+  body: Record<string, unknown>,
+  headers?: Headers | Record<string, string | null | undefined>,
+): CustomProviderUsageResult {
   const usageRecord = record(body.usage);
   const input = Number(usageRecord?.input_tokens ?? usageRecord?.prompt_tokens ?? 0);
   const output = Number(usageRecord?.output_tokens ?? usageRecord?.completion_tokens ?? 0);
@@ -45,19 +61,63 @@ export function parseCustomProviderUsage(body: Record<string, unknown>): CustomP
       totalTokens: input + output,
     }
     : undefined;
-  const rawCost = usageRecord && Object.hasOwn(usageRecord, "cost") ? usageRecord.cost : body.cost;
-  const cost = parseCost(rawCost);
+
+  const usageCost = usageRecord && Object.hasOwn(usageRecord, "cost") ? usageRecord.cost : undefined;
+  const usageSpend = usageRecord && (Object.hasOwn(usageRecord, "spend") ? usageRecord.spend : Object.hasOwn(usageRecord, "response_cost") ? usageRecord.response_cost : undefined);
+  const bodyCost = Object.hasOwn(body, "cost") ? body.cost : undefined;
+  const bodySpend = Object.hasOwn(body, "spend") ? body.spend : Object.hasOwn(body, "response_cost") ? body.response_cost : undefined;
+
+  let headerCost: string | undefined;
+  if (headers) {
+    if (typeof (headers as Headers).get === "function") {
+      headerCost = (headers as Headers).get("x-litellm-response-cost") ?? undefined;
+    } else {
+      headerCost = (headers as Record<string, string | null | undefined>)["x-litellm-response-cost"] ?? undefined;
+    }
+  }
+
+  let cost: { costUsd: number; costUsdExact: string } | undefined;
+  let pricingProvenance: AdapterExecutionResult["pricingProvenance"];
+
+  if (usageCost !== undefined || bodyCost !== undefined) {
+    cost = parseCost(usageCost !== undefined ? usageCost : bodyCost);
+    if (cost) {
+      pricingProvenance = {
+        source: "provider_reported",
+        version: "custom-openai-compatible/v1",
+        evidence: "provider_cost",
+      };
+    }
+  }
+
+  if (!cost && (usageSpend !== undefined || bodySpend !== undefined)) {
+    cost = parseCost(usageSpend !== undefined ? usageSpend : bodySpend);
+    if (cost) {
+      pricingProvenance = {
+        source: "provider_reported",
+        version: "litellm-spend/v1",
+        evidence: "litellm_spend",
+      };
+    }
+  }
+
+  if (!cost && headerCost !== undefined) {
+    cost = parseCost(headerCost);
+    if (cost) {
+      pricingProvenance = {
+        source: "provider_reported",
+        version: "litellm-header/v1",
+        evidence: "x-litellm-response-cost",
+      };
+    }
+  }
 
   return {
     ...(usage ? { usage } : {}),
     ...(cost ? {
       ...cost,
       costStatus: "reported" as const,
-      pricingProvenance: {
-        source: "provider_reported" as const,
-        version: "custom-openai-compatible/v1",
-        evidence: "provider_cost",
-      },
+      pricingProvenance,
     } : {}),
   };
 }
