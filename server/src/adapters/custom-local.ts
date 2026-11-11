@@ -13,7 +13,7 @@ import {
   selectPaperclipPromptSections,
 } from "@paperclipai/adapter-utils/server-utils";
 import { testCustomEnvironment } from "./custom-local-test.js";
-import { parseCustomProviderUsage, parseSpendCalculateResponse } from "./custom-local-usage.js";
+import { parseCustomProviderUsage, tryCalculateSpend } from "./custom-local-usage.js";
 
 const sessionCodec: AdapterSessionCodec = {
   deserialize(raw) {
@@ -138,49 +138,6 @@ async function callMcpTool(ctx: AdapterExecutionContext, tool: McpTool, args: Re
   const server = (ctx.runtimeMcp?.getServers() ?? []).find(entry => entry.name === tool.server);
   if (!server) throw new Error(`Paperclip tool server is unavailable for ${tool.name}.`);
   return mcpRequest(server, "tools/call", { name: tool.name, arguments: args });
-}
-
-async function tryCalculateSpend(
-  baseUrl: string,
-  model: string,
-  tokens: { prompt_tokens: number; completion_tokens: number },
-  headers: Record<string, string>,
-  signal?: AbortSignal,
-): Promise<{ costUsd: number; costUsdExact: string } | undefined> {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
-    const onAbort = () => controller.abort(signal?.reason);
-    if (signal?.aborted) controller.abort();
-    else signal?.addEventListener("abort", onAbort, { once: true });
-
-    try {
-      const response = await fetch(`${baseUrl}/spend/calculate`, {
-        method: "POST",
-        headers: { "content-type": "application/json", ...headers },
-        body: JSON.stringify({
-          model,
-          prompt_tokens: tokens.prompt_tokens,
-          completion_tokens: tokens.completion_tokens,
-        }),
-        signal: controller.signal,
-      });
-      if (!response.ok) return undefined;
-      const text = await response.text();
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        parsed = text;
-      }
-      return parseSpendCalculateResponse(parsed);
-    } finally {
-      clearTimeout(timeout);
-      signal?.removeEventListener("abort", onAbort);
-    }
-  } catch {
-    return undefined;
-  }
 }
 
 export async function executeCustom(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {

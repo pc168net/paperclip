@@ -9877,8 +9877,8 @@ export function nativeUsageCostUsd(
   if (!usage) return undefined;
   const measurement = nativeUsageMeasurement(usage);
   const hasRunDelta = Object.hasOwn(usage, "runDelta") || Object.hasOwn(record(usage.usage), "runDelta");
-  const direct = numericUsageField(measurement, ["cacheAdjustedCostUsd", "providerCostUsd", "costUsd"])
-    ?? (hasRunDelta ? undefined : numericUsageField(usage, ["cacheAdjustedCostUsd", "providerCostUsd", "costUsd"]));
+  const direct = numericUsageField(measurement, ["cacheAdjustedCostUsd", "providerCostUsd", "costUsd", "spend", "response_cost"])
+    ?? (hasRunDelta ? undefined : numericUsageField(usage, ["cacheAdjustedCostUsd", "providerCostUsd", "costUsd", "spend", "response_cost"]));
   // PRP currently defaults an absent providerCostUsd to zero. That zero is
   // not proof of a free request when the runtime observed token consumption.
   if (direct !== undefined && direct > 0) return direct;

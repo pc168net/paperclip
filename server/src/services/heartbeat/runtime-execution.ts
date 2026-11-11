@@ -31,6 +31,7 @@ import {
   type NativeWorkspaceFinalizationOwnership,
 } from "../native-runtime/native-workspace-finalization-ownership.js";
 import { createRunUsageRecorder } from "../usage-receipts.js";
+import { tryCalculateSpend } from "../../adapters/custom-local-usage.js";
 import { applyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-result";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { isConversation } from "../agent-conversations.js";
@@ -620,7 +621,38 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               onEvent: onAdapterEvent,
               instructionWorkingCopy: nativeInstructionWorkingCopy(),
 
-              onUsage: async receipt => { await usageRecorder.capture(receipt); },
+              onUsage: async receipt => {
+                if (receipt.complete && receipt.costUsd == null && receipt.usage && (receipt.usage.inputTokens > 0 || receipt.usage.outputTokens > 0) && managedAiRuntime) {
+                  const routing = managedAiRuntime.config.managedAiRouting as Record<string, unknown> | undefined;
+                  if (routing?.kind === "gateway" && typeof routing?.baseUrl === "string") {
+                    const env = parseObject(managedAiRuntime.config.env);
+                    const credential = routing.auth === "none" ? "" : typeof env.PAPERCLIP_AI_PROVIDER_KEY === "string" ? env.PAPERCLIP_AI_PROVIDER_KEY : typeof env.OPENAI_API_KEY === "string" ? env.OPENAI_API_KEY : "";
+                    const authHeaders: Record<string, string> = {};
+                    if (routing.auth === "api_key" && credential) authHeaders["api-key"] = credential;
+                    else if (routing.auth === "bearer" && credential) authHeaders["authorization"] = `Bearer ${credential}`;
+                    else if (credential) authHeaders["authorization"] = `Bearer ${credential}`;
+
+                    const modelId = (receipt.model ?? nativeExecution?.provider?.model ?? (runtimeConfig?.model as string) ?? "unknown").replace(/^paperclip\//, "");
+                    const calculated = await tryCalculateSpend(
+                      routing.baseUrl,
+                      modelId,
+                      { prompt_tokens: receipt.usage.inputTokens, completion_tokens: receipt.usage.outputTokens },
+                      authHeaders,
+                    );
+                    if (calculated) {
+                      receipt.costUsd = calculated.costUsd;
+                      receipt.costUsdExact = calculated.costUsdExact;
+                      receipt.costStatus = "reported";
+                      receipt.pricingProvenance = {
+                        source: "provider_reported",
+                        version: "litellm/spend-calculate",
+                        evidence: `${routing.baseUrl}/spend/calculate`,
+                      };
+                    }
+                  }
+                }
+                await usageRecorder.capture(receipt);
+              },
               preparationSpans: nativeRunnerPreparationSpans,
               // Bootstrap with executable/home discovery while keeping
               // configured provider values and the server-selected
@@ -818,7 +850,38 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               onLog,
               onMeta: onAdapterMeta,
               onEvent: onAdapterEvent,
-              onUsage: async receipt => { await usageRecorder.capture(receipt); },
+              onUsage: async receipt => {
+                if (receipt.complete && receipt.costUsd == null && receipt.usage && (receipt.usage.inputTokens > 0 || receipt.usage.outputTokens > 0) && managedAiRuntime) {
+                  const routing = managedAiRuntime.config.managedAiRouting as Record<string, unknown> | undefined;
+                  if (routing?.kind === "gateway" && typeof routing?.baseUrl === "string") {
+                    const env = parseObject(managedAiRuntime.config.env);
+                    const credential = routing.auth === "none" ? "" : typeof env.PAPERCLIP_AI_PROVIDER_KEY === "string" ? env.PAPERCLIP_AI_PROVIDER_KEY : typeof env.OPENAI_API_KEY === "string" ? env.OPENAI_API_KEY : "";
+                    const authHeaders: Record<string, string> = {};
+                    if (routing.auth === "api_key" && credential) authHeaders["api-key"] = credential;
+                    else if (routing.auth === "bearer" && credential) authHeaders["authorization"] = `Bearer ${credential}`;
+                    else if (credential) authHeaders["authorization"] = `Bearer ${credential}`;
+
+                    const modelId = (receipt.model ?? nativeExecution?.provider?.model ?? (runtimeConfig?.model as string) ?? "unknown").replace(/^paperclip\//, "");
+                    const calculated = await tryCalculateSpend(
+                      routing.baseUrl,
+                      modelId,
+                      { prompt_tokens: receipt.usage.inputTokens, completion_tokens: receipt.usage.outputTokens },
+                      authHeaders,
+                    );
+                    if (calculated) {
+                      receipt.costUsd = calculated.costUsd;
+                      receipt.costUsdExact = calculated.costUsdExact;
+                      receipt.costStatus = "reported";
+                      receipt.pricingProvenance = {
+                        source: "provider_reported",
+                        version: "litellm/spend-calculate",
+                        evidence: `${routing.baseUrl}/spend/calculate`,
+                      };
+                    }
+                  }
+                }
+                await usageRecorder.capture(receipt);
+              },
               onExecutionPhase: executionControl.phases.enter,
               startupTraceContext: getStartupTraceContext(),
               onRuntimeProgress: async (progress) => {
