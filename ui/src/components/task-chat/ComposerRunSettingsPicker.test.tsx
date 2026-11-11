@@ -307,4 +307,41 @@ describe("composer assignee picker", () => {
     expect(document.querySelector('[aria-label="Search assignees"]')).not.toBeNull();
     expect(document.querySelector('[aria-label="Choose exact model"]')).toBeNull();
   });
+
+  it("displays the verified deployment model instead of provider fallback and indicates deployment source", async () => {
+    const ceoAgent = {
+      id: "a2", companyId: "company-1", name: "CEO",
+      role: "CEO",
+      adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex" },
+      effectiveModel: "gpt-5.6-terra",
+      modelSource: "verified_deployment",
+    } as unknown as Agent;
+    const testAgents = new Map([[ceoAgent.id, ceoAgent]]);
+    const testOptions = [{ id: "agent:a2", label: "CEO" }];
+
+    render(vi.fn(), vi.fn(), false, {
+      assigneeValue: "agent:a2",
+      currentAssigneeValue: "agent:a2",
+      agents: testAgents,
+      options: testOptions,
+      settings: null,
+      overrides: null,
+    });
+
+    const triggerLabel = container!.querySelector('[data-testid="task-chat-composer-model-label"]')!.textContent;
+    expect(triggerLabel).toBe("gpt-5.6-terra");
+    expect(triggerLabel).not.toContain("gpt-5.6-sol");
+
+    await click("Select model and effort");
+    expect(document.body.textContent).toContain("Model (connection deployment)");
+    expect(document.body.textContent).toContain("gpt-5.6-terra");
+
+    await click("Choose exact model");
+    const defaultOption = [...document.querySelectorAll<HTMLButtonElement>('button[role="option"]')]
+      .find((item) => item.textContent?.includes("Use agent default"));
+    expect(defaultOption?.textContent).toContain("gpt-5.6-terra");
+    expect(defaultOption?.textContent).toContain("Connection deployment");
+    expect(defaultOption?.textContent).not.toContain("gpt-5.6-sol");
+  });
 });

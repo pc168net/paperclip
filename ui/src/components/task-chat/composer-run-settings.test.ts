@@ -20,6 +20,17 @@ describe("composer run settings", () => {
     expect(composerDefaultModel({ ...agent("codex_local"), adapterConfig: { model: " private-codex " } })).toBe("private-codex");
     expect(composerDefaultModel(agent("codex_local"))).toBe("");
     expect(composerDefaultModel(agent("paperclip_runner", "codex"))).toBe("gpt-5.6-sol");
+    expect(composerDefaultModel({
+      ...agent("paperclip_runner", "codex"),
+      effectiveModel: "gpt-5.6-terra",
+      modelSource: "verified_deployment",
+    })).toBe("gpt-5.6-terra");
+    expect(composerDefaultModel({
+      ...agent("paperclip_runner", "codex"),
+      adapterConfig: { provider: "codex", model: "gpt-5.6-sol" },
+      effectiveModel: "gpt-5.6-terra",
+      modelSource: "verified_deployment",
+    })).toBe("gpt-5.6-terra");
     expect(composerDefaultModel(agent("grok_local"))).toBe("grok-build");
     expect(composerDefaultModel(undefined)).toBe("");
   });

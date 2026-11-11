@@ -29,6 +29,13 @@ export function supportsComposerModel(agent: Agent | undefined): boolean {
 /** Resolve visible defaults; host environment and a local CLI's own config are unknown. */
 export function composerDefaultModel(agent: Agent | undefined): string {
   if (!agent) return "";
+  if (
+    agent.modelSource === "verified_deployment" &&
+    typeof agent.effectiveModel === "string" &&
+    agent.effectiveModel.trim()
+  ) {
+    return agent.effectiveModel.trim();
+  }
   const config = agent.adapterConfig;
   const configured = typeof config.model === "string" ? config.model.trim() : "";
   if (configured) return configured;
