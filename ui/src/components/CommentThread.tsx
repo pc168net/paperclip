@@ -893,7 +893,8 @@ export function CommentThread({
   }, [location.hash, comments, queuedComments]);
 
   async function handleSubmit() {
-    const trimmed = body.trim();
+    const rawBody = body || editorRef.current?.getMarkdown() || "";
+    const trimmed = rawBody.trim();
     if (!trimmed) return;
     const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
     const reassignment = hasReassignment ? parseReassignment(reassignTarget) : null;
@@ -905,6 +906,7 @@ export function CommentThread({
 
     setSubmitting(true);
     setBody("");
+    editorRef.current?.clear();
     try {
       await onAdd(submittedBody, reopen, reassignment ?? undefined);
       if (draftKey) clearDraft(draftKey);
@@ -956,7 +958,7 @@ export function CommentThread({
     }
   }
 
-  const canSubmit = !submitting && !!body.trim();
+  const canSubmit = !submitting;
 
   return (
     <div className="space-y-4">

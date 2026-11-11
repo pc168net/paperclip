@@ -81,6 +81,7 @@ vi.mock("@mdxeditor/editor", async () => {
     },
     forwardedRef: React.ForwardedRef<{
       setMarkdown: (value: string) => void;
+      getMarkdown?: () => string;
       insertMarkdown: (value: string) => void;
       focus: (callback?: () => void) => void;
     } | null>,
@@ -91,11 +92,14 @@ vi.mock("@mdxeditor/editor", async () => {
     mdxEditorMockState.markdownValues.push(markdown);
     mdxEditorMockState.suppressHtmlProcessingValues.push(Boolean(suppressHtmlProcessing));
     const [content, setContent] = React.useState(markdown);
+    const contentRef = React.useRef(content);
+    contentRef.current = content;
     const editableRef = React.useRef<HTMLDivElement>(null);
     const onErrorRef = React.useRef(onError);
     onErrorRef.current = onError;
     const handle = React.useMemo(() => ({
       setMarkdown: (value: string) => setContent(value),
+      getMarkdown: () => contentRef.current,
       insertMarkdown: (value: string) => {
         mdxEditorMockState.insertedMarkdownValues.push(value);
         // Inserted markdown goes through the same importer as the mounted
@@ -938,6 +942,36 @@ describe("MarkdownEditor", () => {
     ]);
     expect(container.querySelector("textarea")).toBeNull();
     expect(container.textContent).not.toContain("Rich editor unavailable for this markdown");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("exposes current markdown through getMarkdown on the ref", async () => {
+    const editorRef = { current: null as MarkdownEditorRef | null };
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          ref={editorRef}
+          value="Initial markdown value."
+          onChange={() => {}}
+          placeholder="Markdown body"
+        />,
+      );
+    });
+    await flush();
+
+    expect(editorRef.current?.getMarkdown()).toBe("Initial markdown value.");
+
+    await act(async () => {
+      editorRef.current?.insertMarkdown("\n\nAppended text.");
+    });
+    await flush();
+
+    expect(editorRef.current?.getMarkdown()).toBe("Initial markdown value.\n\nAppended text.");
 
     await act(async () => {
       root.unmount();

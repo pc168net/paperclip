@@ -70,6 +70,13 @@ function cleanRelativePath(pathStr: string): string {
     .join("/");
 }
 
+export function mergeUploadedInstructionPaths(
+  current: readonly string[] = [],
+  uploaded: readonly string[] = [],
+): string[] {
+  return [...new Set([...current, ...uploaded])];
+}
+
 export function UploadInstructionsDialog({
   open,
   onOpenChange,

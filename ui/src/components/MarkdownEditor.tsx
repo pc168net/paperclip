@@ -107,6 +107,7 @@ export interface MarkdownEditorRef {
   focus: () => void;
   insertMarkdown: (markdown: string) => void;
   clear: () => void;
+  getMarkdown: () => string;
 }
 
 class MarkdownEditorRichErrorBoundary extends Component<
@@ -873,6 +874,12 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       echoIgnoreMarkdownRef.current = "";
       ref.current?.setMarkdown("");
       if (fallbackTextareaRef.current) fallbackTextareaRef.current.value = "";
+    },
+    getMarkdown: () => {
+      if (richEditorError) {
+        return fallbackTextareaRef.current?.value ?? latestValueRef.current ?? "";
+      }
+      return ref.current?.getMarkdown() ?? latestValueRef.current ?? "";
     },
   }), [insertMarkdown, richEditorError]);
 

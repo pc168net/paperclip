@@ -101,7 +101,8 @@ import {
   Upload,
   Trash2,
 } from "lucide-react";
-import { UploadInstructionsDialog } from "../components/UploadInstructionsDialog";
+import { UploadInstructionsDialog, mergeUploadedInstructionPaths } from "../components/UploadInstructionsDialog";
+export { mergeUploadedInstructionPaths };
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
@@ -3379,6 +3380,7 @@ export function PromptsTab({
         agentId={agent.id}
         companyId={companyId}
         onSuccess={(uploadedFiles) => {
+          setPendingFiles((current) => mergeUploadedInstructionPaths(current, uploadedFiles));
           void queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
           if (uploadedFiles.length > 0) {
             const firstFile = uploadedFiles[0]!;

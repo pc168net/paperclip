@@ -782,4 +782,65 @@ describe("PromptsTab instruction editor", () => {
       expect(document.body.textContent).toContain("The entry file will be reset to AGENTS.md"),
     );
   });
+
+  it("immediately adds newly uploaded files to pending files and tree without duplicates before bundle refetch completes", async () => {
+    const summary = makeSummary("AGENTS.md", "AGENTS.md");
+    await renderPromptsTab(makeBundle("AGENTS.md", [summary]), { "AGENTS.md": makeDetail(summary) });
+
+    const uploadButton = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.getAttribute("aria-label") === "Upload wiki or files",
+    );
+    expect(uploadButton).toBeDefined();
+
+    await act(async () => {
+      uploadButton!.click();
+    });
+
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("Upload Wiki or Files to Instructions"),
+    );
+
+    mockAgentsApi.uploadInstructionsFiles.mockResolvedValue({
+      files: ["wiki/guide.md", "wiki/guide.md", "wiki/arch.md"],
+    });
+
+    const fileInputs = Array.from(document.querySelectorAll('input[type="file"]')) as HTMLInputElement[];
+    const fileInput = fileInputs.find((input) => input.multiple);
+    expect(fileInput).toBeDefined();
+
+    const mockFile = new File(["# Guide"], "guide.md", { type: "text/markdown" });
+    Object.defineProperty(fileInput!, "files", {
+      value: [mockFile],
+      configurable: true,
+    });
+
+    await act(async () => {
+      fileInput!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    await waitFor(() => {
+      const uploadSubmitButton = Array.from(document.querySelectorAll("button")).find(
+        (b) => b.textContent?.includes("Upload ("),
+      );
+      expect(uploadSubmitButton).toBeDefined();
+    });
+
+    const uploadSubmitButton = Array.from(document.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("Upload ("),
+    )!;
+
+    await act(async () => {
+      uploadSubmitButton.click();
+    });
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("guide.md");
+      expect(container.textContent).toContain("arch.md");
+    });
+
+    const guideRows = container.querySelectorAll('[data-file-tree-path="wiki/guide.md"]');
+    expect(guideRows.length).toBe(1);
+    const archRows = container.querySelectorAll('[data-file-tree-path="wiki/arch.md"]');
+    expect(archRows.length).toBe(1);
+  });
 });

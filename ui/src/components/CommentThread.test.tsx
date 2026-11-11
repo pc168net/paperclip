@@ -28,20 +28,67 @@ vi.mock("./MarkdownBody", () => ({
   ),
 }));
 
-vi.mock("./MarkdownEditor", () => ({
-  MarkdownEditor: ({ value, onChange, placeholder }: {
-    value: string;
-    onChange: (value: string) => void;
-    placeholder?: string;
-  }) => (
-    <textarea
-      aria-label="Comment editor"
-      value={value}
-      placeholder={placeholder}
-      onChange={(event) => onChange(event.target.value)}
-    />
-  ),
+const markdownEditorMockState = vi.hoisted(() => ({
+  activeInstance: null as {
+    setMarkdown: (text: string) => void;
+    getMarkdown: () => string;
+  } | null,
 }));
+
+vi.mock("./MarkdownEditor", async () => {
+  const React = await import("react");
+  return {
+    MarkdownEditor: React.forwardRef(function MockMarkdownEditor(
+      {
+        value,
+        onChange,
+        placeholder,
+      }: {
+        value: string;
+        onChange: (value: string) => void;
+        placeholder?: string;
+      },
+      ref: React.ForwardedRef<import("./MarkdownEditor").MarkdownEditorRef>,
+    ) {
+      const internalTextRef = React.useRef(value);
+      React.useEffect(() => {
+        internalTextRef.current = value;
+      }, [value]);
+
+      React.useImperativeHandle(ref, () => {
+        const handle = {
+          focus: () => {},
+          insertMarkdown: (text: string) => {
+            internalTextRef.current += text;
+          },
+          clear: () => {
+            internalTextRef.current = "";
+          },
+          getMarkdown: () => internalTextRef.current,
+        };
+        markdownEditorMockState.activeInstance = {
+          setMarkdown: (text: string) => {
+            internalTextRef.current = text;
+          },
+          getMarkdown: () => internalTextRef.current,
+        };
+        return handle;
+      });
+
+      return (
+        <textarea
+          aria-label="Comment editor"
+          value={value}
+          placeholder={placeholder}
+          onChange={(event) => {
+            internalTextRef.current = event.target.value;
+            onChange(event.target.value);
+          }}
+        />
+      );
+    }),
+  };
+});
 
 vi.mock("./InlineEntitySelector", () => ({
   InlineEntitySelector: ({ value, onChange }: { value: string; onChange: (value: string) => void }) => (
@@ -486,6 +533,78 @@ describe("CommentThread", () => {
     const markdownBody = commentRow?.querySelector('[data-testid="markdown-body"]') as HTMLElement | null;
     expect(markdownBody?.getAttribute("data-external-reference-keys"))
       .toContain("https://github.com/example/repo/pull/42");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("submits latest editor markdown even when editor state leads React state", async () => {
+    const root = createRoot(container);
+    const onAdd = vi.fn(async () => {});
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <CommentThread
+            comments={[]}
+            currentAssigneeValue="user:me"
+            onAdd={onAdd}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const submitButton = Array.from(container.querySelectorAll("button")).find(
+      (element) => element.textContent === "Comment",
+    ) as HTMLButtonElement | undefined;
+    expect(submitButton).toBeDefined();
+    expect(submitButton?.disabled).toBe(false);
+
+    // Simulate editor having updated markdown before React body state caught up
+    markdownEditorMockState.activeInstance?.setMarkdown("Latest markdown in editor ref");
+
+    await act(async () => {
+      submitButton?.click();
+    });
+
+    expect(onAdd).toHaveBeenCalledWith("Latest markdown in editor ref", undefined, undefined);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not submit when both React state and editor markdown are blank", async () => {
+    const root = createRoot(container);
+    const onAdd = vi.fn(async () => {});
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <CommentThread
+            comments={[]}
+            currentAssigneeValue="user:me"
+            onAdd={onAdd}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const submitButton = Array.from(container.querySelectorAll("button")).find(
+      (element) => element.textContent === "Comment",
+    ) as HTMLButtonElement | undefined;
+    expect(submitButton).toBeDefined();
+    expect(submitButton?.disabled).toBe(false);
+
+    // Blank editor content
+    markdownEditorMockState.activeInstance?.setMarkdown("   ");
+
+    await act(async () => {
+      submitButton?.click();
+    });
+
+    expect(onAdd).not.toHaveBeenCalled();
 
     act(() => {
       root.unmount();
