@@ -1,0 +1,29 @@
+# Dockerfile.fast-overlay
+#
+# 用途：在已具備完整依賴與執行期的正式 Image 之上，
+#      僅覆蓋 AI 改版後重新編譯出的 server 與 UI 靜態產物。
+#
+# 適用範圍限制（重要）：
+#   ✅ 僅適用於 server/src/ 或 ui/src/ 的原始碼變動。
+#   ❌ 以下任一變更必須走完整正式建置（流程 A），不得使用本 overlay：
+#      - package.json、pnpm-lock.yaml 或任何依賴變更
+#      - packages/*/ 下任何 workspace package
+#      - packages/paperclip-runner/ (Runner / Rust 程式碼)
+#      - packages/adapters/* (Agent adapter)
+#      - packages/plugins/* (Plugin)
+#      - packages/db/src/schema/* (Database migration)
+#      - Dockerfile、scripts/docker-entrypoint.sh
+#      - scripts/ 下被 server build 引用的 runtime 腳本
+#
+# ENTRYPOINT (tini)、CMD (node tsx loader)、node_modules、
+# provider-pack、CLI tools 均完整繼承基底，
+# 保證執行期環境與正式 Dockerfile 100% 一致。
+
+ARG BASE_IMAGE=paperclip:production-base
+FROM ${BASE_IMAGE}
+
+WORKDIR /app
+
+# 僅覆蓋已驗證的 runtime outputs (server/dist 與 server/ui-dist)
+COPY --chown=node:node server/dist /app/server/dist
+COPY --chown=node:node server/ui-dist /app/server/ui-dist
