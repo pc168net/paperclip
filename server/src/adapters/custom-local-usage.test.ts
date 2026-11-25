@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { parseCustomProviderUsage, parseSpendCalculateResponse } from "./custom-local-usage.js";
+import {
+  accumulateCustomProviderUsage,
+  parseCustomProviderUsage,
+  parseSpendCalculateResponse,
+} from "./custom-local-usage.js";
 
 describe("parseCustomProviderUsage", () => {
   it("preserves Responses token usage and a provider-reported decimal cost", () => {
@@ -101,6 +105,19 @@ describe("parseCustomProviderUsage", () => {
     }));
   });
 
+  it("extracts scientific-notation cost from x-litellm-response-cost header", () => {
+    const headers = new Headers({ "x-litellm-response-cost": "2.625e-05" });
+    expect(parseCustomProviderUsage({
+      usage: { prompt_tokens: 11, completion_tokens: 4 },
+    }, headers)).toEqual(expect.objectContaining({
+      usage: { inputTokens: 11, outputTokens: 4, totalTokens: 15 },
+      costUsd: 0.00002625,
+      costUsdExact: "2.625e-05",
+      costStatus: "reported",
+      pricingProvenance: { source: "provider_reported", version: "litellm-header/v1", evidence: "x-litellm-response-cost" },
+    }));
+  });
+
   it("prefers explicit cost over spend and headers", () => {
     const headers = new Headers({ "x-litellm-response-cost": "0.009" });
     expect(parseCustomProviderUsage({
@@ -122,9 +139,11 @@ describe("parseCustomProviderUsage", () => {
   it.each([
     ["missing", undefined],
     ["negative number", -0.01],
+    ["negative scientific notation", "-2.625e-05"],
     ["NaN string", "NaN"],
     ["infinite number", Infinity],
-    ["malformed string", "0.1e2"],
+    ["malformed string", "not-a-number"],
+    ["overflow exponent", "1e500"],
     ["oversized number", 1_000_000_000_000_000],
     ["oversized string", "1000000000000000"],
   ])("preserves usage without cost fields when cost is %s", (_description, cost) => {
@@ -167,6 +186,39 @@ describe("parseCustomProviderUsage", () => {
       expect(parseSpendCalculateResponse({})).toBeUndefined();
       expect(parseSpendCalculateResponse(-0.01)).toBeUndefined();
       expect(parseSpendCalculateResponse({ spend: "invalid" })).toBeUndefined();
+    });
+  });
+
+  describe("accumulateCustomProviderUsage", () => {
+    it("sums usage and exact costs across multiple turns", () => {
+      const turn1 = parseCustomProviderUsage(
+        { usage: { prompt_tokens: 11, completion_tokens: 4 } },
+        new Headers({ "x-litellm-response-cost": "2.625e-05" }),
+      );
+      const turn2 = parseCustomProviderUsage(
+        { usage: { prompt_tokens: 20, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 10 } } },
+        new Headers({ "x-litellm-response-cost": "3.075e-05" }),
+      );
+
+      expect(accumulateCustomProviderUsage([turn1, turn2])).toEqual({
+        usage: { inputTokens: 31, cachedInputTokens: 10, outputTokens: 9, totalTokens: 40 },
+        costUsd: 0.000057,
+        costUsdExact: "0.000057",
+        costStatus: "reported",
+        pricingProvenance: { source: "provider_reported", version: "litellm-header/v1", evidence: "x-litellm-response-cost" },
+      });
+    });
+
+    it("leaves cost unpriced if a usage-bearing turn is missing cost", () => {
+      const turn1 = parseCustomProviderUsage(
+        { usage: { prompt_tokens: 11, completion_tokens: 4 } },
+        new Headers({ "x-litellm-response-cost": "2.625e-05" }),
+      );
+      const turn2 = parseCustomProviderUsage({ usage: { prompt_tokens: 20, completion_tokens: 5 } });
+
+      expect(accumulateCustomProviderUsage([turn1, turn2])).toEqual({
+        usage: { inputTokens: 31, outputTokens: 9, totalTokens: 40 },
+      });
     });
   });
 });

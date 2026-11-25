@@ -19,9 +19,12 @@ export function parseCost(value: unknown): { costUsd: number; costUsdExact: stri
   let cost: { costUsd: number; costUsdExact: string } | undefined;
   if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
     cost = { costUsd: value, costUsdExact: String(value) };
-  } else if (typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value)) {
-    const costUsd = Number(value);
-    if (Number.isFinite(costUsd)) cost = { costUsd, costUsdExact: value };
+  } else if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (/^\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(trimmed)) {
+      const costUsd = Number(trimmed);
+      if (Number.isFinite(costUsd)) cost = { costUsd, costUsdExact: trimmed };
+    }
   }
   if (!cost) return undefined;
   try {
@@ -163,4 +166,73 @@ export function parseCustomProviderUsage(
       pricingProvenance,
     } : {}),
   };
+}
+
+function unitsToUsdExact(units: bigint): string {
+  const whole = units / 1_000_000_000n;
+  const frac = String(units % 1_000_000_000n).padStart(9, "0").replace(/0+$/, "");
+  return frac ? `${whole}.${frac}` : `${whole}`;
+}
+
+export function accumulateCustomProviderUsage(
+  turns: CustomProviderUsageResult[],
+): CustomProviderUsageResult {
+  if (turns.length === 0) return {};
+  if (turns.length === 1) return turns[0];
+
+  let hasUsage = false;
+  let hasCachedInput = false;
+  let inputTokens = 0;
+  let cachedInputTokens = 0;
+  let outputTokens = 0;
+
+  let hasAnyCost = false;
+  let allUsageTurnsPriced = true;
+  let totalCostUnits = 0n;
+  let firstProvenance: AdapterExecutionResult["pricingProvenance"];
+
+  for (const turn of turns) {
+    if (turn.usage) {
+      hasUsage = true;
+      inputTokens += turn.usage.inputTokens;
+      outputTokens += turn.usage.outputTokens;
+      if (turn.usage.cachedInputTokens !== undefined) {
+        hasCachedInput = true;
+        cachedInputTokens += turn.usage.cachedInputTokens;
+      }
+    }
+
+    const turnCostExact = turn.costUsdExact ?? (turn.costUsd !== undefined ? String(turn.costUsd) : undefined);
+    if (turnCostExact !== undefined) {
+      hasAnyCost = true;
+      totalCostUnits += usdToUnits(turnCostExact);
+      if (!firstProvenance && turn.pricingProvenance) {
+        firstProvenance = turn.pricingProvenance;
+      }
+    } else if (turn.usage && (turn.usage.inputTokens > 0 || turn.usage.outputTokens > 0)) {
+      allUsageTurnsPriced = false;
+    }
+  }
+
+  const usage: CustomProviderUsage | undefined = hasUsage
+    ? {
+      inputTokens,
+      ...(hasCachedInput ? { cachedInputTokens } : {}),
+      outputTokens,
+      totalTokens: inputTokens + outputTokens,
+    }
+    : undefined;
+
+  if (hasAnyCost && allUsageTurnsPriced) {
+    const costUsdExact = unitsToUsdExact(totalCostUnits);
+    return {
+      ...(usage ? { usage } : {}),
+      costUsd: Number(costUsdExact),
+      costUsdExact,
+      costStatus: "reported",
+      ...(firstProvenance ? { pricingProvenance: firstProvenance } : {}),
+    };
+  }
+
+  return usage ? { usage } : {};
 }

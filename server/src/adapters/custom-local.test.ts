@@ -293,4 +293,104 @@ describe("custom HTTP adapter", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     vi.unstubAllGlobals();
   });
+
+  it("captures scientific-notation x-litellm-response-cost headers without calling /spend/calculate", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: "done" } }],
+      usage: {
+        prompt_tokens: 11,
+        completion_tokens: 4,
+      },
+    }), {
+      status: 200,
+      headers: { "x-litellm-response-cost": "2.625e-05" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await executeCustom(context("chat"));
+
+    expect(result).toMatchObject({
+      exitCode: 0,
+      usage: { inputTokens: 11, outputTokens: 4, totalTokens: 15 },
+      costUsd: 0.00002625,
+      costUsdExact: "2.625e-05",
+      costStatus: "reported",
+      pricingProvenance: {
+        source: "provider_reported",
+        version: "litellm-header/v1",
+        evidence: "x-litellm-response-cost",
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+
+  it("accumulates usage and header costs across multi-turn tool calls", async () => {
+    let modelTurn = 0;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "https://mcp.example/tools") {
+        const payload = JSON.parse(String(init?.body));
+        if (payload.method === "initialize") {
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id: payload.id, result: {} }), { status: 200 });
+        }
+        if (payload.method === "tools/list") {
+          return new Response(JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: { tools: [{ name: "ping", description: "Ping tool", inputSchema: { type: "object", properties: {} } }] },
+          }), { status: 200 });
+        }
+        if (payload.method === "tools/call") {
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id: payload.id, result: { ok: true } }), { status: 200 });
+        }
+      }
+      if (url === "https://gateway.example/v1/responses") {
+        modelTurn += 1;
+        if (modelTurn === 1) {
+          return new Response(JSON.stringify({
+            id: "resp-tool-1",
+            output: [{ type: "function_call", name: "ping", call_id: "call-1", arguments: "{}" }],
+            usage: { input_tokens: 11, output_tokens: 4 },
+          }), {
+            status: 200,
+            headers: { "x-litellm-response-cost": "2.625e-05" },
+          });
+        }
+        return new Response(JSON.stringify({
+          id: "resp-tool-2",
+          output: [{ content: [{ text: "done" }] }],
+          usage: { input_tokens: 11, output_tokens: 5 },
+        }), {
+          status: 200,
+          headers: { "x-litellm-response-cost": "3.075e-05" },
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = {
+      ...context("responses"),
+      runtimeMcp: {
+        getServers: () => [{ name: "test-mcp", url: "https://mcp.example/tools", token: "mcp-token" }],
+      },
+    } as unknown as AdapterExecutionContext;
+
+    const result = await executeCustom(ctx);
+
+    expect(result).toMatchObject({
+      exitCode: 0,
+      summary: "done",
+      usage: { inputTokens: 22, outputTokens: 9, totalTokens: 31 },
+      costUsd: 0.000057,
+      costUsdExact: "0.000057",
+      costStatus: "reported",
+      pricingProvenance: {
+        source: "provider_reported",
+        version: "litellm-header/v1",
+        evidence: "x-litellm-response-cost",
+      },
+    });
+    vi.unstubAllGlobals();
+  });
 });

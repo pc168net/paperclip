@@ -13,7 +13,12 @@ import {
   selectPaperclipPromptSections,
 } from "@paperclipai/adapter-utils/server-utils";
 import { testCustomEnvironment } from "./custom-local-test.js";
-import { parseCustomProviderUsage, tryCalculateSpend } from "./custom-local-usage.js";
+import {
+  accumulateCustomProviderUsage,
+  parseCustomProviderUsage,
+  tryCalculateSpend,
+  type CustomProviderUsageResult,
+} from "./custom-local-usage.js";
 
 const sessionCodec: AdapterSessionCodec = {
   deserialize(raw) {
@@ -180,6 +185,7 @@ export async function executeCustom(ctx: AdapterExecutionContext): Promise<Adapt
   if (ctx.signal?.aborted) abort();
   else ctx.signal?.addEventListener("abort", abort, { once: true });
   ctx.onDispatch?.();
+  const turnUsages: CustomProviderUsageResult[] = [];
   try {
     for (let turn = 0; turn < 8; turn += 1) {
       const body = isResponses
@@ -200,35 +206,38 @@ export async function executeCustom(ctx: AdapterExecutionContext): Promise<Adapt
         : `Custom provider request failed with HTTP ${response.status}.`;
       return { exitCode: 1, signal: null, timedOut: false, errorCode: response.status === 400 || response.status === 422 ? "custom_request_rejected" : response.status === 401 || response.status === 403 ? "custom_auth_failed" : response.status === 404 ? "custom_model_not_found" : response.status === 429 ? "custom_provider_rate_limited" : "custom_provider_error", errorMessage: message };
     }
+      const turnUsage = parseCustomProviderUsage(parsed, response.headers);
+      if (turnUsage.costUsd == null && turnUsage.usage && (turnUsage.usage.inputTokens > 0 || turnUsage.usage.outputTokens > 0)) {
+        const authHeaders: Record<string, string> = {};
+        if (route.auth === "api_key" && credential) authHeaders["api-key"] = credential;
+        else if (route.auth === "bearer" && credential) authHeaders["authorization"] = `Bearer ${credential}`;
+        const calculated = await tryCalculateSpend(
+          route.baseUrl,
+          model,
+          { prompt_tokens: turnUsage.usage.inputTokens, completion_tokens: turnUsage.usage.outputTokens },
+          authHeaders,
+          controller.signal,
+        );
+        if (calculated) {
+          turnUsage.costUsd = calculated.costUsd;
+          turnUsage.costUsdExact = calculated.costUsdExact;
+          turnUsage.costStatus = "reported";
+          turnUsage.pricingProvenance = {
+            source: "provider_reported",
+            version: "litellm/spend-calculate",
+            evidence: `${route.baseUrl}/spend/calculate`,
+          };
+        }
+      }
+      turnUsages.push(turnUsage);
+
       const responseId = typeof parsed.id === "string" ? parsed.id : previousResponseId;
       const calls = isResponses
         ? (Array.isArray(parsed.output) ? parsed.output : []).filter(item => item && typeof item === "object" && (item as Record<string, unknown>).type === "function_call") as Array<Record<string, unknown>>
         : (() => { const message = Array.isArray(parsed.choices) && parsed.choices[0] && typeof parsed.choices[0] === "object" ? (parsed.choices[0] as Record<string, unknown>).message : null; return message && typeof message === "object" && Array.isArray((message as Record<string, unknown>).tool_calls) ? (message as Record<string, unknown>).tool_calls as Array<Record<string, unknown>> : []; })();
       if (calls.length === 0) {
         const text = responseText(parsed);
-        const parsedUsage = parseCustomProviderUsage(parsed, response.headers);
-        if (parsedUsage.costUsd == null && parsedUsage.usage && (parsedUsage.usage.inputTokens > 0 || parsedUsage.usage.outputTokens > 0)) {
-          const authHeaders: Record<string, string> = {};
-          if (route.auth === "api_key" && credential) authHeaders["api-key"] = credential;
-          else if (route.auth === "bearer" && credential) authHeaders["authorization"] = `Bearer ${credential}`;
-          const calculated = await tryCalculateSpend(
-            route.baseUrl,
-            model,
-            { prompt_tokens: parsedUsage.usage.inputTokens, completion_tokens: parsedUsage.usage.outputTokens },
-            authHeaders,
-            controller.signal,
-          );
-          if (calculated) {
-            parsedUsage.costUsd = calculated.costUsd;
-            parsedUsage.costUsdExact = calculated.costUsdExact;
-            parsedUsage.costStatus = "reported";
-            parsedUsage.pricingProvenance = {
-              source: "provider_reported",
-              version: "litellm/spend-calculate",
-              evidence: `${route.baseUrl}/spend/calculate`,
-            };
-          }
-        }
+        const parsedUsage = accumulateCustomProviderUsage(turnUsages);
         await ctx.onLog("stdout", `${text || "[custom] provider completed without text output."}\n`);
         return { exitCode: 0, signal: null, timedOut: false, summary: text, resultJson: parsed, sessionParams: responseId ? { responseId } : session, sessionDisplayId: responseId, model, provider: "custom", biller: "custom", usageBasis: "per_run", ...parsedUsage };
       }
