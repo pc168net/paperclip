@@ -1,19 +1,16 @@
-import { PERMISSION_KEYS } from "@paperclipai/shared";
+import {
+  HUMAN_COMPANY_MEMBERSHIP_ROLES,
+  HUMAN_COMPANY_ROLE_DEFAULT_PERMISSIONS,
+  PERMISSION_KEYS,
+} from "@paperclipai/shared";
 import type { HumanCompanyMembershipRole } from "@paperclipai/shared";
-
-const HUMAN_COMPANY_MEMBERSHIP_ROLES: HumanCompanyMembershipRole[] = [
-  "owner",
-  "admin",
-  "operator",
-  "viewer",
-];
 
 export function normalizeHumanRole(
   value: unknown,
   fallback: HumanCompanyMembershipRole = "operator"
 ): HumanCompanyMembershipRole {
   if (value === "member") return "operator";
-  return HUMAN_COMPANY_MEMBERSHIP_ROLES.includes(value as HumanCompanyMembershipRole)
+  return (HUMAN_COMPANY_MEMBERSHIP_ROLES as readonly string[]).includes(value as string)
     ? (value as HumanCompanyMembershipRole)
     : fallback;
 }
@@ -24,56 +21,10 @@ export function grantsForHumanRole(
   permissionKey: (typeof PERMISSION_KEYS)[number];
   scope: Record<string, unknown> | null;
 }> {
-  switch (role) {
-    case "owner":
-      return [
-        { permissionKey: "agents:create", scope: null },
-        { permissionKey: "agents:configure", scope: null },
-        { permissionKey: "skills:create", scope: null },
-        { permissionKey: "environments:manage", scope: null },
-        { permissionKey: "users:invite", scope: null },
-        { permissionKey: "users:manage_permissions", scope: null },
-        { permissionKey: "tasks:assign", scope: null },
-        { permissionKey: "joins:approve", scope: null },
-        { permissionKey: "tools:manage_connections", scope: null },
-        { permissionKey: "tools:manage_runtime", scope: null },
-        { permissionKey: "tools:use", scope: null },
-        { permissionKey: "tools:admin", scope: null },
-      ];
-    case "admin":
-      return [
-        { permissionKey: "agents:create", scope: null },
-        { permissionKey: "agents:configure", scope: null },
-        { permissionKey: "skills:create", scope: null },
-        { permissionKey: "environments:manage", scope: null },
-        { permissionKey: "users:invite", scope: null },
-        { permissionKey: "tasks:assign", scope: null },
-        { permissionKey: "joins:approve", scope: null },
-        { permissionKey: "tools:manage_connections", scope: null },
-        { permissionKey: "tools:manage_runtime", scope: null },
-        { permissionKey: "tools:use", scope: null },
-        { permissionKey: "tools:admin", scope: null },
-      ];
-    case "operator":
-      return [
-        { permissionKey: "agents:create", scope: null },
-        { permissionKey: "agents:configure", scope: null },
-        { permissionKey: "skills:create", scope: null },
-        { permissionKey: "environments:manage", scope: null },
-        { permissionKey: "users:invite", scope: null },
-        { permissionKey: "tasks:assign", scope: null },
-        { permissionKey: "pipelines:write", scope: null },
-        { permissionKey: "tools:manage_connections", scope: null },
-        { permissionKey: "tools:manage_profiles", scope: null },
-        { permissionKey: "tools:manage_runtime", scope: null },
-        { permissionKey: "tools:use", scope: null },
-        { permissionKey: "tools:admin", scope: null },
-        { permissionKey: "tools:view_audit", scope: null },
-        { permissionKey: "audit:view_agent_actions", scope: null },
-      ];
-    case "viewer":
-      return [];
-  }
+  return HUMAN_COMPANY_ROLE_DEFAULT_PERMISSIONS[role].map((permissionKey) => ({
+    permissionKey,
+    scope: null,
+  }));
 }
 
 export function resolveHumanInviteRole(

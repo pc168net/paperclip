@@ -605,7 +605,9 @@ export function GitHubAccessEditor({
   const [busy, setBusy] = useState(false);
   const activeMembers = (members.data?.members ?? []).filter(
     (member) =>
-      member.status === "active" && member.membershipRole !== "viewer",
+      member.status === "active" &&
+      member.membershipRole !== "viewer" &&
+      member.membershipRole !== "reporter",
   );
   const linkedAccounts = (links.data ?? []).filter(
     (link) => link.status === "linked",

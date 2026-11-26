@@ -966,6 +966,7 @@ export const COMPANY_MEMBERSHIP_ROLES = [
   "owner",
   "admin",
   "operator",
+  "reporter",
   "viewer",
   "member",
 ] as const;
@@ -975,6 +976,7 @@ export const HUMAN_COMPANY_MEMBERSHIP_ROLES = [
   "owner",
   "admin",
   "operator",
+  "reporter",
   "viewer",
 ] as const;
 export type HumanCompanyMembershipRole = (typeof HUMAN_COMPANY_MEMBERSHIP_ROLES)[number];
@@ -983,6 +985,7 @@ export const HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS: Record<HumanCompanyMembership
   owner: "Owner",
   admin: "Admin",
   operator: "Operator",
+  reporter: "Reporter",
   viewer: "Viewer",
 };
 
@@ -1025,6 +1028,81 @@ export const PERMISSION_KEYS = [
   "joins:approve",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
+
+export const PERMISSION_KEY_LABELS: Record<PermissionKey, string> = {
+  "agents:create": "Create agents",
+  "agents:configure": "Configure agents",
+  "agents:suggest-changes": "Suggest agent changes",
+  "skills:create": "Create skills",
+  "skills:suggest-changes": "Suggest skill changes",
+  "environments:manage": "Manage environments",
+  "tools:admin": "Administer tools",
+  "tools:manage_connections": "Manage tool connections",
+  "tools:manage_profiles": "Manage tool profiles",
+  "tools:view_audit": "View tool audit logs",
+  "audit:view_agent_actions": "View agent action audit",
+  "tools:use": "Use tools",
+  "tools:manage_runtime": "Manage tool runtime",
+  "inbox:manage": "Manage inbox",
+  "users:invite": "Invite users",
+  "users:manage_permissions": "Manage member permissions",
+  "tasks:assign": "Assign tasks",
+  "tasks:assign_scope": "Assign scoped tasks",
+  "tasks:manage_active_checkouts": "Manage active task checkouts",
+  "pipelines:write": "Write pipelines",
+  "joins:approve": "Approve join requests",
+};
+
+export const HUMAN_COMPANY_ROLE_DEFAULT_PERMISSIONS: Record<
+  HumanCompanyMembershipRole,
+  readonly PermissionKey[]
+> = {
+  owner: [
+    "agents:create",
+    "agents:configure",
+    "skills:create",
+    "environments:manage",
+    "users:invite",
+    "users:manage_permissions",
+    "tasks:assign",
+    "joins:approve",
+    "tools:manage_connections",
+    "tools:manage_runtime",
+    "tools:use",
+    "tools:admin",
+  ],
+  admin: [
+    "agents:create",
+    "agents:configure",
+    "skills:create",
+    "environments:manage",
+    "users:invite",
+    "tasks:assign",
+    "joins:approve",
+    "tools:manage_connections",
+    "tools:manage_runtime",
+    "tools:use",
+    "tools:admin",
+  ],
+  operator: [
+    "agents:create",
+    "agents:configure",
+    "skills:create",
+    "environments:manage",
+    "users:invite",
+    "tasks:assign",
+    "pipelines:write",
+    "tools:manage_connections",
+    "tools:manage_profiles",
+    "tools:manage_runtime",
+    "tools:use",
+    "tools:admin",
+    "tools:view_audit",
+    "audit:view_agent_actions",
+  ],
+  reporter: [],
+  viewer: [],
+};
 
 export const TOOL_APPLICATION_TYPES = ["rest_api", "mcp_http", "mcp_stdio", "paperclip_plugin", "a2a", "chat"] as const;
 export type ToolApplicationType = (typeof TOOL_APPLICATION_TYPES)[number];

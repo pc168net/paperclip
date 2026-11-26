@@ -31,7 +31,11 @@ export function canBoardManageRuntime(
     (item) => item.companyId === companyId && item.status === "active",
   );
   if (!membership) return false;
-  return membership.membershipRole !== "viewer" && membership.membershipRole !== null;
+  return (
+    membership.membershipRole !== "viewer" &&
+    membership.membershipRole !== "reporter" &&
+    membership.membershipRole !== null
+  );
 }
 
 /**

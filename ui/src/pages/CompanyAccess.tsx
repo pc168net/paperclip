@@ -2,8 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS,
+  HUMAN_COMPANY_ROLE_DEFAULT_PERMISSIONS,
+  PERMISSION_KEYS,
+  PERMISSION_KEY_LABELS,
   hidesCompanyPage,
   type Agent,
+  type PermissionKey,
 } from "@paperclipai/shared";
 import { Shield, ShieldCheck, Trash2, UserPlus } from "lucide-react";
 import { accessApi, type CompanyMember } from "@/api/access";
@@ -12,6 +16,7 @@ import { ApiError } from "@/api/client";
 import { cloudApi } from "@/api/cloud";
 import { issuesApi } from "@/api/issues";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -84,6 +89,7 @@ export function CompanyAccess() {
   const [reassignmentTarget, setReassignmentTarget] = useState<string>("__unassigned");
   const [draftRole, setDraftRole] = useState<CompanyMember["membershipRole"]>(null);
   const [draftStatus, setDraftStatus] = useState<EditableMemberStatus>("active");
+  const [draftGrants, setDraftGrants] = useState<PermissionKey[]>([]);
 
   useEffect(() => {
     setBreadcrumbs([
@@ -119,10 +125,16 @@ export function CompanyAccess() {
   };
 
   const updateMemberMutation = useMutation({
-    mutationFn: async (input: { memberId: string; membershipRole: CompanyMember["membershipRole"]; status: EditableMemberStatus }) => {
-      return accessApi.updateMember(selectedCompanyId!, input.memberId, {
+    mutationFn: async (input: {
+      memberId: string;
+      membershipRole: CompanyMember["membershipRole"];
+      status: EditableMemberStatus;
+      grants: Array<{ permissionKey: PermissionKey; scope: Record<string, unknown> | null }>;
+    }) => {
+      return accessApi.updateMemberAccess(selectedCompanyId!, input.memberId, {
         membershipRole: input.membershipRole,
         status: input.status,
+        grants: input.grants,
       });
     },
     onSuccess: async () => {
@@ -238,6 +250,7 @@ export function CompanyAccess() {
     if (!editingMember) return;
     setDraftRole(editingMember.membershipRole);
     setDraftStatus(isEditableMemberStatus(editingMember.status) ? editingMember.status : "suspended");
+    setDraftGrants(editingMember.grants.map((grant) => grant.permissionKey));
   }, [editingMember]);
 
   useEffect(() => {
@@ -438,7 +451,7 @@ export function CompanyAccess() {
           <DialogHeader>
             <DialogTitle>Edit member</DialogTitle>
             <DialogDescription>
-              Update organization role and membership status for {editingMember?.user?.name || editingMember?.user?.email || editingMember?.principalId}.
+              Update organization role, membership status, and permissions for {editingMember?.user?.name || editingMember?.user?.email || editingMember?.principalId}.
             </DialogDescription>
           </DialogHeader>
           {editingMember && (
@@ -449,9 +462,13 @@ export function CompanyAccess() {
                   <select
                     className="w-full rounded-md border border-border bg-background px-3 py-2"
                     value={draftRole ?? ""}
-                    onChange={(event) =>
-                      setDraftRole((event.target.value || null) as CompanyMember["membershipRole"])
-                    }
+                    onChange={(event) => {
+                      const nextRole = (event.target.value || null) as CompanyMember["membershipRole"];
+                      setDraftRole(nextRole);
+                      setDraftGrants(
+                        nextRole ? [...HUMAN_COMPANY_ROLE_DEFAULT_PERMISSIONS[nextRole]] : [],
+                      );
+                    }}
                   >
                     <option value="">Unset</option>
                     {Object.entries(HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS).map(([value, label]) => (
@@ -476,6 +493,73 @@ export function CompanyAccess() {
                   </select>
                 </label>
               </div>
+
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-medium">Permissions</div>
+                    <p className="text-xs text-muted-foreground">
+                      {draftGrants.length} of {PERMISSION_KEYS.length} permissions enabled
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        setDraftGrants(
+                          draftRole ? [...HUMAN_COMPANY_ROLE_DEFAULT_PERMISSIONS[draftRole]] : [],
+                        )
+                      }
+                    >
+                      Role defaults
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setDraftGrants([])}
+                      disabled={draftGrants.length === 0}
+                    >
+                      Clear all
+                    </Button>
+                  </div>
+                </div>
+                <div className="grid max-h-64 gap-2 overflow-y-auto rounded-md border border-border p-3 sm:grid-cols-2">
+                  {PERMISSION_KEYS.map((permissionKey) => {
+                    const checked = draftGrants.includes(permissionKey);
+                    return (
+                      <label
+                        key={permissionKey}
+                        className="flex cursor-pointer items-start gap-2.5 rounded-md px-2 py-1.5 text-sm hover:bg-muted/50"
+                      >
+                        <Checkbox
+                          checked={checked}
+                          onCheckedChange={(nextChecked) => {
+                            setDraftGrants((prev) => {
+                              const isOn = nextChecked === true;
+                              if (isOn) {
+                                return prev.includes(permissionKey) ? prev : [...prev, permissionKey];
+                              }
+                              return prev.filter((key) => key !== permissionKey);
+                            });
+                          }}
+                          className="mt-0.5"
+                        />
+                        <span className="min-w-0">
+                          <span className="block font-medium leading-snug">
+                            {PERMISSION_KEY_LABELS[permissionKey]}
+                          </span>
+                          <span className="block truncate text-xs text-muted-foreground">
+                            {permissionKey}
+                          </span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
           )}
           <DialogFooter>
@@ -485,10 +569,17 @@ export function CompanyAccess() {
             <Button
               onClick={() => {
                 if (!editingMember) return;
+                const existingScopeByKey = new Map(
+                  editingMember.grants.map((grant) => [grant.permissionKey, grant.scope ?? null]),
+                );
                 updateMemberMutation.mutate({
                   memberId: editingMember.id,
                   membershipRole: draftRole,
                   status: draftStatus,
+                  grants: draftGrants.map((permissionKey) => ({
+                    permissionKey,
+                    scope: existingScopeByKey.get(permissionKey) ?? null,
+                  })),
                 });
               }}
               disabled={updateMemberMutation.isPending}

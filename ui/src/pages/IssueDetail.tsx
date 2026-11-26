@@ -478,7 +478,9 @@ export function canBoardResolveRecoveryAction(
   );
   if (!membership) return false;
   return (
-    membership.membershipRole !== "viewer" && membership.membershipRole !== null
+    membership.membershipRole !== "viewer" &&
+    membership.membershipRole !== "reporter" &&
+    membership.membershipRole !== null
   );
 }
 

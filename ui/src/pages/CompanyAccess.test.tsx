@@ -9,6 +9,7 @@ import { CompanyAccess, CompanyAccessLegacyRoute } from "./CompanyAccess";
 const listMembersMock = vi.hoisted(() => vi.fn());
 const listJoinRequestsMock = vi.hoisted(() => vi.fn());
 const updateMemberMock = vi.hoisted(() => vi.fn());
+const updateMemberAccessMock = vi.hoisted(() => vi.fn());
 const archiveMemberMock = vi.hoisted(() => vi.fn());
 const listAgentsMock = vi.hoisted(() => vi.fn());
 const listIssuesMock = vi.hoisted(() => vi.fn());
@@ -29,7 +30,8 @@ vi.mock("@/api/access", () => ({
     updateMember: (companyId: string, memberId: string, input: unknown) =>
       updateMemberMock(companyId, memberId, input),
     updateMemberPermissions: vi.fn(),
-    updateMemberAccess: vi.fn(),
+    updateMemberAccess: (companyId: string, memberId: string, input: unknown) =>
+      updateMemberAccessMock(companyId, memberId, input),
     archiveMember: (companyId: string, memberId: string, input: unknown) =>
       archiveMemberMock(companyId, memberId, input),
     approveJoinRequest: vi.fn(),
@@ -267,7 +269,9 @@ describe("CompanyAccess", () => {
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Update organization role and membership status");
+    expect(document.body.textContent).toContain("Update organization role, membership status, and permissions");
+    expect(document.body.textContent).toContain("Permissions");
+    expect(document.body.textContent).toContain("Reporter");
     expect(document.body.textContent).not.toContain("Implicit grants from role");
     expect(document.body.textContent).not.toContain("permissionKey");
 
@@ -276,7 +280,8 @@ describe("CompanyAccess", () => {
     });
   });
 
-  it("saves member role and status without touching grants", async () => {
+  it("saves member role, status, and toggled permissions via updateMemberAccess", async () => {
+    updateMemberAccessMock.mockResolvedValueOnce({ id: "member-1" });
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -302,6 +307,17 @@ describe("CompanyAccess", () => {
     });
     await flushReact();
 
+    const taskAssignLabel = Array.from(document.body.querySelectorAll("label")).find(
+      (label) => label.textContent?.includes("tasks:assign") && !label.textContent?.includes("tasks:assign_scope"),
+    );
+    const taskAssignCheckbox = taskAssignLabel?.querySelector('button[role="checkbox"]');
+    expect(taskAssignCheckbox).toBeTruthy();
+
+    await act(async () => {
+      taskAssignCheckbox?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
     const saveButton = Array.from(document.body.querySelectorAll("button")).find(
       (button) => button.textContent === "Save member",
     );
@@ -312,9 +328,10 @@ describe("CompanyAccess", () => {
     });
     await flushReact();
 
-    expect(updateMemberMock).toHaveBeenCalledWith("company-1", "member-1", {
+    expect(updateMemberAccessMock).toHaveBeenCalledWith("company-1", "member-1", {
       membershipRole: "owner",
       status: "active",
+      grants: [{ permissionKey: "tasks:assign", scope: null }],
     });
 
     await act(async () => {

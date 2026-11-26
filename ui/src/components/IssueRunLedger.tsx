@@ -416,7 +416,9 @@ function canBoardRecordWatchdogDecision(
       boardAccess.companyIds.includes(companyId) && !boardAccess.memberships
     );
   return (
-    membership.membershipRole !== "viewer" && membership.membershipRole !== null
+    membership.membershipRole !== "viewer" &&
+    membership.membershipRole !== "reporter" &&
+    membership.membershipRole !== null
   );
 }
 

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy } from "lucide-react";
-import { accessApi } from "@/api/access";
+import { accessApi, type HumanCompanyRole } from "@/api/access";
 import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { useCompany } from "@/context/CompanyContext";
@@ -17,6 +17,12 @@ const inviteRoleOptions = [
     label: "Viewer",
     description: "Can view organization work and follow along.",
     gets: "View-only organization membership.",
+  },
+  {
+    value: "reporter",
+    label: "Reporter",
+    description: "Can view organization work and create new tasks.",
+    gets: "Read-only organization membership with permission to create tasks.",
   },
   {
     value: "operator",
@@ -50,7 +56,7 @@ export function InvitesSection() {
   const { selectedCompanyId } = useCompany();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
-  const [humanRole, setHumanRole] = useState<"owner" | "admin" | "operator" | "viewer">("operator");
+  const [humanRole, setHumanRole] = useState<HumanCompanyRole>("operator");
   const [latestInviteUrl, setLatestInviteUrl] = useState<string | null>(null);
   const [latestInviteCopied, setLatestInviteCopied] = useState(false);
   const latestInviteInputRef = useRef<HTMLInputElement | null>(null);

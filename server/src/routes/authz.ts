@@ -72,7 +72,11 @@ export function assertInstanceAdmin(req: Request) {
   throw forbidden("Instance admin access required");
 }
 
-export function assertCompanyAccess(req: Request, companyId: string) {
+export function assertCompanyAccess(
+  req: Request,
+  companyId: string,
+  options?: { allowReporterWrite?: boolean },
+) {
   assertAuthenticated(req);
   if (req.actor.type === "agent" && req.actor.companyId !== companyId) {
     throw forbidden("Agent key cannot access another company");
@@ -92,7 +96,10 @@ export function assertCompanyAccess(req: Request, companyId: string) {
     }
     const method = typeof req.method === "string" ? req.method.toUpperCase() : "GET";
     const isSafeMethod = ["GET", "HEAD", "OPTIONS"].includes(method);
-    if (!isSafeMethod && membership.membershipRole === "viewer") {
+    const isReadOnlyResponsibleRole =
+      membership.membershipRole === "viewer" ||
+      (membership.membershipRole === "reporter" && !options?.allowReporterWrite);
+    if (!isSafeMethod && isReadOnlyResponsibleRole) {
       throwOrShadowResponsibleUserCompanyAccessDeny(
         req,
         companyId,
@@ -115,6 +122,9 @@ export function assertCompanyAccess(req: Request, companyId: string) {
       }
       if (membership.membershipRole === "viewer") {
         throw forbidden("Viewer access is read-only");
+      }
+      if (membership.membershipRole === "reporter" && !options?.allowReporterWrite) {
+        throw forbidden("Reporter access can only create tasks");
       }
     }
   }

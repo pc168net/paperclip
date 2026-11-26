@@ -12149,7 +12149,7 @@ export function issueRoutes(
     validateIssueMutationBody(createIssueSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      assertCompanyAccess(req, companyId, { allowReporterWrite: true });
       if (isSkillTestScopedActor(req)) {
         res.status(403).json({
           error: "Skill-test run tokens cannot create issues.",
@@ -13428,7 +13428,8 @@ export function issueRoutes(
           : null;
         if (
           !membership?.membershipRole ||
-          membership.membershipRole === "viewer"
+          membership.membershipRole === "viewer" ||
+          membership.membershipRole === "reporter"
         ) {
           throw forbidden("Active non-viewer company membership required");
         }

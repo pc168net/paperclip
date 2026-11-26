@@ -47,6 +47,57 @@ describe("assertCompanyAccess", () => {
     expect(() => assertCompanyAccess(req, "company-1")).toThrow("Viewer access is read-only");
   });
 
+  it("allows reporter memberships to read", () => {
+    const req = makeReq({
+      method: "GET",
+      actor: {
+        type: "board",
+        userId: "user-1",
+        source: "session",
+        companyIds: ["company-1"],
+        memberships: [
+          { companyId: "company-1", membershipRole: "reporter", status: "active" },
+        ],
+      },
+    });
+
+    expect(() => assertCompanyAccess(req, "company-1")).not.toThrow();
+  });
+
+  it("rejects reporter memberships for general writes", () => {
+    const req = makeReq({
+      method: "PATCH",
+      actor: {
+        type: "board",
+        userId: "user-1",
+        source: "session",
+        companyIds: ["company-1"],
+        memberships: [
+          { companyId: "company-1", membershipRole: "reporter", status: "active" },
+        ],
+      },
+    });
+
+    expect(() => assertCompanyAccess(req, "company-1")).toThrow("Reporter access can only create tasks");
+  });
+
+  it("allows reporter memberships for task-create writes when opted in", () => {
+    const req = makeReq({
+      method: "POST",
+      actor: {
+        type: "board",
+        userId: "user-1",
+        source: "session",
+        companyIds: ["company-1"],
+        memberships: [
+          { companyId: "company-1", membershipRole: "reporter", status: "active" },
+        ],
+      },
+    });
+
+    expect(() => assertCompanyAccess(req, "company-1", { allowReporterWrite: true })).not.toThrow();
+  });
+
   it("rejects writes when membership details are present but omit the target company", () => {
     const req = makeReq({
       method: "POST",

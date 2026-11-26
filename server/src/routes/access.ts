@@ -1270,9 +1270,10 @@ type CompanyMemberRecord = Awaited<ReturnType<typeof loadCompanyMemberRecords>>[
 
 const humanRoleRank: Record<HumanCompanyMembershipRole, number> = {
   viewer: 1,
-  operator: 2,
-  admin: 3,
-  owner: 4,
+  reporter: 2,
+  operator: 3,
+  admin: 4,
+  owner: 5,
 };
 
 async function resolveActorHumanRole(
@@ -2080,7 +2081,7 @@ function extractInviteMessage(
 function mergeInviteDefaults(
   defaultsPayload: Record<string, unknown> | null | undefined,
   agentMessage: string | null,
-  humanRole: "owner" | "admin" | "operator" | "viewer" | null = null,
+  humanRole: HumanCompanyMembershipRole | null = null,
 ): Record<string, unknown> | null {
   const merged =
     defaultsPayload && typeof defaultsPayload === "object"
@@ -3067,7 +3068,7 @@ export function accessRoutes(
     req: Request;
     companyId: string;
     allowedJoinTypes: "human" | "agent" | "both";
-    humanRole?: "owner" | "admin" | "operator" | "viewer" | null;
+    humanRole?: HumanCompanyMembershipRole | null;
     defaultsPayload?: Record<string, unknown> | null;
     agentMessage?: string | null;
   }) {
